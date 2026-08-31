@@ -1,11 +1,11 @@
 "use client";
 
-import * as React from "react";
 import { Clock, CloudOff, Info, PowerOff, Radio } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { ageSeconds, formatAge, formatClockUtc, type LiveReason, type LiveState } from "./live-format";
+import { formatAge, formatClockUtc, type LiveReason, type LiveState } from "./live-format";
+import { useLiveAge } from "./use-live-age";
 
 /**
  * The age indicator. ADR 0014 and `docs/design/states.md` §5.
@@ -81,17 +81,7 @@ export function FreshnessBar({
   freshLabel = "Live",
   className,
 }: FreshnessBarProps) {
-  const [age, setAge] = React.useState<number | null>(initialAgeSeconds);
-
-  React.useEffect(() => {
-    if (!fetchedAt) {
-      setAge(null);
-      return;
-    }
-    setAge(ageSeconds(fetchedAt));
-    const timer = window.setInterval(() => setAge(ageSeconds(fetchedAt)), 1000);
-    return () => window.clearInterval(timer);
-  }, [fetchedAt]);
+  const age = useLiveAge(fetchedAt, initialAgeSeconds);
 
   if (state === "unavailable") {
     const key: LiveReason = reason ?? "upstream-down";
