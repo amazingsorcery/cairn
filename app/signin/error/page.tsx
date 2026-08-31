@@ -84,8 +84,14 @@ export default async function SignInErrorPage({
       title: "That sign-in link has expired",
       body: (
         <>
-          Links last {lifetime}, and this one is older than that. Request a new one — it takes
-          a moment.
+          {/*
+            Omit the number when it cannot be read rather than guessing it. A specific wrong
+            duration on a security page is worse than no duration at all.
+          */}
+          {lifetime === null
+            ? "This link has expired."
+            : `Links last ${lifetime}, and this one is older than that.`}{" "}
+          Request a new one — it takes a moment.
         </>
       ),
     },

@@ -39,7 +39,20 @@ function numericAt(source: unknown, ...path: readonly string[]): number | null {
   return typeof current === "number" && Number.isFinite(current) && current > 0 ? current : null;
 }
 
-export function resolveMaxAgeSeconds(providers: readonly unknown[]): number {
+/**
+ * Returns `null` when the lifetime cannot be read, and DOES NOT fall back to the 24-hour
+ * default.
+ *
+ * That fallback was here, and it is the same shape as the bug this module exists to fix: a
+ * value that is indistinguishable from a correct read. If no email provider is configured —
+ * or its shape changes again on an upgrade — a silent 24 would put a specific, wrong,
+ * security-relevant number in front of a reader with nothing to signal it was a guess.
+ *
+ * A page that omits the number is honest. A page that invents it is not. Callers render the
+ * duration only when this returns a value, and otherwise say the link is single-use and
+ * short-lived without claiming to know how short.
+ */
+export function resolveMaxAgeSeconds(providers: readonly unknown[]): number | null {
   for (const provider of providers) {
     // A provider may be supplied as a factory; only the resolved object carries config.
     if (typeof provider !== "object" || provider === null) continue;
@@ -51,14 +64,18 @@ export function resolveMaxAgeSeconds(providers: readonly unknown[]): number {
     const factoryDefault = numericAt(provider, "maxAge");
     if (factoryDefault !== null) return factoryDefault;
   }
-  return AUTHJS_DEFAULT_MAX_AGE_SECONDS;
+  return null;
 }
 
 /**
  * "24 hours", "15 minutes", "90 minutes". Whole units only: a link lifetime expressed to
  * the second invites a reader to believe we are counting, and we are not.
+ *
+ * `null` in, `null` out — an unknown lifetime must stay unknown all the way to the page, so
+ * a caller cannot accidentally render "0 minutes" for "we could not read it".
  */
-export function formatLinkLifetime(seconds: number): string {
+export function formatLinkLifetime(seconds: number | null): string | null {
+  if (seconds === null) return null;
   const minutes = Math.round(seconds / 60);
   if (minutes < 90) return minutes === 1 ? "1 minute" : `${minutes} minutes`;
   const hours = Math.round(minutes / 60);

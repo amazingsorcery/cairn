@@ -16,8 +16,28 @@ import {
  * All of the logic — and the reason the obvious read of `maxAge` is wrong — lives in
  * `./magic-link-max-age.ts`, which imports nothing so it can be tested directly.
  */
-export const MAGIC_LINK_MAX_AGE_SECONDS = resolveMaxAgeSeconds(authConfig.providers);
+/**
+ * The configured lifetime, or `null` when it cannot be read.
+ *
+ * `null` is a real outcome, not an error: no email provider configured, or `@auth/core`
+ * changing its provider shape on an upgrade. It deliberately does NOT fall back to the
+ * 24-hour default, because that value would be indistinguishable from a correct read — the
+ * exact failure this module was written to fix.
+ */
+export const MAGIC_LINK_MAX_AGE_SECONDS: number | null = resolveMaxAgeSeconds(
+  authConfig.providers,
+);
 
-export function formatLinkLifetime(seconds: number = MAGIC_LINK_MAX_AGE_SECONDS): string {
-  return format(seconds);
+/**
+ * The lifetime as a phrase, or `null` when we do not know it.
+ *
+ * Callers render the duration only when this returns a string. When it returns `null` they
+ * say the link is single-use and short-lived, without claiming to know how short. A page
+ * that omits the number is honest; a page that invents a specific, wrong,
+ * security-relevant number is not.
+ */
+export function formatLinkLifetime(
+  seconds: number | null = MAGIC_LINK_MAX_AGE_SECONDS,
+): string | null {
+  return seconds === null ? null : format(seconds);
 }

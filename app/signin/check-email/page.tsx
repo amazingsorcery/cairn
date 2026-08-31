@@ -50,7 +50,16 @@ export default async function CheckEmailPage() {
           ) : (
             "the address you gave"
           )}
-          . It works once and expires in {lifetime}. You can open it in any browser.
+          .{" "}
+          {/*
+            When the lifetime cannot be read, say what is true — the link is single-use and
+            short-lived — rather than printing a specific number we would be guessing at.
+            An overstated credential lifetime on a security page is worse than an absent one.
+          */}
+          {lifetime === null
+            ? "It works once and expires shortly."
+            : `It works once and expires in ${lifetime}.`}{" "}
+          You can open it in any browser.
         </p>
 
         <p className="mt-4 text-sm leading-relaxed text-muted-foreground">
