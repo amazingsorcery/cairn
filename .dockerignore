@@ -1,0 +1,71 @@
+# What NOT to send to the Docker daemon as build context.
+#
+# Two reasons this file matters more than it looks:
+#   1. Secrets. A stray .env in the build context ends up in the `builder` and `migrator`
+#      layers via `COPY . .` and is then readable forever with `docker history` /
+#      `docker save`, even though the runner stage never copies it.
+#   2. Cache. node_modules is ~700 MB; shipping it as context invalidates the build cache
+#      on every unrelated file-watcher touch and makes every build minutes slower.
+
+# --- Dependencies: reinstalled inside the image from the lockfile ---
+node_modules
+**/node_modules
+.pnpm-store
+.yarn
+.npm
+
+# --- Secrets. Never in a layer. ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+secrets/
+**/*.secret
+
+# --- VCS and CI ---
+.git
+.gitignore
+.gitattributes
+.github
+
+# --- Build output: regenerated inside the image ---
+.next
+out
+build
+dist
+*.tsbuildinfo
+next-env.d.ts
+
+# --- Test artefacts ---
+coverage
+playwright-report
+test-results
+blob-report
+.playwright
+tests/**/__screenshots__
+
+# --- Infra and docs: not needed to build the app, and changing the runbook must not
+#     invalidate the image cache ---
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.prod.yml
+infra
+docs
+backups
+*.dump
+*.sql.gz
+
+# --- Editor / OS noise ---
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.log
+npm-debug.log*
+pnpm-debug.log*

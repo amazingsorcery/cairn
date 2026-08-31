@@ -1,0 +1,287 @@
+# Production stack for a single 2-4 GB Ubuntu LTS VPS.
+#
+#   caddy -> the only service with published ports. Terminates TLS, sets security headers.
+#   web   -> Next.js standalone server. No published port; reachable only as web:3000.
+#   db    -> PostgreSQL 16 on a named volume, on an egress-less internal network.
+#   migrate -> one-shot, profile-gated. Never runs as part of `up`.
+#
+# Usage:
+#   docker compose -f docker-compose.prod.yml up -d --build
+#   docker compose -f docker-compose.prod.yml --profile tools run --rm migrate
+# In practice you run infra/deploy.sh, which does all of this in the right order with a
+# backup and a rollback path.
+#
+# Interpolation vs container environment — these are two different mechanisms and mixing
+# them up is the most common way this file breaks:
+#   * `${VAR}` below is substituted by the *compose CLI* from the shell and from the file
+#     literally named `.env` sitting next to this file. It is what makes `${DOMAIN}` work.
+#   * `env_file:` injects variables into the *container*. It does not affect `${...}`.
+# Both read the same `.env`, which is why one file is enough. `${VAR:?message}` makes
+# compose refuse to start rather than silently substitute an empty string — a missing
+# POSTGRES_PASSWORD would otherwise create a trust-auth database.
+
+name: ${COMPOSE_PROJECT_NAME:-app}
+
+# ---------------------------------------------------------------------------------------
+# Shared fragments
+# ---------------------------------------------------------------------------------------
+
+# Log rotation. This is not a nicety. The default json-file driver is UNBOUNDED: one
+# crash-looping container writing a stack trace 20 times a second will fill a 40 GB VPS
+# disk in days, at which point Postgres refuses writes, Caddy cannot renew certificates,
+# and the site goes down in a way that looks like everything is broken at once.
+# 10 MB x 3 files x 4 services = 120 MB worst case. Applied to EVERY service.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-hardening: &default-hardening
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  # -------------------------------------------------------------------------------------
+  # db
+  # -------------------------------------------------------------------------------------
+  db:
+    image: postgres:16-bookworm
+    restart: unless-stopped
+    logging: *default-logging
+    <<: *default-hardening
+
+    # Deliberately no cap_drop here. The postgres entrypoint starts as root, fixes
+    # ownership of PGDATA and drops to the postgres user, which needs CHOWN/SETUID/SETGID/
+    # FOWNER/DAC_OVERRIDE. `cap_drop: [ALL]` on this image produces an initdb that fails
+    # with a confusing permissions error on first boot only. Not worth it.
+
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB must be set in .env}
+      # scram-sha-256 rather than the image default md5 for any host connection.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=scram-sha-256"
+      TZ: ${TZ:-UTC}
+      PGTZ: ${TZ:-UTC}
+
+    # Tuned for a ~768 MB ceiling on a 2 GB box. Rationale for each value:
+    #   shared_buffers 192MB      ~25% of the container limit, the standard starting point.
+    #   effective_cache_size 512MB planner hint only, no allocation. Assumes the page cache
+    #                              can hold roughly this much given the other containers.
+    #   work_mem 4MB              per sort/hash node, and a single query can use several.
+    #                              30 connections x a few nodes is the real ceiling; 4 MB
+    #                              keeps the worst case well inside the limit.
+    #   maintenance_work_mem 64MB used by VACUUM, CREATE INDEX and pg_restore.
+    #   max_connections 30        one web container with a modest pg Pool, plus migrations
+    #                              and pg_dump. 100 (the default) is a memory reservation
+    #                              this box cannot back.
+    #   max_parallel_workers_per_gather 0
+    #                              parallel query multiplies work_mem and hammers /dev/shm
+    #                              for no benefit at this data size. Boring beats clever.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=192MB
+      - -c
+      - effective_cache_size=512MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - max_connections=30
+      - -c
+      - max_parallel_workers_per_gather=0
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - log_min_duration_statement=1000
+      - -c
+      - log_connections=off
+
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+    # Postgres mounts /dev/shm for parallel workers and large hash joins. Docker's default
+    # is 64 MB, which produces "could not resize shared memory segment" under load. 256 MB
+    # is generous for this workload and is counted against mem_limit below.
+    shm_size: 256mb
+
+    mem_limit: 768m
+    mem_reservation: 256m
+    cpus: 1.5
+
+    # pg_isready, not a TCP probe: the port is open long before the cluster finishes
+    # initdb on first boot, and `web` waiting on a merely-open port would race the schema.
+    # start_period covers first-boot initdb, which takes ~10-20 s on a small VPS.
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" -h 127.0.0.1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 45s
+
+    networks:
+      - backend
+
+  # -------------------------------------------------------------------------------------
+  # web
+  # -------------------------------------------------------------------------------------
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runner
+    image: ${IMAGE_NAME:-app-web}:${IMAGE_TAG:-current}
+    restart: unless-stopped
+    logging: *default-logging
+    <<: *default-hardening
+    cap_drop:
+      - ALL
+
+    # server.js is PID 1 without this, so it inherits no SIGTERM default and never reaps
+    # zombies. `init: true` inserts docker-init, giving clean `docker compose down`.
+    init: true
+
+    # NOT `ports:`. Publishing 3000 here would bypass Caddy entirely — the app would be
+    # reachable over plain HTTP on the VPS's public IP with none of the security headers,
+    # and UFW would not save you because Docker writes its own iptables rules ahead of
+    # UFW's chain. The only correct exposure is through caddy.
+    expose:
+      - "3000"
+
+    env_file:
+      - .env
+
+    depends_on:
+      db:
+        # service_healthy, not service_started. The app opens a pool and runs its first
+        # query within a second of boot; a merely-started Postgres will refuse it and the
+        # container restart-loops until the DB happens to win the race.
+        condition: service_healthy
+
+    # Repeated from the Dockerfile so that `docker compose ps` reports health even if the
+    # image is ever rebuilt without the HEALTHCHECK line, and so the interval is tunable
+    # here without a rebuild.
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+
+    mem_limit: 768m
+    mem_reservation: 256m
+    cpus: 1.5
+
+    networks:
+      - backend # to reach db
+      - edge # to be reached by caddy, and for outbound SMTP / GitHub OAuth
+
+  # -------------------------------------------------------------------------------------
+  # caddy
+  # -------------------------------------------------------------------------------------
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    <<: *default-hardening
+    cap_drop:
+      - ALL
+    cap_add:
+      # Binding 80/443 inside the container. Nothing else is needed.
+      - NET_BIND_SERVICE
+
+    ports:
+      - "80:80" # ACME HTTP-01 challenge + the redirect to HTTPS
+      - "443:443" # TLS
+      - "443:443/udp" # HTTP/3. Harmless if the client never uses it.
+
+    environment:
+      # The Caddyfile reads these as {$DOMAIN} / {$ACME_EMAIL}. This is the whole reason
+      # the domain is not written into any file: re-pointing at a different hostname is an
+      # .env edit plus `docker compose up -d caddy`, not a code change.
+      DOMAIN: ${DOMAIN:?DOMAIN must be set in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL must be set in .env}
+      # Set to https://acme-staging-v02.api.letsencrypt.org/directory while testing.
+      # Let's Encrypt production allows 5 failures per account/hostname per hour; the
+      # staging endpoint has no meaningful limit and issues untrusted certs.
+      ACME_CA: ${ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
+      TZ: ${TZ:-UTC}
+
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      # /data holds the issued certificates AND the ACME account key. If this is not a
+      # named volume, every redeploy re-requests certificates, and five of those in an
+      # hour gets the hostname rate-limited by Let's Encrypt for a week.
+      - caddy_data:/data
+      # /config holds the autosaved JSON config. Losing it is survivable but noisy.
+      - caddy_config:/config
+
+    depends_on:
+      # service_started, deliberately not service_healthy. If web is broken we still want
+      # Caddy up: it can then complete the ACME challenge and serve a diagnosable 502
+      # instead of a connection refused with no certificate.
+      - web
+
+    mem_limit: 128m
+    mem_reservation: 32m
+    cpus: 0.5
+
+    networks:
+      - edge
+
+  # -------------------------------------------------------------------------------------
+  # migrate — one-shot
+  # -------------------------------------------------------------------------------------
+  # Behind a profile so `docker compose up -d` can never start it. Invoke explicitly:
+  #   docker compose -f docker-compose.prod.yml --profile tools run --rm migrate
+  #   docker compose -f docker-compose.prod.yml --profile tools run --rm migrate pnpm db:seed
+  migrate:
+    profiles: ["tools"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: migrator
+    image: ${IMAGE_NAME:-app-web}-migrate:${IMAGE_TAG:-current}
+    restart: "no"
+    logging: *default-logging
+    <<: *default-hardening
+    init: true
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+    mem_limit: 512m
+    networks:
+      - backend
+
+volumes:
+  db_data:
+    # Named, not bind-mounted: bind mounts to a host path inherit host uid/gid semantics
+    # and are the usual cause of "data directory has wrong ownership" on first boot.
+    # Backups come from pg_dump (infra/backup.sh), never from copying this directory.
+  caddy_data:
+  caddy_config:
+
+networks:
+  edge:
+    driver: bridge
+  backend:
+    driver: bridge
+    # No gateway, therefore no route to the internet and no route from it. Postgres cannot
+    # phone home and cannot be reached from outside even if a port were published by
+    # mistake. `web` is on both networks, so it still has egress via `edge`.
+    internal: true
