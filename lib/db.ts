@@ -2,7 +2,7 @@ import { Pool, type PoolConfig } from "pg";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 
 import * as schema from "@/db/schema";
-import { env } from "./env";
+import { env, isBuildPhase } from "./env";
 
 /**
  * The database client.
@@ -47,7 +47,13 @@ import { env } from "./env";
  */
 const poolConfig: PoolConfig = {
   connectionString: env.DATABASE_URL,
-  max: env.DATABASE_POOL_MAX,
+  // `next build` forks a worker per CPU and each one imports this module, so the effective
+  // connection count is DATABASE_POOL_MAX x workers. On an 8-core runner that is 80
+  // connections against a Postgres default of 100 — enough to exhaust the server and fail
+  // the build with an opaque ECONNRESET naming a random page, which is exactly what
+  // happened here before this line existed. A build is a handful of sequential reads per
+  // worker; it does not need a pool.
+  max: isBuildPhase ? 2 : env.DATABASE_POOL_MAX,
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 5_000,
   // `options` is passed through to the server as startup parameters, so these are enforced

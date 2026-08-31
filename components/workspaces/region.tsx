@@ -13,9 +13,14 @@ import { cn } from "@/lib/utils";
  * (`docs/design/states.md` §7.2). From `md` up all three are open at once — the value of
  * this page is having the case in front of you.
  *
- * The collapse uses the `hidden` attribute plus `md:block`. An author-level `display` beats
- * the user-agent `[hidden]` rule, so the content is always visible from `md` up regardless
- * of the collapsed state, and the toggle that could otherwise strand it is `md:hidden`.
+ * THE COLLAPSE IS CLASS-DRIVEN, NOT THE `hidden` ATTRIBUTE. `hidden` plus `md:block` looks
+ * equivalent and is not: measured in the browser at 1280px, the attribute still won and the
+ * region stayed `display: none` while its toggle was `md:hidden` — so a reader who collapsed
+ * a region on a phone and then widened the window had an invisible region and no control to
+ * bring it back. Two Tailwind utilities in the same layer have no such conflict: `md:block`
+ * is emitted after `hidden`, so from `md` up the content is always shown regardless of the
+ * collapsed state. `display: none` also removes the content from the accessibility tree, so
+ * `aria-expanded` stays truthful without the attribute.
  */
 export function Region({
   title,
@@ -71,7 +76,7 @@ export function Region({
           </button>
         </div>
       </div>
-      <div id={bodyId} hidden={!open} className="md:block">
+      <div id={bodyId} className={cn(open ? "block" : "hidden", "md:block")}>
         {children}
       </div>
     </section>

@@ -46,8 +46,10 @@ import {
 import { recomputeToolSearchKeywords, toolIdsForTags } from "@/lib/actions/search-keywords";
 import { closeDb, db } from "@/lib/db";
 import { env } from "@/lib/env";
-import { getToolBySlug } from "@/lib/queries/tools";
-import { search, suggest } from "@/lib/queries/search";
+import { getToolBySlug, getToolPlaybookCitations, getToolRecord, listTools } from "@/lib/queries/tools";
+import { getDirectoryFacetCounts } from "@/lib/queries/facets";
+import { parseDirectoryFilters } from "@/lib/validation/filters";
+import { search, searchPlaybooks, searchTools, suggest } from "@/lib/queries/search";
 import { assertOwnsWorkspace, getWorkspace } from "@/lib/queries/workspaces";
 import { consume, deriveKey, sweepExpired } from "@/lib/rate-limit";
 
@@ -744,7 +746,149 @@ async function phaseB(): Promise<void> {
     check("the probe restored the row's status", restored?.status === "published");
   });
 
-  await section("10. Seeded shape (content contract vs schema)", async () => {
+  await section("10. Split reads make the partial states reachable (states.md §3.6, §8.3)", async () => {
+    const [published] = await db
+      .select({ slug: tools.slug })
+      .from(tools)
+      .where(eq(tools.status, "published"))
+      .limit(1);
+    if (!published) throw new Error("no published tools — run `pnpm db:seed`");
+
+    const record = await getToolRecord(published.slug);
+    check("getToolRecord returns the entry without its citations", record !== null);
+    check(
+      "the record carries no usedInPlaybooks field",
+      record !== null && !("usedInPlaybooks" in record),
+    );
+
+    const citations = record ? await getToolPlaybookCitations(record.id) : [];
+    check(
+      "getToolPlaybookCitations is callable on its own",
+      Array.isArray(citations),
+      `${citations.length} citations`,
+    );
+
+    // §3.6: the entry loaded, the "used in" query failed. Reachable only if the two halves
+    // can be awaited independently.
+    const toolPartial = await Promise.allSettled([
+      getToolRecord(published.slug),
+      Promise.reject(new Error("simulated citation failure")),
+    ]);
+    check(
+      "states.md §3.6 is reachable: a citation failure leaves the entry intact",
+      toolPartial[0]?.status === "fulfilled" && toolPartial[1]?.status === "rejected",
+    );
+
+    // The combined function must COMPOSE the halves, not duplicate them.
+    const combined = await getToolBySlug(published.slug);
+    check(
+      "getToolBySlug composes the split reads and agrees with them",
+      combined?.name === record?.name && combined?.usedInPlaybooks.length === citations.length,
+      `${combined?.usedInPlaybooks.length} citations both ways`,
+    );
+
+    const filters = { q: "certificate transparency", page: 1 };
+    const [toolGroup, playbookGroup] = await Promise.all([
+      searchTools(filters),
+      searchPlaybooks(filters),
+    ]);
+    const whole = await search(filters);
+    check(
+      "searchTools and searchPlaybooks agree with search()",
+      whole.toolTotal === toolGroup.total && whole.playbookTotal === playbookGroup.total,
+      `${toolGroup.total} tools / ${playbookGroup.total} playbooks`,
+    );
+
+    const searchPartial = await Promise.allSettled([
+      searchTools(filters),
+      Promise.reject(new Error("simulated playbook group failure")),
+    ]);
+    check(
+      "states.md §8.3 is reachable: one group can fail while the other renders",
+      searchPartial[0]?.status === "fulfilled" && searchPartial[1]?.status === "rejected",
+    );
+
+    // The fallback must fire only when both groups are genuinely EMPTY, never when one
+    // FAILED — "did you mean" after a failure is a claim we cannot support.
+    const miss = await search({ q: "shodann", page: 1 });
+    check(
+      "the trigram fallback still fires only on a genuine zero-result query",
+      miss.toolTotal === 0 && miss.playbookTotal === 0 && miss.didYouMean.length > 0,
+      `did-you-mean: ${miss.didYouMean.map((h) => h.slug).join(", ")}`,
+    );
+  });
+
+  await section("11. Directory facet counts (states.md §2.5)", async () => {
+    const unfiltered = parseDirectoryFilters({});
+    const counts = await getDirectoryFacetCounts(unfiltered);
+    const total = (await listTools(unfiltered)).total;
+
+    const sum = (list: { count: number }[]) => list.reduce((n, f) => n + f.count, 0);
+
+    check(
+      "unfiltered cost counts sum to the result total",
+      sum(counts.cost) === total,
+      `${sum(counts.cost)} === ${total}`,
+    );
+    check(
+      "unfiltered confidence counts sum to the result total",
+      sum(counts.confidence) === total,
+      `${sum(counts.confidence)} === ${total}`,
+    );
+    check(
+      "every facet returns values",
+      counts.cost.length > 0 &&
+        counts.confidence.length > 0 &&
+        counts.input.length > 0 &&
+        counts.output.length > 0 &&
+        counts.category.length > 0 &&
+        counts.tag.length > 0,
+      `cost ${counts.cost.length}, confidence ${counts.confidence.length}, input ` +
+        `${counts.input.length}, output ${counts.output.length}, category ` +
+        `${counts.category.length}, tag ${counts.tag.length}`,
+    );
+    check(
+      "counts are sorted by descending count",
+      counts.cost.every((f, i, all) => i === 0 || (all[i - 1]?.count ?? 0) >= f.count),
+    );
+
+    /**
+     * THE RULE: a facet is excluded from its own count. With `cost=free` applied, the other
+     * cost models must still be counted — otherwise the reader cannot tell what switching
+     * would give them.
+     */
+    const freeFilters = parseDirectoryFilters({ cost: "free" });
+    const withFree = await getDirectoryFacetCounts(freeFilters);
+    const others = withFree.cost.filter((f) => f.value !== "free");
+    check(
+      "a facet is excluded from its own count",
+      others.length > 0 && others.every((f) => f.count > 0),
+      others.map((f) => `${f.value}=${f.count}`).join(", "),
+    );
+
+    // ...but every OTHER facet is narrowed by it.
+    const before = counts.input.find((f) => f.value === "domain")?.count ?? 0;
+    const after = withFree.input.find((f) => f.value === "domain")?.count ?? 0;
+    check(
+      "other facets ARE narrowed by the applied filter",
+      after <= before && before > 0,
+      `input 'domain': ${before} -> ${after}`,
+    );
+
+    // Each count must equal the real result total for that filter alone.
+    let mismatches = 0;
+    for (const facet of counts.cost) {
+      const actual = (await listTools(parseDirectoryFilters({ cost: facet.value }))).total;
+      if (actual !== facet.count) mismatches += 1;
+    }
+    check(
+      "every cost count equals the real result total for that filter",
+      mismatches === 0,
+      `${counts.cost.length} values checked`,
+    );
+  });
+
+  await section("12. Seeded shape (content contract vs schema)", async () => {
     const rows = await db.execute<{ playbook: string; indexes: number[] }>(sql`
       select p.slug as playbook, array_agg(s.order_index order by s.order_index) as indexes
       from ${playbooks} p join ${playbookSteps} s on s.playbook_id = p.id

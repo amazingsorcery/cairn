@@ -22,10 +22,11 @@ import { cn } from "@/lib/utils";
  * The active marker is a READING POSITION, not a completion state (wireframe 06 notes).
  * Nothing is ticked on a public page — progress belongs to a case, not to a shared URL.
  *
- * The mobile collapse uses the `hidden` attribute plus `md:block`: an author-level
- * `display` beats the user-agent `[hidden]` rule, so the list is always visible from `md`
- * up regardless of the collapsed state, and the toggle that could strand it is itself
- * `md:hidden`.
+ * THE MOBILE COLLAPSE IS CLASS-DRIVEN, NOT THE `hidden` ATTRIBUTE. Measured in the browser,
+ * `hidden` plus `md:block` left the list `display: none` at 1280px while its toggle was
+ * `md:hidden` — collapse on a phone, widen the window, and the step index is gone with no
+ * way back. Two Tailwind utilities in one layer do not fight: `md:block` is emitted after
+ * `hidden` and wins from `md` up.
  */
 
 export interface StepNavigatorProps {
@@ -106,7 +107,7 @@ export function StepNavigator({ steps }: StepNavigatorProps) {
           </button>
         </div>
 
-        <ol id={listId} hidden={!open} className="md:block border-t border-border py-1">
+        <ol id={listId} className={cn(open ? "block" : "hidden", "md:block border-t border-border py-1")}>
           {steps.map((step, index) => {
             const isActive = index === activeIndex;
             return (
