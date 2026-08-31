@@ -1,14 +1,13 @@
 import { z } from "zod";
 
-import {
-  coordinatePair,
-  healthcheckByFetch,
-  parseWith,
-  pollJson,
-  type NormaliseOutcome,
-  type PollAdapter,
-} from "./adapter";
-import type { SourceFeature, SourceResult } from "./types";
+import { applyLimit, coordinatePair, healthcheckByFetch, normaliseVia, pollJson } from "./adapter";
+import type {
+  SourceAdapter,
+  SourceContext,
+  SourceFeature,
+  SourceQuery,
+  SourceResult,
+} from "./types";
 
 /**
  * adsb.lol — community ADS-B aircraft positions.
@@ -61,11 +60,9 @@ const MAX_RADIUS_NM = 250;
 /**
  * A polled viewport.
  *
- * `SourceAdapter.fetch(signal)` takes no parameters, so a viewport-scoped source cannot
- * describe what it is asking for. Rather than fork `types.ts`, the viewport is bound at
- * construction: `createAdsbLolAdapter()` returns a fully-formed adapter for one area, and the
- * registry holds whichever instances an operator wants. Noted in `docs/sources/HANDOFF.md` as
- * proposed friction on the contract.
+ * Derived from `query.bbox` on every call, so the registry holds ONE aircraft source rather
+ * than a pre-bound instance per area. `AIRCRAFT_VIEWPORT` supplies the fallback for a query
+ * with no bbox — a worker polling this layer unprompted still needs somewhere to look.
  */
 export type Viewport = {
   readonly latitude: number;
@@ -166,15 +163,12 @@ export interface AircraftFeature extends SourceFeature {
 /** Feet to metres, for `SourceFeature.altitude`, which the contract documents as metres. */
 const FEET_TO_METRES = 0.3048;
 
-export function normaliseAdsbLol(
-  raw: unknown,
-  receivedAt: Date = new Date(),
-): NormaliseOutcome<AircraftFeature> {
-  const parsed = parseWith(adsbLolResponseSchema, raw);
-  if (!parsed.ok) return parsed;
+type AdsbPayload = z.infer<typeof adsbLolResponseSchema>;
 
+/** Map validated data to features. `fetch` has already decided the payload is well-shaped. */
+function mapAdsbLol(data: AdsbPayload, query: SourceQuery): readonly AircraftFeature[] {
   const features: AircraftFeature[] = [];
-  for (const item of parsed.data.ac) {
+  for (const item of data.ac) {
     const position = coordinatePair(item.lon, item.lat);
     // An aircraft with no position cannot be drawn. Dropping it here rather than in the
     // component keeps the "how many are on screen" count honest.
@@ -212,13 +206,22 @@ export function normaliseAdsbLol(
     });
   }
 
-  const observed = new Date(parsed.data.now);
-  return {
-    ok: true,
-    features,
-    observedAt: Number.isNaN(observed.getTime()) ? receivedAt : observed,
-  };
+  /**
+   * No `withinBbox` here, deliberately: the upstream has ALREADY filtered to the circle we
+   * asked for. Re-clipping to the rectangle would discard aircraft the caller has already
+   * paid for, and would make the rendered count disagree with the radius actually queried.
+   * `query.limit` still applies, since the endpoint has no limit parameter.
+   */
+  return applyLimit(features, query);
 }
+
+function observedAtFrom(data: AdsbPayload, receivedAt: Date): Date {
+  const observed = new Date(data.now);
+  return Number.isNaN(observed.getTime()) ? receivedAt : observed;
+}
+
+/** Public mapper, for tests against a captured fixture. Validates, then maps. */
+export const normaliseAdsbLol = normaliseVia(adsbLolResponseSchema, mapAdsbLol);
 
 /* ------------------------------------------------------------------ *
  * The adapter
@@ -227,7 +230,7 @@ export function normaliseAdsbLol(
 export const ADSB_LOL_SLUG = "adsb-lol";
 
 /**
- * The default viewport: greater London, 250 nm.
+ * The fallback viewport when a query carries no bbox: greater London, 250 nm.
  *
  * Any default is arbitrary and this one is stated as such rather than dressed up. It is a
  * dense, well-fed patch of airspace, so an operator switching the layer on immediately sees
@@ -236,7 +239,7 @@ export const ADSB_LOL_SLUG = "adsb-lol";
  */
 export const DEFAULT_VIEWPORT: Viewport = { latitude: 51.5, longitude: -0.1, radiusNm: 250 };
 
-export function viewportFromEnv(raw: string | undefined = process.env.AIRCRAFT_VIEWPORT): Viewport {
+export function viewportFromEnv(raw: string | undefined): Viewport {
   if (!raw) return DEFAULT_VIEWPORT;
   const parts = raw.split(",").map((part) => Number(part.trim()));
   const [latitude, longitude, radiusNm] = parts;
@@ -256,69 +259,88 @@ export function viewportFromEnv(raw: string | undefined = process.env.AIRCRAFT_V
   return quantiseViewport({ latitude, longitude, radiusNm });
 }
 
+const METRES_PER_NM = 1852;
+const EARTH_RADIUS_M = 6_371_000;
+
 /**
- * One adapter per polled viewport.
+ * A bounding box becomes a centre and a radius, because that is the only shape this endpoint
+ * accepts.
  *
- * The slug carries the viewport so two instances never share a cache entry or a cooldown
- * key — except for the default, which keeps the bare slug so the registry entry and v1's
- * connector row line up.
+ * The radius reaches the CORNER of the box, so the circle contains the whole rectangle. An
+ * inscribed circle would silently omit aircraft near the corners — the quiet-incompleteness
+ * failure this codebase has already been bitten by once, on the weather layer. The cost is
+ * some aircraft outside the box, which `mapAdsbLol` deliberately does not clip away: the
+ * caller asked to look at an area, and context around its edges is useful rather than wrong.
  */
-export function createAdsbLolAdapter(viewport: Viewport = viewportFromEnv()): PollAdapter<AircraftFeature> {
-  const view = quantiseViewport(viewport);
-  const isDefault =
-    view.latitude === DEFAULT_VIEWPORT.latitude &&
-    view.longitude === DEFAULT_VIEWPORT.longitude &&
-    view.radiusNm === DEFAULT_VIEWPORT.radiusNm;
-  const slug = isDefault
-    ? ADSB_LOL_SLUG
-    : `${ADSB_LOL_SLUG}:${view.latitude},${view.longitude},${view.radiusNm}`;
+export function viewportFromBbox(bbox: NonNullable<SourceQuery["bbox"]>): Viewport {
+  const latitude = (bbox.north + bbox.south) / 2;
+  const longitude = (bbox.east + bbox.west) / 2;
 
-  const adapter: PollAdapter<AircraftFeature> = {
-    slug,
-    name: "adsb.lol aircraft",
-    kind: "aircraft",
-    homepage: "https://www.adsb.lol/",
-    attribution: {
-      // ODbL requires attribution. This string is a licence condition, not a nicety.
-      text: "Aircraft data from adsb.lol, licensed under ODbL 1.0",
-      href: "https://www.adsb.lol/",
-      licence: "ODbL 1.0",
-    },
-    /** See the arithmetic at the top of this file. 2 calls/minute per viewport. */
-    ttlSeconds: 30,
-    responseSchema: adsbLolResponseSchema,
-    normalise: normaliseAdsbLol,
+  const latSpanM = ((bbox.north - bbox.south) * Math.PI * EARTH_RADIUS_M) / 180;
+  // Longitude degrees shrink toward the poles, so the span is scaled by cos(latitude).
+  const lonSpanM =
+    ((bbox.east - bbox.west) * Math.PI * EARTH_RADIUS_M * Math.cos((latitude * Math.PI) / 180)) /
+    180;
+  const cornerM = Math.hypot(latSpanM, lonSpanM) / 2;
 
-    fetch(signal: AbortSignal): Promise<SourceResult<AircraftFeature>> {
-      /**
-       * The path is built from numbers already clamped by `quantiseViewport`, then encoded.
-       * There is no string from configuration in it — but `encodeURIComponent` is applied
-       * anyway, because "the type says it is a number" is exactly the assumption that stops
-       * being true after a refactor.
-       */
-      const url =
-        `${BASE_URL}/v2/lat/${encodeURIComponent(view.latitude)}` +
-        `/lon/${encodeURIComponent(view.longitude)}` +
-        `/dist/${encodeURIComponent(view.radiusNm)}`;
-
-      return pollJson<AircraftFeature>({
-        slug,
-        url,
-        signal,
-        // A 250 nm circle over London was 90 KB on 2026-08-31; the busiest airspace on earth
-        // will not approach this cap.
-        maxBytes: 4 * 1024 * 1024,
-        normalise: normaliseAdsbLol,
-      });
-    },
-
-    healthcheck(signal: AbortSignal) {
-      return healthcheckByFetch(adapter, signal);
-    },
-  };
-
-  return adapter;
+  return quantiseViewport({
+    latitude,
+    longitude,
+    radiusNm: Math.max(1, Math.ceil(cornerM / METRES_PER_NM)),
+  });
 }
 
-/** The instance the registry holds. */
-export const adsbLol: PollAdapter<AircraftFeature> = createAdsbLolAdapter();
+/** The viewport this call will poll: the query's bbox, else the configured fallback. */
+export function resolveViewport(query: SourceQuery, env: SourceContext["env"]): Viewport {
+  return query.bbox ? viewportFromBbox(query.bbox) : viewportFromEnv(env("AIRCRAFT_VIEWPORT"));
+}
+
+export const adsbLol: SourceAdapter<AircraftFeature> = {
+  slug: ADSB_LOL_SLUG,
+  name: "adsb.lol aircraft",
+  kind: "aircraft",
+  homepage: "https://www.adsb.lol/",
+  attribution: {
+    // ODbL requires attribution. This string is a licence condition, not a nicety.
+    text: "Aircraft data from adsb.lol, licensed under ODbL 1.0",
+    href: "https://www.adsb.lol/",
+    licence: "ODbL 1.0",
+  },
+  /** See the arithmetic at the top of this file. 2 calls/minute per viewport. */
+  ttlSeconds: 30,
+  responseSchema: adsbLolResponseSchema,
+  normalise: normaliseAdsbLol,
+
+  fetch(query: SourceQuery, ctx: SourceContext): Promise<SourceResult<AircraftFeature>> {
+    const view = resolveViewport(query, ctx.env);
+
+    /**
+     * The path is built from numbers already clamped by `quantiseViewport`, then encoded.
+     * There is no string from configuration in it — but `encodeURIComponent` is applied
+     * anyway, because "the type says it is a number" is exactly the assumption that stops
+     * being true after a refactor.
+     */
+    const url =
+      `${BASE_URL}/v2/lat/${encodeURIComponent(view.latitude)}` +
+      `/lon/${encodeURIComponent(view.longitude)}` +
+      `/dist/${encodeURIComponent(view.radiusNm)}`;
+
+    return pollJson({
+      slug: ADSB_LOL_SLUG,
+      url,
+      ctx,
+      schema: adsbLolResponseSchema,
+      // A 250 nm circle over London was 90 KB on 2026-08-31; the busiest airspace on earth
+      // will not approach this cap.
+      maxBytes: 4 * 1024 * 1024,
+      map: (data, receivedAt) => ({
+        features: mapAdsbLol(data, query),
+        observedAt: observedAtFrom(data, receivedAt),
+      }),
+    });
+  },
+
+  healthcheck(ctx: SourceContext) {
+    return healthcheckByFetch(adsbLol, ctx);
+  },
+};

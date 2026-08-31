@@ -57,8 +57,10 @@ export const DEFAULT_TIMEOUT_MS = 8_000;
  * `SOURCE_CONTACT_EMAIL` lets an operator substitute a real one without a code change. That
  * matters more than usual here: an upstream that cannot reach us blocks us silently.
  */
-export function sourceUserAgent(): string {
-  const contact = process.env.SOURCE_CONTACT_EMAIL?.trim() || brand.email.support;
+export function sourceUserAgent(
+  env: (name: string) => string | undefined = (name) => process.env[name],
+): string {
+  const contact = env("SOURCE_CONTACT_EMAIL")?.trim() || brand.email.support;
   return `${brand.nameLower}-live/1.0 (+${contact})`;
 }
 
@@ -293,16 +295,20 @@ export function decodeJson(text: string): { ok: true; body: unknown } | { ok: fa
 }
 
 /**
- * Read an API key from the environment.
+ * Read an API key through the context's env reader.
  *
- * Returns a `notConfigured` failure naming the variable rather than throwing, so a
- * deployment missing one key disables one layer and the rest of the map comes up. ADR 0018:
- * the build must not require runtime secrets.
+ * Takes the reader rather than touching `process.env`, so an adapter is testable without
+ * mutating the process and cannot reach for a global (`SourceContext.env`).
+ *
+ * Returns a `notConfigured` failure naming the variable rather than throwing, so a deployment
+ * missing one key disables one layer and the rest of the map comes up. ADR 0018: the build
+ * must not require runtime secrets.
  */
 export function requireApiKey(
+  env: (name: string) => string | undefined,
   envVar: string,
 ): { ok: true; key: string } | { ok: false; failure: SourceFailure } {
-  const key = process.env[envVar]?.trim();
+  const key = env(envVar)?.trim();
   if (!key) return { ok: false, failure: { kind: "notConfigured", missingEnvVar: envVar } };
   return { ok: true, key };
 }

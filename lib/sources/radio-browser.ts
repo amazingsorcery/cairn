@@ -1,14 +1,16 @@
 import { z } from "zod";
 
-import {
-  coordinatePair,
-  healthcheckByFetch,
-  parseWith,
-  pollJson,
-  type NormaliseOutcome,
-  type PollAdapter,
-} from "./adapter";
-import type { SourceFeature, SourceResult } from "./types";
+import { applyLimit, coordinatePair, healthcheckByFetch, normaliseVia, pollJson, withinBbox } from "./adapter";
+import { cacheKey, getJson, setJson } from "./cache";
+import { decodeJson, fetchUpstream } from "./http";
+import type {
+  SourceAdapter,
+  SourceCache,
+  SourceContext,
+  SourceFeature,
+  SourceQuery,
+  SourceResult,
+} from "./types";
 
 /**
  * Radio Browser — a community catalogue of internet radio stations, with coordinates.
@@ -59,16 +61,14 @@ const DISCOVERY_URL = "https://all.api.radio-browser.info/json/servers";
 const FALLBACK_HOST = "de1.api.radio-browser.info";
 
 /** Mirrors change rarely; re-discovering more often than hourly would be the rude thing. */
-const DISCOVERY_TTL_MS = 60 * 60 * 1000;
+const DISCOVERY_TTL_SECONDS = 60 * 60;
 
 /** Only stations with coordinates can appear on a map at all. */
 const STATION_LIMIT = 500;
 
-const serverSchema = z.array(z.object({ name: z.string() }).passthrough());
+export const RADIO_BROWSER_SLUG = "radio-browser";
 
-const globalForServers = globalThis as typeof globalThis & {
-  __cairnRadioServers__?: { host: string; at: number };
-};
+const serverSchema = z.array(z.object({ name: z.string() }).passthrough());
 
 /**
  * Hostnames from discovery are validated before they can reach a URL.
@@ -178,15 +178,13 @@ function safeStreamUrl(...candidates: readonly (string | null | undefined)[]): s
   return null;
 }
 
-export function normaliseRadioBrowser(
-  raw: unknown,
-  receivedAt: Date = new Date(),
-): NormaliseOutcome<RadioStationFeature> {
-  const parsed = parseWith(radioBrowserResponseSchema, raw);
-  if (!parsed.ok) return parsed;
+type RadioPayload = z.infer<typeof radioBrowserResponseSchema>;
 
+/** Map validated stations to features. `fetch` has already decided the payload is well-shaped. */
+function mapRadioBrowser(data: RadioPayload, query: SourceQuery): readonly RadioStationFeature[] {
   const features: RadioStationFeature[] = [];
-  for (const station of parsed.data) {
+
+  for (const station of data) {
     const position = coordinatePair(station.geo_long, station.geo_lat);
     if (!position) continue;
 
@@ -199,7 +197,7 @@ export function normaliseRadioBrowser(
     // A station we cannot hand the reader a playable link for is not worth a pin.
     if (!streamUrl) continue;
 
-    features.push({
+    const feature: RadioStationFeature = {
       id: station.stationuuid,
       kind: "radio",
       longitude: position.longitude,
@@ -222,43 +220,58 @@ export function normaliseRadioBrowser(
         lastCheckedAt: station.lastcheckoktime_iso8601 ?? null,
         clickCount: typeof station.clickcount === "number" ? station.clickcount : null,
       },
-    });
+    };
+
+    // The search endpoint has no bbox parameter, so the viewport is applied here.
+    if (!withinBbox(feature, query)) continue;
+    features.push(feature);
   }
 
-  return { ok: true, features, observedAt: receivedAt };
+  return applyLimit(features, query);
 }
+
+/** Public mapper, for tests against a captured fixture. Validates, then maps. */
+export const normaliseRadioBrowser = normaliseVia(radioBrowserResponseSchema, mapRadioBrowser);
 
 /* ------------------------------------------------------------------ *
  * The adapter
  * ------------------------------------------------------------------ */
 
-export const RADIO_BROWSER_SLUG = "radio-browser";
+const MIRROR_CACHE_KEY = cacheKey(RADIO_BROWSER_SLUG, "mirror");
+const mirrorSchema = z.string().regex(HOST_PATTERN);
 
-/** Discover a mirror, caching the choice. Falls back to the documented example server. */
-async function currentHost(signal: AbortSignal): Promise<string> {
-  const cached = globalForServers.__cairnRadioServers__;
-  if (cached && Date.now() - cached.at < DISCOVERY_TTL_MS) return cached.host;
+/**
+ * Discover a mirror, remembering the choice in the durable cache.
+ *
+ * Cached rather than re-discovered every poll, because the docs ask callers not to hammer the
+ * discovery endpoint either — and because a worker restart should not cost an extra round trip
+ * to a volunteer's machine. Falls back to the documented example server whenever anything at
+ * all goes wrong; there is no failure mode here worth degrading the layer for.
+ */
+async function currentHost(ctx: SourceContext): Promise<string> {
+  const cached = await getJson(ctx.cache, MIRROR_CACHE_KEY, mirrorSchema);
+  if (cached) return cached;
 
-  const { decodeJson, fetchUpstream } = await import("./http");
   const outcome = await fetchUpstream({
     slug: RADIO_BROWSER_SLUG,
     url: DISCOVERY_URL,
-    signal,
+    signal: ctx.signal,
     timeoutMs: 5_000,
   });
-  if (!outcome.ok) return cached?.host ?? FALLBACK_HOST;
+  if (!outcome.ok) return FALLBACK_HOST;
 
   const decoded = decodeJson(outcome.text);
   const host = decoded.ok ? pickServer(decoded.body) : FALLBACK_HOST;
-  globalForServers.__cairnRadioServers__ = { host, at: Date.now() };
+  await setJson(ctx.cache, MIRROR_CACHE_KEY, host, DISCOVERY_TTL_SECONDS);
   return host;
 }
 
-export function clearServerCache(): void {
-  delete globalForServers.__cairnRadioServers__;
+/** Test seam: forget the remembered mirror. */
+export async function clearServerCache(cache: SourceCache): Promise<void> {
+  await cache.set(MIRROR_CACHE_KEY, "", 0);
 }
 
-export const radioBrowser: PollAdapter<RadioStationFeature> = {
+export const radioBrowser: SourceAdapter<RadioStationFeature> = {
   slug: RADIO_BROWSER_SLUG,
   name: "Radio Browser stations",
   kind: "radio",
@@ -278,23 +291,40 @@ export const radioBrowser: PollAdapter<RadioStationFeature> = {
   responseSchema: radioBrowserResponseSchema,
   normalise: normaliseRadioBrowser,
 
-  async fetch(signal: AbortSignal): Promise<SourceResult<RadioStationFeature>> {
-    const host = await currentHost(signal);
+  async fetch(query: SourceQuery, ctx: SourceContext): Promise<SourceResult<RadioStationFeature>> {
+    const host = await currentHost(ctx);
+
+    /**
+     * `limit` is passed upstream where the caller supplied one — filtering after the fact
+     * still pays for the bytes, and this endpoint does support a cap. The bbox has no
+     * upstream equivalent, so it is applied in the mapper.
+     */
+    const limit = Math.min(query.limit ?? STATION_LIMIT, STATION_LIMIT);
     const url =
       `https://${host}/json/stations/search` +
-      `?has_geo_info=true&hidebroken=true&order=clickcount&reverse=true&limit=${STATION_LIMIT}`;
+      `?has_geo_info=true&hidebroken=true&order=clickcount&reverse=true&limit=${limit}`;
 
-    return pollJson<RadioStationFeature>({
+    return pollJson({
       slug: RADIO_BROWSER_SLUG,
       url,
-      signal,
+      ctx,
+      schema: radioBrowserResponseSchema,
       timeoutMs: 15_000,
       maxBytes: 4 * 1024 * 1024,
-      normalise: normaliseRadioBrowser,
+      map: (data, receivedAt) => ({
+        features: mapRadioBrowser(data, query),
+        /**
+         * The endpoint returns a bare ARRAY, not an envelope, so there is no upstream
+         * timestamp to read and `observedAt` is our receive time. This is the one source in
+         * the registry where that is true, and a reader of the freshness display deserves to
+         * know the difference.
+         */
+        observedAt: receivedAt,
+      }),
     });
   },
 
-  healthcheck(signal: AbortSignal) {
-    return healthcheckByFetch(radioBrowser, signal);
+  healthcheck(ctx: SourceContext) {
+    return healthcheckByFetch(radioBrowser, ctx);
   },
 };

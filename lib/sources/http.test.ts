@@ -161,12 +161,19 @@ describe("fetchUpstream failure typing", () => {
 
 describe("API keys", () => {
   it("names the missing variable rather than throwing", () => {
-    delete process.env.SOURCES_TEST_KEY;
-    const result = requireApiKey("SOURCES_TEST_KEY");
+    // Read through the context env reader, so no test mutates the process environment.
+    const result = requireApiKey(() => undefined, "SOURCES_TEST_KEY");
     expect(result.ok).toBe(false);
     if (result.ok) return;
     if (result.failure.kind !== "notConfigured") throw new Error("expected notConfigured");
     expect(result.failure.missingEnvVar).toBe("SOURCES_TEST_KEY");
+  });
+
+  it("accepts a key supplied through the context", () => {
+    const result = requireApiKey((n) => (n === "SOURCES_TEST_KEY" ? " abc " : undefined), "SOURCES_TEST_KEY");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.key).toBe("abc");
   });
 });
 

@@ -1,14 +1,21 @@
 import { z } from "zod";
 
 import {
+  applyLimit,
   coordinatePair,
   healthcheckByFetch,
+  normaliseVia,
   parseWith,
-  type NormaliseOutcome,
-  type PollAdapter,
+  withinBbox,
 } from "./adapter";
 import { fetchUpstream, lastGoodAt, recordGood, requireApiKey } from "./http";
-import type { SourceFeature, SourceResult } from "./types";
+import type {
+  SourceAdapter,
+  SourceContext,
+  SourceFeature,
+  SourceQuery,
+  SourceResult,
+} from "./types";
 
 /**
  * NASA FIRMS — near-real-time active fire detections from MODIS and VIIRS.
@@ -82,8 +89,8 @@ type FirmsSource = (typeof SOURCES)[number];
  */
 const DEFAULT_SOURCE: FirmsSource = "VIIRS_SNPP_NRT";
 
-function selectedSource(): FirmsSource {
-  const requested = process.env.FIRMS_SOURCE?.trim();
+function selectedSource(env: (name: string) => string | undefined): FirmsSource {
+  const requested = env("FIRMS_SOURCE")?.trim();
   return SOURCES.find((source) => source === requested) ?? DEFAULT_SOURCE;
 }
 
@@ -264,18 +271,14 @@ function detectedAtIso(date: string, time: string): string | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
-export function normaliseFirms(
-  raw: unknown,
-  receivedAt: Date = new Date(),
-): NormaliseOutcome<WildfireFeature> {
-  // `raw` is the record array from `csvToRecords`, so the same `normalise(unknown)` contract
-  // holds even though the wire format is CSV rather than JSON.
-  const parsed = parseWith(firmsResponseSchema, raw);
-  if (!parsed.ok) return parsed;
+type FirmsPayload = z.infer<typeof firmsResponseSchema>;
 
+/** Map validated rows to features. `fetch` has already decided the columns are present. */
+function mapFirms(data: FirmsPayload, query: SourceQuery): readonly WildfireFeature[] {
   const features: WildfireFeature[] = [];
   let index = 0;
-  for (const row of parsed.data) {
+
+  for (const row of data) {
     index += 1;
     const position = coordinatePair(row.longitude, row.latitude);
     if (!position) continue;
@@ -283,7 +286,7 @@ export function normaliseFirms(
     const detectedAt = detectedAtIso(row.acq_date, row.acq_time);
     const brightness = row.bright_ti4 ?? row.brightness ?? null;
 
-    features.push({
+    const feature: WildfireFeature = {
       /**
        * FIRMS gives detections no id. The identity is the pixel and the moment: a rounded
        * position plus the acquisition timestamp is stable across polls for the same
@@ -305,11 +308,20 @@ export function normaliseFirms(
         instrument: row.instrument ?? null,
         night: (row.daynight ?? "").toUpperCase() === "N",
       },
-    });
+    };
+
+    // We request `world` and filter here. The area API does accept a bounding box, but a
+    // per-viewport request would multiply transactions against the 5000/10min budget while a
+    // single global poll serves every reader from one entry.
+    if (!withinBbox(feature, query)) continue;
+    features.push(feature);
   }
 
-  return { ok: true, features, observedAt: receivedAt };
+  return applyLimit(features, query);
 }
+
+/** Public mapper, for tests. Validates, then maps. */
+export const normaliseFirms = normaliseVia(firmsResponseSchema, mapFirms);
 
 /* ------------------------------------------------------------------ *
  * The adapter
@@ -317,7 +329,7 @@ export function normaliseFirms(
 
 export const NASA_FIRMS_SLUG = "nasa-firms";
 
-export const nasaFirms: PollAdapter<WildfireFeature> = {
+export const nasaFirms: SourceAdapter<WildfireFeature> = {
   slug: NASA_FIRMS_SLUG,
   name: "NASA FIRMS active fires",
   kind: "wildfires",
@@ -335,21 +347,21 @@ export const nasaFirms: PollAdapter<WildfireFeature> = {
   responseSchema: firmsResponseSchema,
   normalise: normaliseFirms,
 
-  async fetch(signal: AbortSignal): Promise<SourceResult<WildfireFeature>> {
-    const key = requireApiKey(FIRMS_API_KEY_ENV_VAR);
+  async fetch(query: SourceQuery, ctx: SourceContext): Promise<SourceResult<WildfireFeature>> {
+    const key = requireApiKey(ctx.env, FIRMS_API_KEY_ENV_VAR);
     if (!key.ok) {
       // A deployment with no key disables this layer alone and the rest of the map comes up.
       return { ok: false, failure: key.failure, lastGoodAt: lastGoodAt(NASA_FIRMS_SLUG) };
     }
 
     const url =
-      `${API_BASE}/${encodeURIComponent(key.key)}/${selectedSource()}` +
+      `${API_BASE}/${encodeURIComponent(key.key)}/${selectedSource(ctx.env)}` +
       `/${AREA}/${DAY_RANGE}`;
 
     const outcome = await fetchUpstream({
       slug: NASA_FIRMS_SLUG,
       url,
-      signal,
+      signal: ctx.signal,
       // A global day of VIIRS detections is a large CSV and the request is not cheap for
       // them either; give it room and time.
       timeoutMs: 30_000,
@@ -362,26 +374,29 @@ export const nasaFirms: PollAdapter<WildfireFeature> = {
 
     /**
      * A wrong or exhausted key comes back as HTTP 400 with the body `Invalid MAP_KEY.`
-     * (confirmed 2026-08-31) — so it is already an `upstreamError` above. This guard catches
-     * the other shape: a 200 carrying a message rather than a CSV. Without it, a one-line
-     * error body parses as "zero fires", which on this layer is a lie with consequences.
+     * (confirmed 2026-08-31) — so it is already an `upstreamError` above. The schema below
+     * catches the other shape: a 200 carrying a message rather than a CSV. Without it, a
+     * one-line error body parses as "zero fires", which on this layer is a lie with
+     * consequences.
      */
     const records = csvToRecords(outcome.text);
-    const normalised = normaliseFirms(records, new Date());
-    if (!normalised.ok) {
-      return { ok: false, failure: normalised.failure, lastGoodAt: lastGoodAt(NASA_FIRMS_SLUG) };
+    const parsed = parseWith(firmsResponseSchema, records);
+    if (!parsed.ok) {
+      return { ok: false, failure: parsed.failure, lastGoodAt: lastGoodAt(NASA_FIRMS_SLUG) };
     }
 
-    recordGood(NASA_FIRMS_SLUG, normalised.observedAt);
-    return {
-      ok: true,
-      features: normalised.features,
-      observedAt: normalised.observedAt,
-      stale: false,
-    };
+    const features = mapFirms(parsed.data, query);
+    /**
+     * CSV rows carry no envelope timestamp, so `observedAt` is our receive time. The
+     * per-detection acquisition time — the number that actually matters for a fire — is in
+     * `properties.detectedAt`.
+     */
+    const observedAt = new Date();
+    recordGood(NASA_FIRMS_SLUG, observedAt);
+    return { ok: true, features, observedAt };
   },
 
-  healthcheck(signal: AbortSignal) {
-    return healthcheckByFetch(nasaFirms, signal);
+  healthcheck(ctx: SourceContext) {
+    return healthcheckByFetch(nasaFirms, ctx);
   },
 };

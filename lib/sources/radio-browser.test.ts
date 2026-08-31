@@ -1,21 +1,32 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { normaliseRadioBrowser, pickServer, radioBrowser } from "./radio-browser";
+import { createMemoryCache } from "./cache";
+import { resetSourceRuntime } from "./http";
+import {
+  normaliseRadioBrowser,
+  pickServer,
+  radioBrowser,
+  radioBrowserResponseSchema,
+} from "./radio-browser";
 
 /**
  * Real payload: the 200 most-clicked geolocated stations, captured from
  * de1.api.radio-browser.info on 2026-08-31, unedited.
  */
 import fixture from "./__fixtures__/radio-browser.json";
+import { jsonResponse, testContext } from "./__fixtures__/context";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  resetSourceRuntime();
+});
 
 describe("radio-browser normalise", () => {
   it("maps the captured live payload to renderable features", () => {
-    const result = normaliseRadioBrowser(fixture);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
+    const features = normaliseRadioBrowser(fixture, {});
 
-    expect(result.features.length).toBeGreaterThan(0);
-    for (const feature of result.features) {
+    expect(features.length).toBeGreaterThan(0);
+    for (const feature of features) {
       expect(feature.kind).toBe("radio");
       expect(feature.label).not.toBe("");
       expect(feature.properties.streamUrl).toMatch(/^https?:\/\//);
@@ -25,16 +36,14 @@ describe("radio-browser normalise", () => {
   it("hands the client a direct stream URL, which our server never fetches", () => {
     // The rule that decides the whole build (product-brief §2b). If this ever becomes a
     // path on our own origin, the product has started rebroadcasting.
-    const result = normaliseRadioBrowser(fixture);
-    if (!result.ok) throw new Error("fixture should parse");
-    for (const feature of result.features) {
+    for (const feature of normaliseRadioBrowser(fixture, {})) {
       expect(feature.properties.streamUrl).not.toMatch(/^\/(api|proxy)/);
       expect(new URL(feature.properties.streamUrl).hostname).not.toBe("localhost");
     }
   });
 
   it("refuses a stream URL that is not http(s)", () => {
-    const result = normaliseRadioBrowser([
+    const features = normaliseRadioBrowser([
       {
         stationuuid: "a",
         name: "javascript station",
@@ -51,40 +60,90 @@ describe("radio-browser normalise", () => {
         geo_long: 11,
       },
       { stationuuid: "c", name: "real station", url_resolved: "https://example.com/s", geo_lat: 12, geo_long: 12 },
-    ]);
-    if (!result.ok) throw new Error("payload should parse");
-    expect(result.features.map((f) => f.id)).toEqual(["c"]);
+    ], {});
+    expect(features.map((f) => f.id)).toEqual(["c"]);
   });
 
   it("drops stations left at 0,0 rather than pinning a fleet of radios in the Gulf of Guinea", () => {
-    const result = normaliseRadioBrowser([
+    const features = normaliseRadioBrowser([
       { stationuuid: "null-island", name: "Nowhere FM", url_resolved: "https://example.com/a", geo_lat: 0, geo_long: 0 },
       { stationuuid: "real", name: "Somewhere FM", url_resolved: "https://example.com/b", geo_lat: 1, geo_long: 1 },
-    ]);
-    if (!result.ok) throw new Error("payload should parse");
-    expect(result.features.map((f) => f.id)).toEqual(["real"]);
+    ], {});
+    expect(features.map((f) => f.id)).toEqual(["real"]);
   });
 
   it("drops stations with no coordinates", () => {
-    const result = normaliseRadioBrowser([
+    const features = normaliseRadioBrowser([
       { stationuuid: "nogeo", name: "No Geo FM", url_resolved: "https://example.com/a" },
-    ]);
-    if (!result.ok) throw new Error("payload should parse");
-    expect(result.features).toEqual([]);
+    ], {});
+    expect(features).toEqual([]);
   });
 
-  it("returns schemaChanged rather than throwing when the shape moves", () => {
-    const result = normaliseRadioBrowser({ error: "not an array" });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.failure.kind).toBe("schemaChanged");
+  it("applies a viewport, because the search endpoint has no bbox parameter", () => {
+    const all = normaliseRadioBrowser(fixture, {});
+    const europe = normaliseRadioBrowser(fixture, {
+      bbox: { west: -10, south: 35, east: 30, north: 60 },
+    });
+    expect(europe.length).toBeLessThan(all.length);
+    for (const feature of europe) {
+      expect(feature.longitude).toBeGreaterThanOrEqual(-10);
+      expect(feature.longitude).toBeLessThanOrEqual(30);
+    }
+  });
+});
+
+describe("radio-browser schema", () => {
+  it("accepts the captured payload", () => {
+    expect(radioBrowserResponseSchema.safeParse(fixture).success).toBe(true);
   });
 
-  it("uses our receive time for observedAt, because a bare array carries no upstream clock", () => {
-    const at = new Date("2026-08-31T12:00:00Z");
-    const result = normaliseRadioBrowser(fixture, at);
-    if (!result.ok) throw new Error("fixture should parse");
-    expect(result.observedAt).toBe(at);
+  it("rejects a document that is not a station array", () => {
+    expect(radioBrowserResponseSchema.safeParse({ error: "not an array" }).success).toBe(false);
+  });
+});
+
+describe("radio-browser fetch", () => {
+  it("uses our receive time for observedAt, because a bare array carries no upstream clock", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation((input) =>
+      Promise.resolve(
+        jsonResponse(String(input).includes("/servers") ? [{ name: "de1.api.radio-browser.info" }] : fixture),
+      ),
+    );
+
+    const before = Date.now();
+    const result = await radioBrowser.fetch({}, testContext());
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.observedAt.getTime()).toBeGreaterThanOrEqual(before);
+  });
+
+  it("remembers its mirror in the durable cache rather than re-discovering every poll", async () => {
+    const cache = createMemoryCache();
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation((input) =>
+      Promise.resolve(
+        jsonResponse(String(input).includes("/servers") ? [{ name: "de1.api.radio-browser.info" }] : fixture),
+      ),
+    );
+    const discoveries = () => spy.mock.calls.filter((c) => String(c[0]).includes("/servers")).length;
+
+    await radioBrowser.fetch({}, testContext({ cache }));
+    expect(discoveries()).toBe(1);
+
+    // Volunteer-run infrastructure: a second poll must not cost a second discovery call.
+    await radioBrowser.fetch({}, testContext({ cache }));
+    expect(discoveries()).toBe(1);
+  });
+
+  it("passes a caller's limit upstream rather than paying for bytes it will discard", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation((input) =>
+      Promise.resolve(
+        jsonResponse(String(input).includes("/servers") ? [{ name: "de1.api.radio-browser.info" }] : fixture),
+      ),
+    );
+
+    await radioBrowser.fetch({ limit: 25 }, testContext());
+    const stationCall = spy.mock.calls.map((c) => String(c[0])).find((u) => u.includes("/stations/"));
+    expect(stationCall).toContain("limit=25");
   });
 });
 

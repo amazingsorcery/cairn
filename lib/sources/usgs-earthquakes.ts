@@ -1,14 +1,20 @@
 import { z } from "zod";
 
 import {
+  applyLimit,
   coordinatePair,
   healthcheckByFetch,
-  parseWith,
+  normaliseVia,
   pollJson,
-  type NormaliseOutcome,
-  type PollAdapter,
+  withinBbox,
 } from "./adapter";
-import type { SourceFeature, SourceResult } from "./types";
+import type {
+  SourceAdapter,
+  SourceContext,
+  SourceFeature,
+  SourceQuery,
+  SourceResult,
+} from "./types";
 
 /**
  * USGS earthquakes — the real-time GeoJSON summary feed.
@@ -63,8 +69,8 @@ type Feed = (typeof FEEDS)[number];
 
 const DEFAULT_FEED: Feed = "2.5_day";
 
-function selectedFeed(): Feed {
-  const requested = process.env.USGS_QUAKE_FEED?.trim();
+function selectedFeed(env: (name: string) => string | undefined): Feed {
+  const requested = env("USGS_QUAKE_FEED")?.trim();
   return FEEDS.find((feed) => feed === requested) ?? DEFAULT_FEED;
 }
 
@@ -167,12 +173,18 @@ function isoOrNull(millis: number | null | undefined): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
-export function normaliseUsgs(raw: unknown, receivedAt: Date = new Date()): NormaliseOutcome<EarthquakeFeature> {
-  const parsed = parseWith(usgsResponseSchema, raw);
-  if (!parsed.ok) return parsed;
+type UsgsPayload = z.infer<typeof usgsResponseSchema>;
 
+/**
+ * Map a validated payload to features.
+ *
+ * Internal, and takes already-parsed data: `fetch` runs `responseSchema` once and returns
+ * `schemaChanged` on a mismatch, so nothing here needs to re-decide that. The exported
+ * `normaliseUsgs` below wraps this for the fixture tests.
+ */
+function mapUsgs(data: UsgsPayload, query: SourceQuery): readonly EarthquakeFeature[] {
   const features: EarthquakeFeature[] = [];
-  for (const item of parsed.data.features) {
+  for (const item of data.features) {
     const coordinates = item.geometry?.coordinates ?? [];
     const depth = coordinates[2];
     // An event with no position cannot be drawn. Dropping it here rather than in the
@@ -183,7 +195,7 @@ export function normaliseUsgs(raw: unknown, receivedAt: Date = new Date()): Norm
     const props = item.properties;
     const magnitude = typeof props.mag === "number" && Number.isFinite(props.mag) ? props.mag : null;
 
-    features.push({
+    const feature: EarthquakeFeature = {
       id: item.id,
       kind: "earthquakes",
       longitude: position.longitude,
@@ -211,16 +223,25 @@ export function normaliseUsgs(raw: unknown, receivedAt: Date = new Date()): Norm
         feltReports: typeof props.felt === "number" ? props.felt : null,
         network: props.net ?? null,
       },
-    });
+    };
+
+    // The summary feeds are global and cannot be filtered upstream, so the viewport is
+    // applied here. `query.bbox` therefore means the same thing on this layer as on any other.
+    if (!withinBbox(feature, query)) continue;
+    features.push(feature);
   }
 
-  const generated = new Date(parsed.data.metadata.generated);
-  return {
-    ok: true,
-    features,
-    observedAt: Number.isNaN(generated.getTime()) ? receivedAt : generated,
-  };
+  return applyLimit(features, query);
 }
+
+/** The upstream's own clock for the payload — never our receive time when one is offered. */
+function observedAtFrom(data: UsgsPayload, receivedAt: Date): Date {
+  const generated = new Date(data.metadata.generated);
+  return Number.isNaN(generated.getTime()) ? receivedAt : generated;
+}
+
+/** Public mapper, for tests against a captured fixture. Validates, then maps. */
+export const normaliseUsgs = normaliseVia(usgsResponseSchema, mapUsgs);
 
 /* ------------------------------------------------------------------ *
  * The adapter
@@ -228,7 +249,7 @@ export function normaliseUsgs(raw: unknown, receivedAt: Date = new Date()): Norm
 
 export const USGS_EARTHQUAKES_SLUG = "usgs-earthquakes";
 
-export const usgsEarthquakes: PollAdapter<EarthquakeFeature> = {
+export const usgsEarthquakes: SourceAdapter<EarthquakeFeature> = {
   slug: USGS_EARTHQUAKES_SLUG,
   name: "USGS earthquakes",
   kind: "earthquakes",
@@ -244,16 +265,20 @@ export const usgsEarthquakes: PollAdapter<EarthquakeFeature> = {
   responseSchema: usgsResponseSchema,
   normalise: normaliseUsgs,
 
-  fetch(signal: AbortSignal): Promise<SourceResult<EarthquakeFeature>> {
-    return pollJson<EarthquakeFeature>({
+  fetch(query: SourceQuery, ctx: SourceContext): Promise<SourceResult<EarthquakeFeature>> {
+    return pollJson({
       slug: USGS_EARTHQUAKES_SLUG,
-      url: `${FEED_BASE}/${selectedFeed()}.geojson`,
-      signal,
-      normalise: normaliseUsgs,
+      url: `${FEED_BASE}/${selectedFeed(ctx.env)}.geojson`,
+      ctx,
+      schema: usgsResponseSchema,
+      map: (data, receivedAt) => ({
+        features: mapUsgs(data, query),
+        observedAt: observedAtFrom(data, receivedAt),
+      }),
     });
   },
 
-  healthcheck(signal: AbortSignal) {
-    return healthcheckByFetch(usgsEarthquakes, signal);
+  healthcheck(ctx: SourceContext) {
+    return healthcheckByFetch(usgsEarthquakes, ctx);
   },
 };

@@ -4,8 +4,7 @@ import { nwsAlerts } from "./nws-alerts";
 import { radioBrowser } from "./radio-browser";
 import { trafficCameras } from "./traffic-cameras";
 import { usgsEarthquakes } from "./usgs-earthquakes";
-import type { PollAdapter } from "./adapter";
-import type { SourceFeature, SourceKind } from "./types";
+import type { SourceAdapter, SourceFeature, SourceKind } from "./types";
 
 /**
  * The source registry.
@@ -21,7 +20,7 @@ import type { SourceFeature, SourceKind } from "./types";
  * `docs/sources/HANDOFF.md` with the reason — that list is as useful as this one, because it
  * is what stops the same unverifiable source being re-proposed every quarter.
  */
-export const SOURCE_ADAPTERS: readonly PollAdapter<SourceFeature>[] = [
+export const SOURCE_ADAPTERS: readonly SourceAdapter<SourceFeature>[] = [
   usgsEarthquakes,
   nwsAlerts,
   adsbLol,
@@ -31,12 +30,12 @@ export const SOURCE_ADAPTERS: readonly PollAdapter<SourceFeature>[] = [
 ];
 
 /** Look one up by slug. Returns undefined rather than throwing for an unknown layer. */
-export function findAdapter(slug: string): PollAdapter<SourceFeature> | undefined {
+export function findAdapter(slug: string): SourceAdapter<SourceFeature> | undefined {
   return SOURCE_ADAPTERS.find((adapter) => adapter.slug === slug);
 }
 
 /** Every adapter of one kind, for grouping the layer legend. */
-export function adaptersOfKind(kind: SourceKind): readonly PollAdapter<SourceFeature>[] {
+export function adaptersOfKind(kind: SourceKind): readonly SourceAdapter<SourceFeature>[] {
   return SOURCE_ADAPTERS.filter((adapter) => adapter.kind === kind);
 }
 
@@ -49,19 +48,23 @@ export function adaptersOfKind(kind: SourceKind): readonly PollAdapter<SourceFea
  */
 export function unconfiguredAdapters(
   env: Readonly<Record<string, string | undefined>> = process.env,
-): readonly PollAdapter<SourceFeature>[] {
+): readonly SourceAdapter<SourceFeature>[] {
   return SOURCE_ADAPTERS.filter(
     (adapter) => adapter.apiKeyEnvVar !== undefined && !env[adapter.apiKeyEnvVar]?.trim(),
   );
 }
 
-export type { PollAdapter, NormaliseOutcome } from "./adapter";
+export { createMemoryCache } from "./cache";
 export { describeFailure } from "./adapter";
 export type {
   Attribution,
+  CachedSourceResult,
   SourceAdapter,
+  SourceCache,
+  SourceContext,
   SourceFailure,
   SourceFeature,
   SourceKind,
+  SourceQuery,
   SourceResult,
 } from "./types";

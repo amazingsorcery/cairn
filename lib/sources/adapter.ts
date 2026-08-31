@@ -1,75 +1,45 @@
 import type { z } from "zod";
 
-import {
-  decodeJson,
-  fetchUpstream,
-  lastGoodAt,
-  recordGood,
-  type FetchOptions,
-} from "./http";
-import type { SourceAdapter, SourceFailure, SourceFeature, SourceResult } from "./types";
+import { decodeJson, fetchUpstream, lastGoodAt, recordGood } from "./http";
+import type {
+  SourceAdapter,
+  SourceContext,
+  SourceFailure,
+  SourceFeature,
+  SourceQuery,
+  SourceResult,
+} from "./types";
 
 /**
  * Shared machinery for poll-model adapters.
  *
- * `types.ts` is the normative contract and is not mine to change. Two small extensions live
- * here instead, and both are proposed additions to it rather than forks of it:
+ * `types.ts` is the normative contract. This file adds no members to it — the earlier
+ * `PollAdapter` extension is gone, because `normalise` now lives on `SourceAdapter` itself.
+ * What remains here is the composition every adapter's `fetch` would otherwise repeat: fetch,
+ * decode, validate, map, and convert every failure into a typed value rather than a throw.
  *
- *  1. **`normalise` is not on `SourceAdapter`.** The brief and ADR 0019 both describe the
- *     interface as `fetch`, `normalise`, `ttl`, `attribution`, `healthcheck`; `types.ts` has
- *     the other four. Without it there is no way to test the parse-and-map step against a
- *     captured payload without a live network call, which is the single most valuable test
- *     these adapters have — it is what catches a shape change. `PollAdapter` below adds it
- *     as a pure function, `unknown` in, features out, no I/O.
- *
- *  2. **`observedAt` comes from the payload.** `SourceResult` documents it as "when the
- *     upstream produced this data, not when we cached it", so it has to be produced by the
- *     same code that reads the payload's own clock. `normalise` returns it.
- *
- * `stale` is always `false` from an adapter: an adapter never serves from cache. Staleness is
- * the caller's concern — the worker holding the Redis entry knows whether it is serving a
- * payload past its TTL; the adapter, which just called upstream, cannot know.
+ * **Where validation happens, and why it matters.** `SourceAdapter.normalise` returns
+ * `readonly T[]` with no way to signal failure, so the schema check belongs in `fetch`:
+ * `responseSchema.safeParse` decides, and a failure returns `schemaChanged`. `normalise` is
+ * then handed an already-validated payload. Each adapter also exposes `normalise` publicly
+ * taking `unknown`, so a test can pass a captured fixture straight in — that path re-validates
+ * and returns `[]` on a mismatch, which is safe precisely because the *decision* about a shape
+ * change is never made there.
  */
-
-/** The result of turning one raw payload into features. Pure — no I/O, no clock reads. */
-export type NormaliseOutcome<T extends SourceFeature> =
-  | {
-      readonly ok: true;
-      readonly features: readonly T[];
-      /** The upstream's own timestamp for this payload. Falls back to the receive time. */
-      readonly observedAt: Date;
-    }
-  | {
-      readonly ok: false;
-      readonly failure: Extract<SourceFailure, { kind: "schemaChanged" }>;
-    };
-
-/**
- * `SourceAdapter` plus the pure `normalise` step.
- *
- * Every adapter in this directory is typed as this, so `normalise` can be exercised against
- * a real captured payload in a unit test while `fetch` stays the only thing that touches the
- * network.
- */
-export interface PollAdapter<T extends SourceFeature = SourceFeature> extends SourceAdapter<T> {
-  /**
-   * Validate and map one raw upstream payload. Must never throw: a Zod failure returns
-   * `schemaChanged`, which disables this layer and no other.
-   */
-  normalise(raw: unknown, receivedAt?: Date): NormaliseOutcome<T>;
-}
 
 /**
  * Run a Zod schema and convert the failure into `schemaChanged`.
  *
- * The Zod message is summarised to the failing paths only. The full error embeds the parsed
- * VALUES, and those values are an upstream-controlled string that would otherwise reach a
- * log line and an operator screen.
+ * The Zod message is reduced to failing paths only. The full error embeds the parsed VALUES,
+ * and those are upstream-controlled strings that would otherwise reach a log line and an
+ * operator's screen.
  */
 export function parseWith<S extends z.ZodTypeAny>(
   schema: S,
   raw: unknown,
-): { ok: true; data: z.infer<S> } | { ok: false; failure: Extract<SourceFailure, { kind: "schemaChanged" }> } {
+):
+  | { ok: true; data: z.infer<S> }
+  | { ok: false; failure: Extract<SourceFailure, { kind: "schemaChanged" }> } {
   const parsed = schema.safeParse(raw);
   if (parsed.success) return { ok: true, data: parsed.data };
 
@@ -87,52 +57,79 @@ export function parseWith<S extends z.ZodTypeAny>(
 }
 
 /**
- * Fetch text, decode JSON, normalise, and record the outcome.
+ * The public `normalise` shape: validate, then map. Returns `[]` when the payload does not fit.
  *
- * Every poll adapter's `fetch()` is one call to this. It is what guarantees the promises the
- * contract makes are kept in the same way everywhere: cooldown honoured before the call,
- * typed failure instead of a throw, `lastGoodAt` carried on the failure path so a degraded
- * layer can still say how old the last good data was.
+ * Used by each adapter to wrap its internal mapper. The empty array is not a lie about "no
+ * features" because nothing decides anything from it — `fetch` has already returned
+ * `schemaChanged` before reaching here on a real bad payload.
  */
-export async function pollJson<T extends SourceFeature>(
-  options: FetchOptions & { normalise: (raw: unknown, receivedAt: Date) => NormaliseOutcome<T> },
-): Promise<SourceResult<T>> {
-  const { normalise, ...fetchOptions } = options;
-  const outcome = await fetchUpstream(fetchOptions);
-  if (!outcome.ok) return { ok: false, failure: outcome.failure, lastGoodAt: lastGoodAt(options.slug) };
-
-  const decoded = decodeJson(outcome.text);
-  if (!decoded.ok) {
-    return { ok: false, failure: decoded.failure, lastGoodAt: lastGoodAt(options.slug) };
-  }
-
-  const normalised = normalise(decoded.body, new Date());
-  if (!normalised.ok) {
-    return { ok: false, failure: normalised.failure, lastGoodAt: lastGoodAt(options.slug) };
-  }
-
-  recordGood(options.slug, normalised.observedAt);
-  return {
-    ok: true,
-    features: normalised.features,
-    observedAt: normalised.observedAt,
-    // An adapter never serves from cache; see the note at the top of this file.
-    stale: false,
+export function normaliseVia<S extends z.ZodTypeAny, T extends SourceFeature>(
+  schema: S,
+  map: (data: z.infer<S>, query: SourceQuery) => readonly T[],
+): (payload: unknown, query: SourceQuery) => readonly T[] {
+  return (payload, query) => {
+    const parsed = schema.safeParse(payload);
+    return parsed.success ? map(parsed.data, query) : [];
   };
 }
 
 /**
- * The standard `healthcheck()`: run the real `fetch` and report in one sentence.
+ * Fetch JSON, validate it, map it, and record the outcome.
+ *
+ * Every poll adapter's `fetch` is one call to this. It is what makes the contract's promises
+ * hold identically everywhere: the cooldown is honoured before the call, a failure is a typed
+ * value rather than a throw, and `lastGoodAt` rides along on the failure path so a degraded
+ * layer can still say how old the last good data was.
+ */
+export async function pollJson<S extends z.ZodTypeAny, T extends SourceFeature>(options: {
+  readonly slug: string;
+  readonly url: string;
+  readonly ctx: SourceContext;
+  readonly schema: S;
+  /** Map validated data to features plus the upstream's own timestamp for the payload. */
+  readonly map: (data: z.infer<S>, receivedAt: Date) => {
+    readonly features: readonly T[];
+    readonly observedAt: Date;
+  };
+  readonly timeoutMs?: number;
+  readonly maxBytes?: number;
+  readonly headers?: Readonly<Record<string, string>>;
+}): Promise<SourceResult<T>> {
+  const { slug, url, ctx, schema, map } = options;
+
+  const outcome = await fetchUpstream({
+    slug,
+    url,
+    signal: ctx.signal,
+    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    ...(options.maxBytes === undefined ? {} : { maxBytes: options.maxBytes }),
+    ...(options.headers === undefined ? {} : { headers: options.headers }),
+  });
+  if (!outcome.ok) return { ok: false, failure: outcome.failure, lastGoodAt: lastGoodAt(slug) };
+
+  const decoded = decodeJson(outcome.text);
+  if (!decoded.ok) return { ok: false, failure: decoded.failure, lastGoodAt: lastGoodAt(slug) };
+
+  const parsed = parseWith(schema, decoded.body);
+  if (!parsed.ok) return { ok: false, failure: parsed.failure, lastGoodAt: lastGoodAt(slug) };
+
+  const { features, observedAt } = map(parsed.data, new Date());
+  recordGood(slug, observedAt);
+  return { ok: true, features, observedAt };
+}
+
+/**
+ * The standard `healthcheck`: run the real `fetch` and report in one sentence.
  *
  * Deliberately not a HEAD request or a bare 200 check. A source whose schema has changed is
  * *down* for our purposes even though it answers 200, and that is exactly the failure an
  * operator most needs the dashboard to show.
  */
 export async function healthcheckByFetch<T extends SourceFeature>(
-  adapter: Pick<SourceAdapter<T>, "slug" | "fetch">,
-  signal: AbortSignal,
+  adapter: Pick<SourceAdapter<T>, "fetch">,
+  ctx: SourceContext,
 ): Promise<{ ok: boolean; detail: string }> {
-  const result = await adapter.fetch(signal);
+  const result = await adapter.fetch({}, ctx);
   if (result.ok) {
     return {
       ok: true,
@@ -180,4 +177,31 @@ export function coordinatePair(
   if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return null;
   if (longitude < -180 || longitude > 180 || latitude < -90 || latitude > 90) return null;
   return { longitude, latitude };
+}
+
+/**
+ * Is a feature inside the requested viewport?
+ *
+ * Applied by adapters whose upstream cannot filter server-side, so `query.bbox` means the same
+ * thing on every layer. A source that CAN filter upstream should do that instead — filtering
+ * after the fact still pays for the bytes.
+ */
+export function withinBbox(
+  feature: Pick<SourceFeature, "longitude" | "latitude">,
+  query: SourceQuery,
+): boolean {
+  const bbox = query.bbox;
+  if (!bbox) return true;
+  if (feature.latitude < bbox.south || feature.latitude > bbox.north) return false;
+  // A bbox crossing the antimeridian has west > east; the longitude test inverts there.
+  return bbox.west <= bbox.east
+    ? feature.longitude >= bbox.west && feature.longitude <= bbox.east
+    : feature.longitude >= bbox.west || feature.longitude <= bbox.east;
+}
+
+/** Apply `query.limit`, where the upstream could not. */
+export function applyLimit<T>(features: readonly T[], query: SourceQuery): readonly T[] {
+  const limit = query.limit;
+  if (limit === undefined || limit < 0 || features.length <= limit) return features;
+  return features.slice(0, limit);
 }

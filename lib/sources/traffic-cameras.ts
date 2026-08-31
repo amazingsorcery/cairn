@@ -1,7 +1,13 @@
 import { z } from "zod";
 
-import { coordinatePair, parseWith, type NormaliseOutcome, type PollAdapter } from "./adapter";
-import type { SourceFeature, SourceResult } from "./types";
+import { applyLimit, coordinatePair, normaliseVia, parseWith, withinBbox } from "./adapter";
+import type {
+  SourceAdapter,
+  SourceContext,
+  SourceFeature,
+  SourceQuery,
+  SourceResult,
+} from "./types";
 
 import fintraffic from "@/content/cameras/fintraffic-digitraffic.json";
 import linkOnly from "@/content/cameras/link-only-providers.json";
@@ -128,17 +134,13 @@ export interface CameraFeature extends SourceFeature {
   };
 }
 
-export function normaliseCameras(
-  raw: unknown,
-  receivedAt: Date = new Date(),
-): NormaliseOutcome<CameraFeature> {
-  const parsed = parseWith(cameraRegistrySchema, raw);
-  if (!parsed.ok) return parsed;
+type CameraRegistry = z.infer<typeof cameraRegistrySchema>;
 
+/** Map the validated registry to features. */
+function mapCameras(data: CameraRegistry, query: SourceQuery): readonly CameraFeature[] {
   const features: CameraFeature[] = [];
-  let newestVerification: number | null = null;
 
-  for (const file of parsed.data) {
+  for (const file of data) {
     for (const camera of file.cameras) {
       // A camera we may not embed has no business on an embedding layer, whatever file it
       // arrived in. Belt and braces over the registry split.
@@ -147,12 +149,7 @@ export function normaliseCameras(
       const position = coordinatePair(camera.longitude, camera.latitude);
       if (!position) continue;
 
-      const verifiedAt = Date.parse(camera.lastVerifiedAt);
-      if (!Number.isNaN(verifiedAt)) {
-        newestVerification = Math.max(newestVerification ?? verifiedAt, verifiedAt);
-      }
-
-      features.push({
+      const feature: CameraFeature = {
         id: camera.slug,
         kind: "cameras",
         longitude: position.longitude,
@@ -172,20 +169,35 @@ export function normaliseCameras(
           lastVerifiedAt: camera.lastVerifiedAt,
           providerName: file.provider.name,
         },
-      });
+      };
+
+      if (!withinBbox(feature, query)) continue;
+      features.push(feature);
     }
   }
 
-  return {
-    ok: true,
-    features,
-    /**
-     * The date a human last checked, not the moment this ran. See the note at the top: a
-     * static registry that reports itself as freshly observed is lying about its own age.
-     */
-    observedAt: newestVerification === null ? receivedAt : new Date(newestVerification),
-  };
+  return applyLimit(features, query);
 }
+
+/**
+ * The date a human last checked, not the moment this ran.
+ *
+ * A static registry that reports itself as freshly observed is lying about its own age,
+ * which is the freshness failure ADR 0014 exists to prevent.
+ */
+function observedAtFrom(data: CameraRegistry, receivedAt: Date): Date {
+  let newest: number | null = null;
+  for (const file of data) {
+    for (const camera of file.cameras) {
+      const verifiedAt = Date.parse(camera.lastVerifiedAt);
+      if (!Number.isNaN(verifiedAt)) newest = Math.max(newest ?? verifiedAt, verifiedAt);
+    }
+  }
+  return newest === null ? receivedAt : new Date(newest);
+}
+
+/** Public mapper, for tests. Validates, then maps. */
+export const normaliseCameras = normaliseVia(cameraRegistrySchema, mapCameras);
 
 /* ------------------------------------------------------------------ *
  * The adapter
@@ -193,7 +205,7 @@ export function normaliseCameras(
 
 export const TRAFFIC_CAMERAS_SLUG = "traffic-cameras";
 
-export const trafficCameras: PollAdapter<CameraFeature> = {
+export const trafficCameras: SourceAdapter<CameraFeature> = {
   slug: TRAFFIC_CAMERAS_SLUG,
   name: "Traffic and road cameras",
   kind: "cameras",
@@ -215,26 +227,25 @@ export const trafficCameras: PollAdapter<CameraFeature> = {
   responseSchema: cameraRegistrySchema,
   normalise: normaliseCameras,
 
-  fetch(_signal: AbortSignal): Promise<SourceResult<CameraFeature>> {
+  fetch(query: SourceQuery, _ctx: SourceContext): Promise<SourceResult<CameraFeature>> {
     // No network call. See the note at the top of this file — this is ADR 0015, not an
     // unfinished implementation.
-    const normalised = normaliseCameras(EMBEDDING_REGISTRIES, new Date());
-    if (!normalised.ok) {
+    const parsed = parseWith(cameraRegistrySchema, EMBEDDING_REGISTRIES);
+    if (!parsed.ok) {
       // Only reachable if the committed registry itself stops matching its schema, which is a
       // build-time mistake rather than an upstream one — but it still degrades one layer
       // instead of throwing into the worker.
-      return Promise.resolve({ ok: false, failure: normalised.failure, lastGoodAt: null });
+      return Promise.resolve({ ok: false, failure: parsed.failure, lastGoodAt: null });
     }
     return Promise.resolve({
       ok: true,
-      features: normalised.features,
-      observedAt: normalised.observedAt,
-      stale: false,
+      features: mapCameras(parsed.data, query),
+      observedAt: observedAtFrom(parsed.data, new Date()),
     });
   },
 
-  async healthcheck(signal: AbortSignal) {
-    const result = await trafficCameras.fetch(signal);
+  async healthcheck(ctx: SourceContext) {
+    const result = await trafficCameras.fetch({}, ctx);
     return result.ok
       ? { ok: true, detail: `${result.features.length} embeddable cameras in the registry` }
       : { ok: false, detail: "camera registry does not match its schema" };

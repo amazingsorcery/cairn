@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { csvToRecords, FIRMS_API_KEY_ENV_VAR, nasaFirms, normaliseFirms, parseCsv } from "./nasa-firms";
+import {
+  csvToRecords,
+  firmsResponseSchema,
+  FIRMS_API_KEY_ENV_VAR,
+  nasaFirms,
+  normaliseFirms,
+  parseCsv,
+} from "./nasa-firms";
+import { testContext } from "./__fixtures__/context";
 
 /**
  * ⚠ NO CAPTURED FIXTURE EXISTS FOR THIS SOURCE, and that is deliberate rather than lazy.
@@ -68,11 +76,7 @@ describe("firms normalise", () => {
   };
 
   it("maps a detection to a renderable feature", () => {
-    const result = normaliseFirms([row]);
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    const feature = result.features[0];
+    const feature = normaliseFirms([row], {})[0];
     expect(feature?.kind).toBe("wildfires");
     expect(feature?.latitude).toBeCloseTo(-8.31, 5);
     expect(feature?.longitude).toBeCloseTo(114.62, 5);
@@ -85,59 +89,59 @@ describe("firms normalise", () => {
   it("keeps the upstream's confidence verbatim rather than flattening two scales into one", () => {
     // VIIRS says l/n/h; MODIS says 0-100. They do not mean the same thing, and normalising
     // them to a single number would invent a precision the data does not have.
-    const viirs = normaliseFirms([{ ...row, confidence: "h" }]);
-    const modis = normaliseFirms([{ ...row, confidence: "87" }]);
-    if (!viirs.ok || !modis.ok) throw new Error("rows should parse");
-    expect(viirs.features[0]?.properties.confidence).toBe("h");
-    expect(modis.features[0]?.properties.confidence).toBe("87");
+    expect(normaliseFirms([{ ...row, confidence: "h" }], {})[0]?.properties.confidence).toBe("h");
+    expect(normaliseFirms([{ ...row, confidence: "87" }], {})[0]?.properties.confidence).toBe("87");
   });
 
   it("gives a detection an id stable across polls", () => {
-    const first = normaliseFirms([row]);
-    const second = normaliseFirms([row]);
-    if (!first.ok || !second.ok) throw new Error("rows should parse");
-    expect(first.features[0]?.id).toBe(second.features[0]?.id);
+    expect(normaliseFirms([row], {})[0]?.id).toBe(normaliseFirms([row], {})[0]?.id);
   });
 
   it("tolerates a product variant that omits optional columns", () => {
     // MODIS carries `brightness`/`bright_t31` where VIIRS carries `bright_ti4`/`bright_ti5`.
-    const result = normaliseFirms([
-      {
-        latitude: "10",
-        longitude: "20",
-        acq_date: "2026-08-30",
-        acq_time: "0512",
-        brightness: "310.2",
-      },
-    ]);
-    if (!result.ok) throw new Error("row should parse");
-    expect(result.features[0]?.properties.brightnessK).toBe(310.2);
-    expect(result.features[0]?.properties.frpMw).toBeNull();
+    const features = normaliseFirms(
+      [
+        {
+          latitude: "10",
+          longitude: "20",
+          acq_date: "2026-08-30",
+          acq_time: "0512",
+          brightness: "310.2",
+        },
+      ],
+      {},
+    );
+    expect(features[0]?.properties.brightnessK).toBe(310.2);
+    expect(features[0]?.properties.frpMw).toBeNull();
   });
 
-  it("returns schemaChanged when the required columns are missing", () => {
+  it("rejects a payload missing the required columns", () => {
     // The guard that matters: an error page or a differently-shaped CSV must disable the
-    // layer, not render "no fires anywhere on earth".
-    const result = normaliseFirms(csvToRecords("message\nInvalid MAP_KEY.\n"));
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.failure.kind).toBe("schemaChanged");
+    // layer, not render "no fires anywhere on earth". The decision is the SCHEMA's, made in
+    // `fetch` — a missing COLUMN fails, while a single bad VALUE only drops its own row.
+    const records = csvToRecords("message\nInvalid MAP_KEY.\n");
+    expect(firmsResponseSchema.safeParse(records).success).toBe(false);
   });
 
-  it("drops a row whose coordinates are unusable", () => {
-    const result = normaliseFirms([
-      { ...row, latitude: "not-a-number" },
-      { ...row, latitude: "999" },
-      row,
-    ]);
-    if (!result.ok) throw new Error("rows should parse");
-    expect(result.features).toHaveLength(1);
+  it("drops a row whose coordinates are unusable without disabling the layer", () => {
+    const features = normaliseFirms(
+      [{ ...row, latitude: "not-a-number" }, { ...row, latitude: "999" }, row],
+      {},
+    );
+    expect(features).toHaveLength(1);
   });
 
   it("returns null rather than a bogus timestamp for a malformed acquisition time", () => {
-    const result = normaliseFirms([{ ...row, acq_time: "not-a-time" }]);
-    if (!result.ok) throw new Error("row should parse");
-    expect(result.features[0]?.properties.detectedAt).toBeNull();
+    const feature = normaliseFirms([{ ...row, acq_time: "not-a-time" }], {})[0];
+    expect(feature?.properties.detectedAt).toBeNull();
+  });
+
+  it("applies a viewport, because we poll `world` once rather than per viewport", () => {
+    // A per-viewport request would multiply transactions against the 5000/10min budget.
+    const inBox = normaliseFirms([row], { bbox: { west: 114, south: -9, east: 115, north: -8 } });
+    const outOfBox = normaliseFirms([row], { bbox: { west: 0, south: 0, east: 1, north: 1 } });
+    expect(inBox).toHaveLength(1);
+    expect(outOfBox).toHaveLength(0);
   });
 });
 
@@ -145,19 +149,15 @@ describe("firms adapter contract", () => {
   it("names the env var holding its key, and fails as notConfigured without it", async () => {
     expect(nasaFirms.apiKeyEnvVar).toBe(FIRMS_API_KEY_ENV_VAR);
 
-    const previous = process.env[FIRMS_API_KEY_ENV_VAR];
-    delete process.env[FIRMS_API_KEY_ENV_VAR];
-    try {
-      const result = await nasaFirms.fetch(new AbortController().signal);
-      expect(result.ok).toBe(false);
-      if (result.ok) return;
-      expect(result.failure.kind).toBe("notConfigured");
-      if (result.failure.kind !== "notConfigured") return;
-      // The operator must be told WHICH variable is missing, or the message is useless.
-      expect(result.failure.missingEnvVar).toBe(FIRMS_API_KEY_ENV_VAR);
-    } finally {
-      if (previous !== undefined) process.env[FIRMS_API_KEY_ENV_VAR] = previous;
-    }
+    // No `process.env` mutation: the key is read through `SourceContext.env`, so this test
+    // cannot leak into another.
+    const result = await nasaFirms.fetch({}, testContext({ env: {} }));
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.failure.kind).toBe("notConfigured");
+    if (result.failure.kind !== "notConfigured") return;
+    // The operator must be told WHICH variable is missing, or the message is useless.
+    expect(result.failure.missingEnvVar).toBe(FIRMS_API_KEY_ENV_VAR);
   });
 
   it("carries NASA's requested acknowledgement", () => {
