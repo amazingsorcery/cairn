@@ -61,10 +61,10 @@ describe("ConfidenceChip", () => {
     },
   );
 
-  it("does not tell the reader the tool itself is unreliable", () => {
+  it("does not tell the reader the subject itself is unreliable", () => {
     const review = confidenceMeaning("needsReview");
     expect(review).toMatch(/our record/i);
-    expect(review).toMatch(/not a judgement about the tool/i);
+    expect(review).toMatch(/not a judgement about the entry itself/i);
   });
 
   it("uses the displayed spelling, never the stored one", () => {

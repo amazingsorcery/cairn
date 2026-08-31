@@ -29,6 +29,12 @@ import { cn } from "@/lib/utils";
  * last looked; neither is a rating of the tool. `tools.reliability` is the rating, and it is
  * a separate field. If you edit these strings, keep the grammatical subject on us.
  *
+ * The strings say "entry", not "tool", because this chip renders over playbooks as well as
+ * over catalogue entries — and on `/playbooks/[slug]` the reader is looking at a *method*.
+ * "Not a judgement about the tool" reads slightly wrong there. One canonical wording that is
+ * correct on both surfaces beats a local restatement on either, which is what Q-16 was about
+ * in the first place.
+ *
  * Specified in docs/brand/HANDOFF.md section 3 and docs/design/tokens.md section 3.
  */
 
@@ -62,7 +68,7 @@ const PRESENTATION: Record<ConfidenceLevel, ConfidencePresentation> = {
     icon: ShieldAlert,
     meaning:
       "Our record of this entry may be out of date in a detail such as pricing or " +
-      "availability. The tool itself is real.",
+      "availability. The entry itself is real.",
   },
   needsReview: {
     label: "Needs review",
@@ -70,7 +76,7 @@ const PRESENTATION: Record<ConfidenceLevel, ConfidencePresentation> = {
     icon: ShieldQuestion,
     meaning:
       "Our record of this entry is materially uncertain. Confirm the details against the " +
-      "source before relying on them. This is not a judgement about the tool.",
+      "source before relying on them. This is not a judgement about the entry itself.",
   },
 };
 
