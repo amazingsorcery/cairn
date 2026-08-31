@@ -1,0 +1,48 @@
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { FlatCompat } from "@eslint/eslintrc";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const compat = new FlatCompat({ baseDirectory: __dirname });
+
+const config = [
+  {
+    ignores: [
+      ".next/**",
+      "node_modules/**",
+      "db/migrations/**",
+      "playwright-report/**",
+      "test-results/**",
+      "next-env.d.ts",
+    ],
+  },
+  ...compat.extends("next/core-web-vitals", "next/typescript"),
+  {
+    rules: {
+      "@typescript-eslint/no-explicit-any": "error",
+      "@typescript-eslint/ban-ts-comment": "error",
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
+      ],
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: "JSXAttribute[name.name='dangerouslySetInnerHTML']",
+          message:
+            "dangerouslySetInnerHTML is banned. Render markdown through react-markdown, which escapes by default.",
+        },
+      ],
+      "no-console": ["error", { allow: ["warn", "error"] }],
+    },
+  },
+  {
+    // Scripts and tests run outside the request path; console output is the point.
+    files: ["db/**/*.ts", "tests/**/*.ts", "**/*.test.ts", "**/*.test.tsx", "scripts/**/*.ts"],
+    rules: { "no-console": "off" },
+  },
+];
+
+export default config;
