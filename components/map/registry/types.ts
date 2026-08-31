@@ -1,4 +1,5 @@
 import type {
+  PositionalPrecision,
   SourceFailure,
   SourceFeature,
   SourceKind,
@@ -177,12 +178,7 @@ export interface DetailRow<F extends SourceFeature = SourceFeature> {
  *
  * `null` means the coordinate is the thing's own reported position, which needs no caveat.
  */
-export interface FeaturePrecision {
-  /** Two or three words for a table cell. "zone centroid", "375 m pixel". */
-  readonly label: string;
-  /** One sentence for the detail panel, saying what the reader must not conclude. */
-  readonly note: string;
-}
+export type FeaturePrecision = PositionalPrecision;
 
 /** The legend entry. Shape is carried as well as colour: colour is never the only signal. */
 export interface LegendEntry {
@@ -227,9 +223,14 @@ export interface MapLayerDefinition<F extends SourceFeature = SourceFeature> {
   readonly columns: readonly TableColumn<F>[];
   readonly detail: readonly DetailRow<F>[];
   /**
-   * How well this feature's coordinates locate it, when that needs saying. Rendered beside
-   * the position in the table and in the detail panel, so the caveat travels with the number
-   * it qualifies rather than sitting in a page-level footnote nobody reads twice.
+   * How well this feature's coordinates locate it — **the fallback, not the primary source.**
+   *
+   * `PositionalPrecision` now lives on `SourceFeature` itself, which is the right home: the
+   * adapter has the upstream in front of it, and putting it there means the caveat survives
+   * into a workspace snapshot and a PDF export rather than existing only inside a map
+   * component. `featurePrecision()` prefers the feature's own value and falls back to this.
+   *
+   * Keep this only while a layer's adapter has not adopted the field; delete it once it has.
    */
   readonly precision?: (feature: F) => FeaturePrecision | null;
   /** Default table order. Must name a column in `columns`. */

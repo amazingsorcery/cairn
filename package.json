@@ -27,7 +27,9 @@
     "dev:db:counts": "tsx scripts/row-counts.ts",
     "dev:db:verify": "tsx scripts/verify-db.ts",
     "csp:generate": "tsx scripts/generate-csp.ts",
-    "csp:check": "tsx scripts/generate-csp.ts --check"
+    "csp:check": "tsx scripts/generate-csp.ts --check",
+    "maplibre:assets": "tsx scripts/copy-maplibre-assets.ts",
+    "prebuild": "tsx scripts/copy-maplibre-assets.ts"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.7.4",

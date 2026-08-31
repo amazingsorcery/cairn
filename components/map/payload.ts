@@ -38,6 +38,13 @@ const failureSchema = z.discriminatedUnion("kind", [
     message: z.string(),
   }),
   z.object({ kind: z.literal("rateLimited"), retryAfterSeconds: z.number().int().optional() }),
+  /*
+   * `resetsAt` is a `Date` on the contract and a STRING by the time it has crossed this
+   * boundary, because JSON has no date type. `z.coerce.date()` turns it back, so the client
+   * holds the type the contract promises rather than a string wearing a `Date` annotation —
+   * the exact trap `components/live/live-format.ts` documents for cached `Date` columns.
+   */
+  z.object({ kind: z.literal("quotaExhausted"), resetsAt: z.coerce.date().optional() }),
   z.object({ kind: z.literal("schemaChanged"), message: z.string() }),
   z.object({ kind: z.literal("timeout"), afterMs: z.number().int().nonnegative() }),
   z.object({ kind: z.literal("notConfigured"), missingEnvVar: z.string().min(1) }),
@@ -53,6 +60,21 @@ const failureSchema = z.discriminatedUnion("kind", [
  */
 const propertyValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
 
+/**
+ * The positional caveat, carried across the boundary.
+ *
+ * WITHOUT THIS ENTRY THE FIELD IS SILENTLY DELETED. `z.object` strips unknown keys, so a
+ * `precision` an adapter sets would survive the server render and vanish on the first client
+ * refresh — the caveat present on page load and gone thirty seconds later, with nothing in
+ * any log. On a public-safety layer that is the single worst way for this field to fail, and
+ * it is invisible unless you go looking.
+ */
+const precisionSchema = z.object({
+  label: z.string().min(1),
+  note: z.string().min(1),
+  approximateRadiusMetres: z.number().nonnegative().optional(),
+});
+
 const featureSchema = z.object({
   id: z.string().min(1),
   /* The contract's own union, imported rather than restated, so a new kind cannot
@@ -64,6 +86,7 @@ const featureSchema = z.object({
   altitude: z.number().optional(),
   label: z.string(),
   sourceUrl: z.string().url().optional(),
+  precision: precisionSchema.nullish(),
   properties: z.record(propertyValueSchema),
 });
 

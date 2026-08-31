@@ -47,3 +47,8 @@ caddy_config/
 
 # Agent scratch space. Never part of the build.
 .scratch/
+
+# Copied from node_modules by `prebuild` (scripts/copy-maplibre-assets.ts). Generated, not
+# authored — and it must be regenerated on every build so it cannot drift from the installed
+# maplibre version.
+public/maplibre/

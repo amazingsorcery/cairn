@@ -1,5 +1,6 @@
-import { findAdapter as findSourceAdapter } from "@/lib/sources";
+import { findAdapter as findSourceAdapter, pollSource } from "@/lib/sources";
 import type {
+  Attribution,
   CachedSourceResult,
   SourceAdapter,
   SourceCache,
@@ -67,6 +68,15 @@ interface CacheEntry {
   readonly features: readonly SourceFeature[];
   readonly observedAt: Date;
   readonly cachedAt: Date;
+  /**
+   * The TTL and credit the **governed poll** returned, cached with the payload.
+   *
+   * Both are the registry row's, not the adapter's constant, and both must survive a cache
+   * hit — otherwise a hit would measure freshness against a number the operator has changed,
+   * and would render a layer without the credit its licence requires.
+   */
+  readonly ttlSeconds: number;
+  readonly attribution: Attribution;
 }
 
 /**
@@ -115,20 +125,21 @@ const cache: SourceCache = {
   },
 };
 
-/**
- * How long past its TTL a payload may still be shown, marked stale, while a refresh is
- * attempted. Past `ttl + this` the layer shows nothing rather than something old
- * (ADR 0014 §3): there is a point past which "earthquakes from forty minutes ago" is not
- * degraded service but a different and misleading product.
- *
- * ADR 0014 §2 makes this a per-connector configured window and `SourceAdapter` has no field
- * for it — recorded as a proposed addition in `docs/frontend/HANDOFF-map.md` §8. A multiplier
- * is the honest placeholder: it is proportional to each source's own cadence rather than one
- * number pretending to fit a 30-second aircraft feed and a one-hour camera index.
- */
-const STALE_WHILE_REVALIDATE_MULTIPLIER = 10;
-
 const REQUEST_TIMEOUT_MS = 9000;
+
+/**
+ * What the map needs back from one governed poll.
+ *
+ * `ttlSeconds` and `attribution` are on here rather than read off the adapter because the
+ * **registry row is authoritative for both** (ADR 0024). The row's `cache_ttl_seconds` is
+ * what an operator can change under load without a deploy — the same argument that made
+ * `enabled` a column — and for adsb.lol the row says 60s where the adapter constant says 30s.
+ * Reading `adapter.ttlSeconds` here would poll twice as fast as the operator asked.
+ */
+export interface MapSourceLoad extends CachedSourceResult<SourceFeature> {
+  readonly ttlSeconds: number;
+  readonly attribution: Attribution;
+}
 
 /**
  * Fetch a source through the shared cache. Three outcomes, matching ADR 0014 §2 exactly:
@@ -138,21 +149,39 @@ const REQUEST_TIMEOUT_MS = 9000;
  *   unavailable  past the horizon, or no data was ever obtained
  *
  * `stale` is set HERE and nowhere else, because here is the only place that knows. That is
- * why `SourceResult` no longer carries the field: an adapter has just called upstream and
- * could only ever have written `false`, which is six adapters lying the same way.
+ * why `SourceResult` does not carry the field: an adapter has just called upstream and could
+ * only ever have written `false`, which is six adapters lying the same way.
+ *
+ * ## Every upstream call goes through `pollSource`, never `adapter.fetch`
+ *
+ * `pollSource` does the registry lookup, the kill-switch, the global ceiling and the audit
+ * row, in that order, and a disabled source returns its typed `disabled` failure **before any
+ * request**. Calling `adapter.fetch` here would make the map a second, ungoverned route to
+ * the same upstream — so an operator hitting the kill-switch would silence `/live/flights`
+ * while `/map` kept calling. A kill-switch that does not kill is worse than none, because the
+ * operator believes the traffic stopped and stops looking.
  */
 export async function loadSource(
   adapter: SourceAdapter<SourceFeature>,
   query: SourceQuery,
-): Promise<CachedSourceResult<SourceFeature>> {
+): Promise<MapSourceLoad> {
   const cached = payloadCache.get(adapter.slug);
   const now = Date.now();
 
-  if (cached && (now - cached.observedAt.getTime()) / 1000 < adapter.ttlSeconds) {
+  /*
+   * A cache hit makes no outbound call, so it does not need re-authorising: the kill-switch
+   * governs traffic, and there is none. The TTL it is measured against is the one the last
+   * governed poll returned — the registry row's — so an operator who lowers it shortens this
+   * window too. Worst case a switched-off source stays on screen for one TTL, and then the
+   * poll below observes the switch and the entry is purged rather than allowed to go stale.
+   */
+  if (cached && (now - cached.observedAt.getTime()) / 1000 < cached.ttlSeconds) {
     return {
       result: { ok: true, features: cached.features, observedAt: cached.observedAt },
       stale: false,
       cachedAt: cached.cachedAt,
+      ttlSeconds: cached.ttlSeconds,
+      attribution: cached.attribution,
     };
   }
 
@@ -168,38 +197,65 @@ export async function loadSource(
     env: (name: string) => process.env[name],
   };
 
-  const result = await adapter.fetch(query, ctx);
+  const { result, ttlSeconds, attribution } = await pollSource(adapter, query, ctx);
 
   if (result.ok) {
-    payloadCache.set(adapter.slug, {
+    const entry: CacheEntry = {
       features: result.features,
       observedAt: result.observedAt,
       cachedAt: new Date(),
-    });
-    return { result, stale: false, cachedAt: new Date() };
+      ttlSeconds,
+      attribution,
+    };
+    payloadCache.set(adapter.slug, entry);
+    return { result, stale: false, cachedAt: entry.cachedAt, ttlSeconds, attribution };
   }
 
-  if (cached) {
+  /*
+   * A REFUSAL IS NOT AN OUTAGE, AND STALE-WHILE-REVALIDATE MUST NOT SURVIVE ONE.
+   *
+   * `rateLimited`, `timeout` and `upstreamError` mean the upstream is having a moment, and
+   * showing the last good payload with a visible "stale" marker is the right service. A
+   * kill-switch, a missing key or a spent budget are OUR decisions, and continuing to display
+   * a source an operator has just switched off would rebuild — one layer down, in the cache —
+   * exactly the defect that made this function call `pollSource` in the first place. So the
+   * entry is dropped and the layer goes to its unavailable state immediately.
+   */
+  const isOurDecision =
+    result.failure.kind === "disabled" ||
+    result.failure.kind === "notConfigured" ||
+    result.failure.kind === "quotaExhausted";
+
+  if (cached && !isOurDecision) {
     const ageSeconds = (now - cached.observedAt.getTime()) / 1000;
-    const horizon = adapter.ttlSeconds * (1 + STALE_WHILE_REVALIDATE_MULTIPLIER);
+    /*
+     * The horizon is the adapter's own declared window, not a multiplier. Aircraft declare
+     * three minutes because a stale position is worse than none; a camera index a day. One
+     * number cannot fit both, which is why this is on the contract now (ADR 0014 §3).
+     */
+    const horizon = cached.ttlSeconds + adapter.staleWhileRevalidateSeconds;
     if (ageSeconds <= horizon) {
       return {
         result: { ok: true, features: cached.features, observedAt: cached.observedAt },
         stale: true,
         cachedAt: cached.cachedAt,
+        ttlSeconds: cached.ttlSeconds,
+        attribution: cached.attribution,
       };
     }
-    /*
-     * Past the horizon the entry is dropped rather than kept with an ever-growing age label.
-     * A cache is not a place to keep data we have decided not to show.
-     */
-    payloadCache.delete(adapter.slug);
-    return {
-      result: { ok: false, failure: result.failure, lastGoodAt: cached.observedAt },
-      stale: false,
-      cachedAt: cached.cachedAt,
-    };
   }
 
-  return { result, stale: false, cachedAt: new Date() };
+  /*
+   * Past the horizon, or refused by us, the entry is dropped rather than kept with an
+   * ever-growing age label. A cache is not a place to keep data we have decided not to show.
+   */
+  const lastGoodAt = cached?.observedAt ?? null;
+  payloadCache.delete(adapter.slug);
+  return {
+    result: { ok: false, failure: result.failure, lastGoodAt },
+    stale: false,
+    cachedAt: cached?.cachedAt ?? new Date(),
+    ttlSeconds,
+    attribution,
+  };
 }

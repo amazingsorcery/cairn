@@ -6,6 +6,7 @@ import { ExternalLink, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { formatClockUtc } from "@/components/live/live-format";
 import type { SourceFeature } from "@/lib/sources/types";
+import { featurePrecision } from "./registry";
 import type { LayerPayloadDto, MapLayerDefinition } from "./registry";
 import { SourceLine } from "./layer-status";
 
@@ -55,7 +56,7 @@ export function FeatureDetail<F extends SourceFeature>({
     headingRef.current?.focus();
   }, [feature.id]);
 
-  const precision = layer.precision?.(feature) ?? null;
+  const precision = featurePrecision(layer, feature);
 
   const rows = layer.detail
     .map((row) => ({ label: row.label, value: row.value(feature), mono: row.mono ?? false }))

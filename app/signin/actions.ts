@@ -1,6 +1,6 @@
 "use server";
 
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { AuthError } from "next-auth";
 import { z } from "zod";
@@ -8,7 +8,7 @@ import { z } from "zod";
 import { safeRedirect, signIn } from "@/lib/auth";
 import { authProviders, env } from "@/lib/env";
 import { logger, maskEmail } from "@/lib/logger";
-import { RATE_LIMIT_POLICIES, windowEnd, windowStart } from "@/lib/rate-limit";
+import { consumeSafely, RATE_LIMIT_POLICIES, windowEnd, windowStart } from "@/lib/rate-limit";
 import { SIGNIN_ADDRESS_COOKIE, type SignInFormState } from "./signin-state";
 
 /**
@@ -77,6 +77,34 @@ export async function requestMagicLink(
 
   const email = parsed.data;
   const callbackUrl = safeCallbackUrl(formData.get("callbackUrl"));
+
+  /*
+   * Two limits, and they defend different things.
+   *
+   * The per-recipient limit lives in the `signIn` callback and stops one address being
+   * mailbombed. It cannot stop the other abuse: keyed on the address, a client requesting
+   * links for a thousand different addresses gets a thousand fresh buckets and sends a
+   * thousand emails from our domain. That is the open-relay reputation risk the policy
+   * comment already named, and an end-to-end test found it by looping with a fresh address
+   * each time and watching the limiter never fire.
+   *
+   * The subject is HMAC-hashed before it becomes a key (ADR 0009), so this adds no record of
+   * who visited. `x-forwarded-for` is only trustworthy because Caddy sets it and nothing else
+   * is reachable; the first hop is the client. A missing header means a direct connection in
+   * development, where one bucket for everyone is the right answer anyway.
+   */
+  const forwarded = (await headers()).get("x-forwarded-for");
+  const client = forwarded?.split(",")[0]?.trim() ?? "unknown-client";
+  const senderDecision = await consumeSafely("signin-sender", client);
+  if (!senderDecision.ok) {
+    logger.warn(
+      { scope: "signin.magic-link", count: senderDecision.count },
+      "Magic-link request refused: per-client send limit",
+    );
+    // Same shape as the per-recipient refusal. A distinct message here would tell an
+    // enumerator which limit they hit, which tells them how to pace the next attempt.
+    return { status: "rateLimited", email, resetAt: signInWindowResetAt().toISOString() };
+  }
 
   try {
     // `redirect: false` keeps the HTTP redirect ours to make; the email is still sent, and

@@ -61,13 +61,25 @@ const DECK_KIT: DeckKit = { ScatterplotLayer, IconLayer, PathLayer };
  * The symptom is the reason this is worth a paragraph: MapLibre parses vector tiles IN the
  * worker, so with no worker it never requests a tile at all. No error on the map, no failed
  * image, no exception — a black rectangle with deck.gl's dots drawn correctly on top of it,
- * which looks like a styling mistake. `app/(public)/map/basemap-worker/serve.ts`
- * serves the two files from our own origin and this points at them.
+ * which looks like a styling mistake. `scripts/copy-maplibre-assets.ts` copies the two files
+ * into `public/maplibre/` on `prebuild`, and this points at them. Both are needed: the worker
+ * imports `./maplibre-gl-shared.mjs` relative to its own URL, so a worker served without its
+ * sibling 404s on its first statement and fails exactly as silently as the original bug.
  *
  * It must run before the first `new MapLibreMap`, so it is module scope rather than an
  * effect: MapLibre reads the value when it builds its worker pool.
  */
-const WORKER_URL = "/map/basemap-worker/maplibre-gl-worker.mjs";
+/*
+ * Served from `public/`, copied there by `scripts/copy-maplibre-assets.ts` in `prebuild`.
+ *
+ * It was previously a route handler that `readFileSync`d out of `node_modules`. That worked
+ * in development and would have 404'd in the container: Next's output tracer cannot see a
+ * computed path, and maplibre is imported only from `"use client"` modules, so nothing pulls
+ * it into the standalone bundle. Same shape as the pdfkit AFM problem — a green build and a
+ * broken deploy, found by the devops engineer reading the trace rather than by anything
+ * failing.
+ */
+const WORKER_URL = "/maplibre/maplibre-gl-worker.mjs";
 setWorkerUrl(WORKER_URL);
 
 export interface DeckMapLayerInput {

@@ -6,6 +6,7 @@ import { ArrowDown, ArrowUp, ChevronsUpDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { SourceFeature } from "@/lib/sources/types";
 import type { MapLayerDefinition, TableColumn, TableSort } from "./registry";
+import { featurePrecision } from "./registry";
 import { ARIA_SORT, nextSort, sortFeatures } from "./sort";
 
 /**
@@ -229,7 +230,7 @@ function Precision<F extends SourceFeature>({
   layer: MapLayerDefinition<F>;
   feature: F;
 }) {
-  const precision = layer.precision?.(feature) ?? null;
+  const precision = featurePrecision(layer, feature);
   if (!precision) return null;
   return (
     <small className="ml-1 whitespace-nowrap font-sans text-xs text-muted-foreground">

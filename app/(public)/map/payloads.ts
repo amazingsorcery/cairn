@@ -31,31 +31,35 @@ export async function buildLayerPayload(
     };
   }
 
-  const source = {
-    slug: adapter.slug,
-    name: adapter.name,
-    homepage: adapter.homepage,
-    /*
-     * ATTRIBUTION COMES FROM THE ADAPTER. It is never typed into a component and never
-     * restated here, so the UI cannot render a layer without the credit its licence
-     * requires. Several of these licences — adsb.lol's ODbL among them — make attribution a
-     * condition of use, so a missing line is a licence breach and not a polish defect.
-     */
-    attribution: {
-      text: adapter.attribution.text,
-      ...(adapter.attribution.href === undefined ? {} : { href: adapter.attribution.href }),
-      licence: adapter.attribution.licence,
-    },
-    ttlSeconds: adapter.ttlSeconds,
-  };
-
   /*
    * `loadSource` returns a typed failure rather than throwing, but an adapter is code this
    * component does not own and a bug in one must not take the page down with it. One layer,
    * one boundary.
    */
   try {
-    const { result, stale } = await loadSource(adapter, query);
+    const { result, stale, ttlSeconds, attribution } = await loadSource(adapter, query);
+
+    /*
+     * ATTRIBUTION AND TTL COME FROM THE GOVERNED POLL, not from the adapter constants.
+     *
+     * `pollSource` returns the credit precisely so a caller cannot render a layer without it,
+     * and it returns the registry row's `cache_ttl_seconds` because that is the number an
+     * operator can change under load without a deploy (ADR 0024). For adsb.lol the row says
+     * 60s where the adapter says 30s; reading the adapter here would poll twice as fast as
+     * the operator asked, which is the whole reason the row is authoritative.
+     */
+    const source = {
+      slug: adapter.slug,
+      name: adapter.name,
+      homepage: adapter.homepage,
+      attribution: {
+        text: attribution.text,
+        ...(attribution.href === undefined ? {} : { href: attribution.href }),
+        licence: attribution.licence,
+      },
+      ttlSeconds,
+    };
+
     if (result.ok) {
       return {
         layerId: layer.id,
@@ -75,9 +79,24 @@ export async function buildLayerPayload(
       lastGoodAt: result.lastGoodAt?.toISOString() ?? null,
     };
   } catch (error) {
+    /*
+     * The governed poll itself threw, so there is no authorised credit or TTL to report. The
+     * adapter's own constants are the honest fallback: they are what the source declares
+     * about itself, and the alternative is a layer with no source line at all.
+     */
     return {
       layerId: layer.id,
-      source,
+      source: {
+        slug: adapter.slug,
+        name: adapter.name,
+        homepage: adapter.homepage,
+        attribution: {
+          text: adapter.attribution.text,
+          ...(adapter.attribution.href === undefined ? {} : { href: adapter.attribution.href }),
+          licence: adapter.attribution.licence,
+        },
+        ttlSeconds: adapter.ttlSeconds,
+      },
       ok: false,
       failure: {
         kind: "upstreamError",

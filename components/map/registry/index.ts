@@ -1,4 +1,4 @@
-import type { SourceQuery } from "@/lib/sources/types";
+import type { PositionalPrecision, SourceFeature, SourceQuery } from "@/lib/sources/types";
 import type { MapLayerDefinition, MapViewport } from "./types";
 import { earthquakesLayer } from "./earthquakes";
 import { stressLayer } from "./stress";
@@ -76,4 +76,25 @@ export function defaultVisibleLayerIds(): readonly string[] {
  */
 export function layerQuery(layer: MapLayerDefinition, viewport: MapViewport): SourceQuery {
   return layer.query ? layer.query(viewport) : {};
+}
+
+/**
+ * The positional caveat for one feature: **the adapter's, if it set one; the layer's
+ * derivation otherwise.**
+ *
+ * `PositionalPrecision` is now on `SourceFeature`, which is the right home — a source knows
+ * best how well it located a thing, and putting it there means the caveat survives into a
+ * workspace snapshot and an export rather than living only in a map component. Adapters are
+ * adopting it; until one has, the layer's own `precision` derives it from the properties that
+ * source publishes (NWS's `locationBasis`, for instance).
+ *
+ * Order matters and is not arbitrary: the adapter wins, because when both exist the adapter
+ * is the one with the upstream in front of it. The layer function is a bridge, not a
+ * competitor, and it should be deleted from a layer once its adapter sets the field.
+ */
+export function featurePrecision(
+  layer: MapLayerDefinition,
+  feature: SourceFeature,
+): PositionalPrecision | null {
+  return feature.precision ?? layer.precision?.(feature) ?? null;
 }

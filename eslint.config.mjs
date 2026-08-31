@@ -23,6 +23,10 @@ const config = [
       // directives that our config does not use, so linting them fails the gate on an
       // artefact nobody wrote. Gitignored, but ESLint does not read .gitignore by default.
       "coverage/**",
+      // Vendored MapLibre worker bundles, copied from node_modules by `prebuild`. Generated,
+      // minified, and not ours to lint. ESLint does not read .gitignore, so it needs saying
+      // here as well.
+      "public/maplibre/**",
     ],
   },
   ...compat.extends("next/core-web-vitals", "next/typescript"),

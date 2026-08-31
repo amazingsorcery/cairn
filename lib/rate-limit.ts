@@ -25,6 +25,7 @@ import { env } from "./env";
 /** Every limited surface, named once. New surfaces get a member here, not a string literal. */
 export const RATE_LIMIT_ACTIONS = [
   "signin-email",
+  "signin-sender",
   "search-suggest",
   "workspace-write",
   "note-write",
@@ -51,8 +52,25 @@ export type RateLimitPolicy = {
  * exists to avoid.
  */
 export const RATE_LIMIT_POLICIES: Readonly<Record<RateLimitAction, RateLimitPolicy>> = {
-  /** Each one sends an email. An open relay burns the sending domain's reputation. */
+  /**
+   * Per RECIPIENT. Protects a person from being mailbombed with links they did not ask for.
+   */
   "signin-email": { limit: 5, windowSeconds: 900 },
+  /**
+   * Per CLIENT, and the one that actually protects the sending domain.
+   *
+   * `signin-email` alone does not: it is keyed on the address, so one client can request
+   * links for a thousand different addresses and every one gets its own fresh bucket, while
+   * every one sends mail from our domain. The policy comment above `signin-email` named that
+   * exact threat — "an open relay burns the sending domain's reputation" — and the key did
+   * not address it. Found by an end-to-end test that looped with a fresh address each time
+   * and watched the limiter never fire.
+   *
+   * Higher than the per-recipient limit because a shared NAT or an office range is one
+   * client to us and may hold many genuine people; low enough that enumerating addresses
+   * costs real time. Both must pass.
+   */
+  "signin-sender": { limit: 20, windowSeconds: 900 },
   /** One indexed query per debounced keystroke, unauthenticated. */
   "search-suggest": { limit: 60, windowSeconds: 60 },
   "workspace-write": { limit: 120, windowSeconds: 60 },
