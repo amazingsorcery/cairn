@@ -131,7 +131,13 @@ export async function expectNotFoundBody(
  * have been requested — which is what the outbound assertions need to be true *of*.
  */
 export async function settled(page: Page): Promise<void> {
-  await page.waitForLoadState("load");
+  /*
+   * `load` is a nice-to-have, not the gate. Some client-heavy routes (the toolbench tools)
+   * never fire it under `next dev` — a long-lived dev connection keeps the document
+   * "loading" indefinitely — and waiting on it turns a healthy page into a timeout. The
+   * meaningful waits are the two below: the router being up, and the main thread going idle.
+   */
+  await page.waitForLoadState("load", { timeout: 5_000 }).catch(() => {});
   await page.waitForFunction(
     () => (window as unknown as { next?: { router?: unknown } }).next?.router !== undefined,
     null,

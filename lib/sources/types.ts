@@ -49,7 +49,19 @@ export interface Attribution {
 /** Why a layer has no usable data. Every one of these renders a distinct, honest state. */
 export type SourceFailure =
   | { readonly kind: "upstreamError"; readonly status?: number; readonly message: string }
+  /** THEY refused us. Backing off is the fix; our own quota is irrelevant. */
   | { readonly kind: "rateLimited"; readonly retryAfterSeconds?: number }
+  /**
+   * WE refused ourselves — the connector's global ceiling was already spent.
+   *
+   * Distinct from `rateLimited` because the two have opposite fixes, and an operator reads
+   * this under pressure: `quotaExhausted` means raise our ceiling if the upstream allows it,
+   * `rateLimited` means lower it because the upstream does not. Collapsing them is the same
+   * conflation that made `quotaDenied` cover both outcomes on the health board until it was
+   * split, and the same one behind confidence-versus-reliability and our-record-versus-the-
+   * entry. This codebase keeps meeting it; the answer is always to keep them apart.
+   */
+  | { readonly kind: "quotaExhausted"; readonly resetsAt?: Date }
   | { readonly kind: "schemaChanged"; readonly message: string }
   | { readonly kind: "timeout"; readonly afterMs: number }
   | { readonly kind: "notConfigured"; readonly missingEnvVar: string }

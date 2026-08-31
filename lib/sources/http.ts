@@ -80,6 +80,28 @@ const globalForLastGood = globalThis as typeof globalThis & {
 const lastGood: Map<string, Date> = (globalForLastGood.__cairnSourceLastGood__ ??= new Map());
 
 /**
+ * The HTTP status of the most recent attempt for each source.
+ *
+ * Exists so the audit row in `governed.ts` can carry the real `upstream_status` rather than a
+ * guess. `SourceResult` has nowhere to put it — a status is a fact about the transport, not
+ * about the features — and inventing 200 for every success would make the one column an
+ * operator uses to tell a 429 from a 502 useless.
+ *
+ * In-process, bounded by the number of sources, and never persisted. An adapter that makes
+ * several calls in one poll (the NWS zone warm-up) leaves the LAST one here, which is the
+ * honest reading of "how did this poll end".
+ */
+const globalForStatus = globalThis as typeof globalThis & {
+  __cairnSourceStatus__?: Map<string, number>;
+};
+const lastStatus: Map<string, number> = (globalForStatus.__cairnSourceStatus__ ??= new Map());
+
+/** Status of the most recent attempt for this source, or null if none has been made. */
+export function lastUpstreamStatus(slug: string): number | null {
+  return lastStatus.get(slug) ?? null;
+}
+
+/**
  * Used when a 429 carries no `Retry-After`. Deliberately longer than any adapter's TTL: an
  * upstream that refused us needs materially longer to refill than our own poll interval, and
  * backing off for less than one interval just re-enters the burst that caused the refusal.
@@ -118,6 +140,7 @@ export function recordGood(slug: string, at: Date): void {
 export function resetSourceRuntime(): void {
   cooldownUntil.clear();
   lastGood.clear();
+  lastStatus.clear();
 }
 
 /* ------------------------------------------------------------------ *
@@ -214,6 +237,9 @@ export async function fetchUpstream(options: FetchOptions): Promise<HttpOutcome>
         ...options.headers,
       },
     });
+
+    // Recorded before any branch, so a 429 and a 502 are equally visible to the audit row.
+    lastStatus.set(slug, response.status);
 
     if (isRateLimitStatus(response.status)) {
       const retryAfter =

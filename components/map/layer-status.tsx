@@ -7,7 +7,7 @@ import type { LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { formatAge, formatClockUtc } from "@/components/live/live-format";
 import { useLiveAge } from "@/components/live/use-live-age";
-import { cn } from "@/lib/utils";
+import { cn, formatTimestamp } from "@/lib/utils";
 import type { SourceFailure } from "@/lib/sources/types";
 import type { LayerPayloadDto } from "./registry";
 
@@ -50,6 +50,7 @@ import type { LayerPayloadDto } from "./registry";
 const FAILURE_ICON: Record<SourceFailure["kind"], LucideIcon> = {
   upstreamError: CloudOff,
   rateLimited: Info,
+  quotaExhausted: Info,
   schemaChanged: FileWarning,
   timeout: TimerOff,
   notConfigured: Settings2,
@@ -71,6 +72,8 @@ const FAILURE_ICON: Record<SourceFailure["kind"], LucideIcon> = {
 const FAILURE_TONE: Record<SourceFailure["kind"], "destructive" | "warning" | "info"> = {
   upstreamError: "destructive",
   rateLimited: "info",
+  // Our own ceiling, deliberately set. Nothing is broken and nobody misbehaved.
+  quotaExhausted: "info",
   schemaChanged: "warning",
   timeout: "destructive",
   notConfigured: "info",
@@ -89,6 +92,9 @@ const FAILURE_TONE: Record<SourceFailure["kind"], "destructive" | "warning" | "i
 const FAILURE_RETRYABLE: Record<SourceFailure["kind"], boolean> = {
   upstreamError: true,
   rateLimited: false,
+  // Retrying spends a budget that is already spent. Offering it would be a lie about the
+  // reader's options — and unlike rateLimited, the fix here is ours to make, not theirs.
+  quotaExhausted: false,
   schemaChanged: false,
   timeout: true,
   notConfigured: false,
@@ -117,6 +123,12 @@ export function failureSentence(failure: SourceFailure, sourceName: string): str
       return failure.retryAfterSeconds !== undefined
         ? `${sourceName} asked us to slow down and to wait ${failure.retryAfterSeconds} seconds, so we stopped. Their limit is theirs to set. Nothing is broken at either end and this layer will not keep asking in the meantime.`
         : `${sourceName} asked us to slow down, so we stopped. Their limit is theirs to set. Nothing is broken at either end and this layer will not keep asking in the meantime.`;
+    case "quotaExhausted":
+      // Says plainly that this is OUR limit, not theirs. A reader who cannot tell the two
+      // apart will conclude the source is unreliable when we are the ones who stopped.
+      return failure.resetsAt !== undefined
+        ? `We reached the polling budget we set ourselves for ${sourceName}, so this layer paused until ${formatTimestamp(failure.resetsAt)}. The source is fine; the limit is ours.`
+        : `We reached the polling budget we set ourselves for ${sourceName}, so this layer paused. The source is fine; the limit is ours.`;
     case "schemaChanged":
       return `${sourceName} sent a response in a shape we do not recognise, so we stopped reading it rather than guess at it. This is our parser to fix, not their outage, and the fix needs a deploy.`;
     case "timeout":

@@ -14,9 +14,11 @@ import type { SourceAdapter, SourceFeature, SourceKind } from "./types";
  * the entire point of `types.ts`, and this array is where it either holds or quietly stops
  * holding, so it is worth checking against when adding the next one.
  *
- * Every adapter listed here has a terms record in `docs/sources/<slug>.md` stating its
- * licence, its attribution string, its documented rate limit, its key requirement and the
- * date the terms were read. Sources that were examined and NOT wired are recorded in
+ * Every adapter listed here has BOTH a terms record in `docs/sources/<slug>.md` — licence,
+ * attribution string, documented rate limit, key requirement, date checked — AND a row in
+ * `connectors` carrying its kill-switch, quota envelope and TTL (ADR 0024: one registry, not
+ * two). The row is what an operator can change under load; the adapter is what parses the
+ * payload. Reach both through `pollSource`, never `adapter.fetch`. Sources that were examined and NOT wired are recorded in
  * `docs/sources/HANDOFF.md` with the reason — that list is as useful as this one, because it
  * is what stops the same unverifiable source being re-proposed every quarter.
  */
@@ -56,6 +58,20 @@ export function unconfiguredAdapters(
 
 export { createMemoryCache } from "./cache";
 export { describeFailure } from "./adapter";
+
+/**
+ * **`pollSource` is the only sanctioned way to reach an upstream.**
+ *
+ * `adapter.fetch` and `adapter.healthcheck` are the raw contract and are deliberately
+ * ungoverned: they make an outbound call with no kill-switch check, no global ceiling and no
+ * audit row. Calling either directly from a route, a worker or a dashboard reopens the exact
+ * defect `governed.ts` was written to close — an operator hitting the kill-switch and the
+ * traffic continuing, with no `connector_requests` evidence that it did.
+ *
+ * If you are reaching for `adapter.fetch`, you want `pollSource(adapter, query, ctx)`.
+ */
+export { pollSource, healthcheckSource, WORKER_ACTOR_SUBJECT } from "./governed";
+export type { GovernedPoll, GovernanceDeps } from "./governed";
 export type {
   Attribution,
   CachedSourceResult,

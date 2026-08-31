@@ -38,7 +38,9 @@ test.describe("toolbench", () => {
      * to the person who just wrote the page.
      */
     test(`${route} responds and has exactly one h1`, async ({ page, request }) => {
-      const response = await page.goto(route);
+      // `domcontentloaded`, not `load`: these pages do not reliably fire `load` under the
+      // dev server, and the assertion is about what the route returns and renders.
+      const response = await page.goto(route, { waitUntil: "domcontentloaded" });
       expect(response?.status(), `${route} did not return 200`).toBe(200);
       await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
 
@@ -60,7 +62,7 @@ test.describe("toolbench", () => {
     const outbound = await watchOutbound(page, baseURL!, { block: true });
 
     for (const route of ROUTES) {
-      await page.goto(route);
+      await page.goto(route, { waitUntil: "domcontentloaded" });
       await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
       await settled(page);
       expect(outbound.urls, `${route} contacted a third party on load`).toEqual([]);

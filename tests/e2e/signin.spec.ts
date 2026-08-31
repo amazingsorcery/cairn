@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 
+import { databaseAvailable, expireVerificationToken } from "./helpers/db";
 import { clearMailbox, magicLinkFrom, mailboxAvailable, waitForMessage } from "./helpers/mail";
 
 /**
@@ -119,20 +120,28 @@ test.describe("magic-link sign-in", () => {
   });
 
   /**
-   * DEFECT THIS CATCHES: **the link outliving the lifetime the product claims for it** —
-   * asserted by the clock, which is the only way it can be asserted.
+   * DEFECT THIS CATCHES: **a magic link that outlives the lifetime the product claims for it.**
    *
-   * This is the assertion the earlier copy-reading version of this test could never make, and
-   * it is the one that matters: `lib/auth.ts` sets `maxAge: 15 * 60`, and the bug that
-   * prompted all of this was Auth.js hiding the caller's `maxAge` under `options` so the
-   * configured value was silently ignored. A test that reads the page's wording cannot tell
-   * whether the token honours it. This one advances the browser's clock past the window and
-   * redeems the link: if the credential still works, the configured lifetime is a fiction.
+   * This is the assertion the copy-reading version of this test could never make. `lib/auth.ts`
+   * sets `maxAge: 15 * 60`, and the bug that prompted all of this was Auth.js hiding the
+   * caller's `maxAge` under `options` so the configured value was silently ignored while the
+   * page cheerfully stated it. Reading the page cannot tell you whether the token honours it.
    *
-   * The clock is moved with CDP rather than by waiting: a test that genuinely slept for
-   * fifteen minutes would never be run.
+   * HOW IT IS DONE, AND WHY NOT THE OBVIOUS WAY. The first version of this test moved the
+   * *browser's* clock past the window and redeemed the link. It failed — and the test was
+   * wrong, not the product: expiry is checked on the **server**, against the server's clock
+   * and the `expires` column, so the browser's idea of the time is irrelevant. That version
+   * would have reported a false finding on a system behaving correctly, which is worse than
+   * no test.
+   *
+   * So the token is aged in the database instead. That reaches the real code path — the
+   * server comparing `expires` against `now()` — without waiting fifteen real minutes, and it
+   * fails loudly if there was no token to age rather than passing because the link happened
+   * not to work.
    */
   test("the link is dead once its configured lifetime has passed", async ({ page, context }) => {
+    test.skip(!databaseAvailable(), "DATABASE_URL is not set; the token cannot be aged");
+
     const email = address();
 
     await page.goto("/signin");
@@ -142,21 +151,22 @@ test.describe("magic-link sign-in", () => {
     const link = magicLinkFrom(await waitForMessage(email));
     const origin = new URL(page.url()).origin;
 
-    // A clean context whose clock starts sixteen minutes from now — one minute past the
-    // fifteen `lib/auth.ts` configures. The token was minted against the real clock.
-    const future = await context.browser()!.newContext({ baseURL: origin });
-    await future.clock.setFixedTime(new Date(Date.now() + 16 * 60 * 1000));
-    const futurePage = await future.newPage();
+    const aged = await expireVerificationToken(email);
+    expect(aged, "no verification token was found to age — the test proved nothing").toBe(1);
 
-    await futurePage.goto(link);
-    await futurePage.goto("/workspaces");
+    // A clean browser, i.e. somebody opening the link for the first time, too late.
+    const late = await context.browser()!.newContext({ baseURL: origin });
+    const latePage = await late.newPage();
+
+    await latePage.goto(link);
+    await latePage.goto("/workspaces");
 
     await expect(
-      futurePage,
-      "the link still worked after its 15-minute lifetime had passed",
-    ).toHaveURL(/\/signin\?callbackUrl=/);
+      latePage,
+      "the link still worked after its lifetime had passed",
+    ).toHaveURL(/[/]signin[?]callbackUrl=/);
 
-    await future.close();
+    await late.close();
   });
 });
 
@@ -222,12 +232,20 @@ test.describe("magic-link sign-in — the surrounding surface", () => {
   test("sending is rate limited, and the refusal enumerates nothing", async ({ page }) => {
     const limited = page.getByText("Too many sign-in links requested");
 
-    // Bounded: the policy is 5 per window, and earlier tests in this file have already spent
-    // some of it. Eight attempts reaches the limit from any starting point within the window.
+    /*
+     * THE SAME ADDRESS EVERY TIME. `consumeSafely("signin-email", address)` in `lib/auth.ts`
+     * keys the limiter on the **recipient**, not on the client — so a loop using a fresh
+     * address each time never accumulates and the limiter never fires. Writing it the other
+     * way first is how that was established, and it is worth knowing before changing this.
+     */
+    const target = address();
+
+    // Bounded: the policy is 5 per 15 minutes, so eight attempts reaches it from any starting
+    // point inside the window.
     for (let attempt = 0; attempt < 8; attempt += 1) {
       if (await limited.isVisible().catch(() => false)) break;
       await page.goto("/signin");
-      await page.getByLabel("email", { exact: true }).fill(address());
+      await page.getByLabel("email", { exact: true }).fill(target);
       await page.getByRole("button", { name: /email a sign-in link/i }).click();
       await page.waitForLoadState("load");
     }

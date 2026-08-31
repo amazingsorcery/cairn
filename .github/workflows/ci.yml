@@ -51,6 +51,13 @@ jobs:
       postgres:
         # The same major version as production. Testing against a different major is how
         # you find out about a syntax or planner difference in production instead of here.
+        #
+        # NOT `postgis/postgis`. ADR 0022 refuses PostGIS: there is no spatial predicate in
+        # this product, no `cached_features` table, and the live positions live in Redis and
+        # expire. `postgres:16` IS the real thing here, and matching production is the whole
+        # reason this service container exists. If ADR 0022 is ever reversed, this image and
+        # docker-compose.prod.yml's must change in the same commit — a CI that runs against
+        # an extension production does not have tests a database nobody deploys.
         image: postgres:16
         env:
           POSTGRES_USER: postgres
@@ -67,6 +74,26 @@ jobs:
           --health-retries 10
           --health-start-period 20s
 
+      redis:
+        # v2 (ADR 0019). e2e now exercises the source cache, the rate limiter and the SSE
+        # pub/sub path, and all three are silent when Redis is absent: lib/sources/cache.ts
+        # treats an unreachable cache as a cache miss, by design. Without this container a
+        # cache bug — a wrong key, a missing TTL, a payload that does not round-trip —
+        # passes CI green and is found in production. That is the specific failure this
+        # service exists to prevent, not general realism.
+        #
+        # Configured like production and like docker-compose.yml: no persistence, a small
+        # ceiling, allkeys-lru. A CI Redis that never evicts cannot fail the way the real one
+        # does.
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+        ports:
+          - 6379:6379
+
     env:
       # The database the app, the migrations and Playwright all talk to. `localhost`
       # because the service container's port is published onto the runner.
@@ -74,6 +101,13 @@ jobs:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: app_test
+
+      # `localhost` for the same reason as DATABASE_URL: the service container's port is
+      # published onto the runner, and the app under test runs on the runner, not in a
+      # container. In docker-compose.prod.yml the correct value is `redis://redis:6379`;
+      # getting those two the wrong way round is the single most common Redis
+      # misconfiguration in this stack, and it fails silently. See .env.example.
+      REDIS_URL: redis://localhost:6379
 
       APP_URL: http://localhost:3000
       AUTH_URL: http://localhost:3000
@@ -248,6 +282,22 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Build the worker image
+        # `FROM migrator`, so this is nearly free after the step above — but it is not free
+        # of failure modes. It asserts that the target exists and that its metadata (ENV,
+        # EXPOSE, HEALTHCHECK, CMD) is well-formed. Without it, a typo in the worker stage
+        # is discovered by deploy.sh on the server, after the backup and after two other
+        # images have already built.
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: worker
+          push: false
+          load: false
+          tags: app-worker:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   # =====================================================================================
   # Static validation of the infrastructure files themselves.
   # Cheap (well under a minute) and catches the class of error that is otherwise only
@@ -277,6 +327,51 @@ jobs:
           docker compose -f docker-compose.yml config --quiet
           rm -f .env
 
+      - name: Assert the production topology
+        # `compose config` proves the file PARSES. These three assertions prove it says what
+        # it is meant to say, which is a different question and the one that matters. Each
+        # corresponds to a failure that stays invisible until it is exploited or until the
+        # site is already down:
+        #
+        #   1. Five services. A service silently dropped by a bad merge is a poller that
+        #      stops existing, and nothing else in this pipeline would notice.
+        #   2. ONLY caddy publishes ports. A stray `ports:` on web, worker, db or redis puts
+        #      that service on the VPS's public IP — and UFW does not save you, because
+        #      Docker writes its own iptables rules ahead of UFW's chain. An unauthenticated
+        #      Redis on a public port is remote code execution via `CONFIG SET dir`, not
+        #      merely an information leak.
+        #   3. db, redis and worker are NOT on `edge`. `edge` is the network the internet
+        #      reaches. Keeping them off it is what makes "unreachable from outside" a
+        #      property of the topology rather than a promise about the Caddyfile.
+        #
+        # jq is preinstalled on ubuntu-latest. `config --format json` needs Compose v2.20+,
+        # which the runner image has.
+        run: |
+          cp .env.example .env
+          docker compose -f docker-compose.prod.yml config --format json > /tmp/compose.json
+          rm -f .env
+
+          echo "Services:"; jq -r '.services | keys | .[]' /tmp/compose.json
+
+          jq -e '(.services | keys | sort) == ["caddy","db","redis","web","worker"]' \
+            /tmp/compose.json > /dev/null \
+            || { echo "FAIL: expected exactly caddy, db, redis, web, worker"; exit 1; }
+          echo "OK: five services, exactly as expected"
+
+          published=$(jq -r '[.services | to_entries[] | select((.value.ports // []) | length > 0) | .key] | sort | join(",")' /tmp/compose.json)
+          if [ "$published" != "caddy" ]; then
+            echo "FAIL: only caddy may publish ports; these do: $published"
+            exit 1
+          fi
+          echo "OK: caddy is the only service publishing ports"
+
+          on_edge=$(jq -r '[.services | to_entries[] | select(.value.networks | has("edge")) | .key] | sort | join(",")' /tmp/compose.json)
+          if [ "$on_edge" != "caddy,web" ]; then
+            echo "FAIL: edge must contain exactly caddy and web; it contains: $on_edge"
+            exit 1
+          fi
+          echo "OK: db, redis and worker are off the edge network"
+
       - name: Validate the Caddyfile
         # `caddy validate` parses the config and builds the full provisioning graph, so it
         # catches a misspelled directive, a bad matcher, and an unbalanced brace. DOMAIN
@@ -288,4 +383,5 @@ jobs:
             -e ACME_EMAIL=ci@example.invalid \
             -e ACME_CA=https://acme-staging-v02.api.letsencrypt.org/directory \
             -v "${{ github.workspace }}/infra/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            -v "${{ github.workspace }}/infra/csp.caddy:/etc/caddy/csp.caddy:ro" \
             caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile

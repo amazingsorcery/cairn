@@ -146,6 +146,12 @@ export function describeFailure(failure: SourceFailure): string {
       return failure.status
         ? `upstream error (HTTP ${failure.status})`
         : `upstream error: ${failure.message}`;
+    case "quotaExhausted":
+      // Our ceiling, not theirs. An operator reading this must not go looking for a fault
+      // at the upstream when the limit is one we set.
+      return failure.resetsAt
+        ? `our polling budget is spent until ${failure.resetsAt.toISOString()}`
+        : "our polling budget for this source is spent";
     case "rateLimited":
       return failure.retryAfterSeconds
         ? `rate limited by the upstream; retrying in ${failure.retryAfterSeconds}s`

@@ -111,14 +111,10 @@ else
 	if [ -z "${redis_info}" ]; then
 		fail "redis is running but did not answer INFO. If a password is set, REDIS_PASSWORD must be in .env for this check to work."
 	else
-		used="$(printf '%s' "${redis_info}" | awk -F: '/^used_memory:/ {gsub(/
-/,"",$2); print $2}')"
-		maxm="$(printf '%s' "${redis_info}" | awk -F: '/^maxmemory:/ {gsub(/
-/,"",$2); print $2}')"
-		used_h="$(printf '%s' "${redis_info}" | awk -F: '/^used_memory_human:/ {gsub(/
-/,"",$2); print $2}')"
-		evicted="$(printf '%s' "${redis_stats}" | awk -F: '/^evicted_keys:/ {gsub(/
-/,"",$2); print $2}')"
+		used="$(printf '%s' "${redis_info}" | tr -d '\015' | awk -F: '/^used_memory:/ {print $2}')"
+		maxm="$(printf '%s' "${redis_info}" | tr -d '\015' | awk -F: '/^maxmemory:/ {print $2}')"
+		used_h="$(printf '%s' "${redis_info}" | tr -d '\015' | awk -F: '/^used_memory_human:/ {print $2}')"
+		evicted="$(printf '%s' "${redis_stats}" | tr -d '\015' | awk -F: '/^evicted_keys:/ {print $2}')"
 
 		if [ -n "${maxm}" ] && [ "${maxm:-0}" -gt 0 ] 2>/dev/null; then
 			pct=$((used * 100 / maxm))
