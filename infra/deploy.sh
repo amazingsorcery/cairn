@@ -448,7 +448,7 @@ step "Verifying the worker"
 WORKER_DEADLINE=$(($(date +%s) + 150))
 WORKER_OK=0
 while [ "$(date +%s)" -lt "${WORKER_DEADLINE}" ]; do
-	if "${COMPOSE[@]}" exec -T worker node -e 		"fetch('http://127.0.0.1:'+(process.env.WORKER_HEALTH_PORT||9091)+'/healthz').then(async r=>{const b=await r.text();if(!r.ok){console.error(r.status,b);process.exit(1)}console.log(b);process.exit(0)}).catch(e=>{console.error(String(e));process.exit(1)})" 2>/dev/null; then
+	if "${COMPOSE[@]}" exec -T worker node -e \n		"fetch('http://127.0.0.1:'+(process.env.WORKER_HEALTH_PORT||9091)+'/healthz').then(async r=>{const b=await r.text();if(!r.ok){console.error(r.status,b);process.exit(1)}console.log(b);process.exit(0)}).catch(e=>{console.error(String(e));process.exit(1)})" 2>/dev/null; then
 		WORKER_OK=1
 		break
 	fi
@@ -462,7 +462,7 @@ if [ "${WORKER_OK}" -eq 1 ]; then
 	# moment someone is definitely watching, and "NASA FIRMS has been notConfigured since
 	# August" is a thing to notice now rather than to discover during an incident.
 	log "Connector board:"
-	"${COMPOSE[@]}" exec -T worker node -e 		"fetch('http://127.0.0.1:'+(process.env.WORKER_HEALTH_PORT||9091)+'/status').then(r=>r.text()).then(t=>{console.log(t);process.exit(0)}).catch(()=>process.exit(0))" 2>/dev/null || true
+	"${COMPOSE[@]}" exec -T worker node -e \n		"fetch('http://127.0.0.1:'+(process.env.WORKER_HEALTH_PORT||9091)+'/status').then(r=>r.text()).then(t=>{console.log(t);process.exit(0)}).catch(()=>process.exit(0))" 2>/dev/null || true
 elif [ "${ALLOW_DEGRADED_WORKER}" -eq 1 ]; then
 	warn "The worker is NOT healthy, and --allow-degraded-worker was given, so the deploy continues."
 	warn "The map will go stale as each layer passes its TTL. Fix it:"
