@@ -205,6 +205,26 @@ else
 	log "No previously running image. This looks like a first deploy — rollback will not be available."
 fi
 
+# The worker runs a DIFFERENT image from web (Dockerfile target `worker`, which is the
+# migrator's filesystem with another CMD — see the comment on that stage for why it cannot
+# be the runner image). So it needs its own rollback tag: retagging only ${IMAGE_NAME}
+# would roll web back to the old code while leaving the worker on the new, broken one, which
+# is a state nobody would think to look for.
+WORKER_IMAGE="${IMAGE_NAME}-worker"
+WORKER_ROLLBACK_AVAILABLE=0
+WORKER_CID="$("${COMPOSE[@]}" ps -q worker 2>/dev/null || true)"
+if [ -n "${WORKER_CID}" ]; then
+	PREV_WORKER_IMAGE_ID="$(docker inspect --format '{{.Image}}' "${WORKER_CID}")"
+	docker image tag "${PREV_WORKER_IMAGE_ID}" "${WORKER_IMAGE}:previous"
+	WORKER_ROLLBACK_AVAILABLE=1
+	log "Running worker image ${PREV_WORKER_IMAGE_ID} tagged as ${WORKER_IMAGE}:previous"
+elif docker image inspect "${WORKER_IMAGE}:previous" >/dev/null 2>&1; then
+	WORKER_ROLLBACK_AVAILABLE=1
+	log "worker is not running; keeping the existing ${WORKER_IMAGE}:previous as its rollback point."
+else
+	log "No previously running worker image. First deploy of the worker container."
+fi
+
 GIT_BEFORE="$(git -C "${REPO_DIR}" rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
 log "Current commit: ${GIT_BEFORE}"
 
@@ -257,11 +277,16 @@ fi
 # 5. Build
 # =======================================================================================
 step "Building images"
-# Both targets. `migrate` is behind the `tools` profile, so it must be named explicitly or
+# Three targets. `migrate` is behind the `tools` profile, so it must be named explicitly or
 # compose will not build it, and the migration step below would then use a stale image.
+#
+# `worker` is cheap despite being a third image: its Dockerfile stage is `FROM migrator`, so
+# every layer it needs was already built by the line above it and this is a metadata write,
+# not a rebuild.
 "${COMPOSE[@]}" build web
 "${COMPOSE[@]}" --profile tools build migrate
-log "Build complete: ${IMAGE_NAME}:${IMAGE_TAG}"
+"${COMPOSE[@]}" build worker
+log "Build complete: ${IMAGE_NAME}:${IMAGE_TAG} and ${WORKER_IMAGE}:${IMAGE_TAG}"
 
 # From here on, a failure should put the previous image back.
 rollback() {
@@ -273,9 +298,23 @@ rollback() {
 	if [ "${ROLLBACK_AVAILABLE}" -eq 1 ]; then
 		warn "Rolling back to ${IMAGE_NAME}:previous"
 		docker image tag "${IMAGE_NAME}:previous" "${IMAGE_NAME}:${IMAGE_TAG}"
+		# The worker rides along. web and worker are built from the same commit and talk to
+		# each other through Redis keys whose shape that commit defines, so restoring one
+		# and not the other leaves two halves of different releases sharing a cache — a
+		# state with no error message and no obvious symptom beyond wrong data on the map.
+		if [ "${WORKER_ROLLBACK_AVAILABLE}" -eq 1 ]; then
+			warn "Rolling the worker back to ${WORKER_IMAGE}:previous"
+			docker image tag "${WORKER_IMAGE}:previous" "${WORKER_IMAGE}:${IMAGE_TAG}"
+			ROLLBACK_SERVICES="web worker caddy"
+		else
+			warn "No previous worker image; the worker will stay on the new build."
+			ROLLBACK_SERVICES="web caddy"
+		fi
 		# --no-build so compose uses the retagged image instead of rebuilding the broken
 		# source. --force-recreate so it does not decide the container is already correct.
-		if "${COMPOSE[@]}" up -d --no-build --force-recreate web caddy; then
+		# Unquoted on purpose: this is a word list, not one argument.
+		# shellcheck disable=SC2086
+		if "${COMPOSE[@]}" up -d --no-build --force-recreate ${ROLLBACK_SERVICES}; then
 			warn "Previous image restarted. Verify manually:"
 			warn "  docker compose -f ${COMPOSE_FILE} ps"
 			warn "  curl -fsS https://${DOMAIN}/api/health"
@@ -303,8 +342,12 @@ rollback() {
 # =======================================================================================
 # 6. Start the database and wait for it to be genuinely ready
 # =======================================================================================
-step "Starting database"
-"${COMPOSE[@]}" up -d db || rollback "starting db"
+step "Starting database and cache"
+# Both, together, before anything that depends on them. `worker` and `web` both declare
+# `condition: service_healthy` on both, so compose would do this anyway — doing it
+# explicitly means a failure here is reported as "the database would not start" rather than
+# as "the stack would not start", which are different problems with different fixes.
+"${COMPOSE[@]}" up -d db redis || rollback "starting db and redis"
 
 log "Waiting for Postgres to report healthy (pg_isready)..."
 DB_CID="$("${COMPOSE[@]}" ps -q db)"
@@ -322,6 +365,21 @@ until [ "$(docker inspect -f '{{.State.Health.Status}}' "${DB_CID}" 2>/dev/null 
 done
 log "Postgres is healthy."
 
+REDIS_CID="$("${COMPOSE[@]}" ps -q redis)"
+[ -n "${REDIS_CID}" ] || rollback "starting redis (no container id)"
+REDIS_DEADLINE=$(($(date +%s) + 60))
+until [ "$(docker inspect -f '{{.State.Health.Status}}' "${REDIS_CID}" 2>/dev/null || echo unknown)" = "healthy" ]; do
+	if [ "$(date +%s)" -ge "${REDIS_DEADLINE}" ]; then
+		"${COMPOSE[@]}" logs --tail=40 redis >&2 || true
+		# The most likely cause by far, so name it rather than making someone find it:
+		# adding --requirepass without also updating the healthcheck's redis-cli invocation
+		# leaves the probe answering NOAUTH forever. See .env.example, REDIS_PASSWORD.
+		rollback "waiting for redis to become healthy (60s timeout). If you have set a Redis password, check that the healthcheck in docker-compose.prod.yml passes it too."
+	fi
+	sleep 2
+done
+log "Redis is healthy."
+
 # =======================================================================================
 # 7. Migrate
 # =======================================================================================
@@ -337,7 +395,7 @@ log "Migrations applied."
 # =======================================================================================
 # 8. Start everything
 # =======================================================================================
-step "Starting web and caddy"
+step "Starting web, worker and caddy"
 "${COMPOSE[@]}" up -d --no-build --remove-orphans || rollback "starting the stack"
 
 # =======================================================================================
@@ -369,6 +427,56 @@ if [ "${HEALTH_OK}" -ne 1 ]; then
 fi
 log "Internal health check passed."
 
+# =======================================================================================
+# 9b. Verify the worker
+# =======================================================================================
+# A poller that dies silently is worse than one that crashes loudly. The whole point of the
+# worker's /healthz contract (HANDOFF section 14) is that this question has an answer:
+#
+#   200 -> every enabled source has ATTEMPTED a poll inside its deadline. Some attempts may
+#          have failed; a dead upstream is not a dead worker and must not be treated as one.
+#   503 -> at least one source's loop has stopped attempting. That is our bug.
+#
+# A 503 here FAILS THE DEPLOY and rolls back, and that is a deliberate choice against the
+# obvious alternative of warning and carrying on. The reasoning: a live site whose map has
+# silently stopped updating looks completely normal to everyone except a reader checking a
+# timestamp, so nobody finds it for days — which is precisely the failure product-brief
+# section 2b calls out. Losing one deploy is the cheaper mistake. `--allow-degraded-worker`
+# exists for the case where you already know and are shipping a web-only fix anyway.
+step "Verifying the worker"
+
+WORKER_DEADLINE=$(($(date +%s) + 150))
+WORKER_OK=0
+while [ "$(date +%s)" -lt "${WORKER_DEADLINE}" ]; do
+	if "${COMPOSE[@]}" exec -T worker node -e 		"fetch('http://127.0.0.1:'+(process.env.WORKER_HEALTH_PORT||9091)+'/healthz').then(async r=>{const b=await r.text();if(!r.ok){console.error(r.status,b);process.exit(1)}console.log(b);process.exit(0)}).catch(e=>{console.error(String(e));process.exit(1)})" 2>/dev/null; then
+		WORKER_OK=1
+		break
+	fi
+	log "  worker not ready yet; retrying in 5s"
+	sleep 5
+done
+
+if [ "${WORKER_OK}" -eq 1 ]; then
+	log "Worker health check passed."
+	# The board is printed on every successful deploy, not only on failure. It is the one
+	# moment someone is definitely watching, and "NASA FIRMS has been notConfigured since
+	# August" is a thing to notice now rather than to discover during an incident.
+	log "Connector board:"
+	"${COMPOSE[@]}" exec -T worker node -e 		"fetch('http://127.0.0.1:'+(process.env.WORKER_HEALTH_PORT||9091)+'/status').then(r=>r.text()).then(t=>{console.log(t);process.exit(0)}).catch(()=>process.exit(0))" 2>/dev/null || true
+elif [ "${ALLOW_DEGRADED_WORKER}" -eq 1 ]; then
+	warn "The worker is NOT healthy, and --allow-degraded-worker was given, so the deploy continues."
+	warn "The map will go stale as each layer passes its TTL. Fix it:"
+	warn "  docker compose -f ${COMPOSE_FILE} logs --tail=100 worker"
+	warn "  See RUNBOOK -> 'A source has gone dark'."
+else
+	warn "Last 80 lines of the worker container log:"
+	"${COMPOSE[@]}" logs --tail=80 worker >&2 || true
+	warn ""
+	warn "If \`pnpm worker\` does not exist yet, this is expected — see docs/deploy/HANDOFF.md"
+	warn "section 14. To ship a web-only change before it does: ./infra/deploy.sh --allow-degraded-worker"
+	rollback "worker health check (no 200 from /healthz within 150s)"
+fi
+
 # Public path: through Caddy, over TLS, from the outside. A failure here is NOT a reason
 # to roll back — the application is provably healthy, so the problem is DNS, the firewall,
 # or certificate issuance, and rolling the image back would fix none of them and would
@@ -389,9 +497,7 @@ else
 fi
 
 # =======================================================================================
-# 10. Tidy up
-# =======================================================================================
-# 9. Warm the ISR cache
+# 10. Warm the ISR cache
 # =======================================================================================
 # The image is built with NO database, by design (ADR 0018) — a build that needs a live
 # production database is not reproducible and cannot run on a clean CI runner. The
@@ -422,17 +528,21 @@ for path in ${WARM_PATHS}; do
 done
 
 # =======================================================================================
+# =======================================================================================
+# 11. Tidy up
+# =======================================================================================
 step "Cleaning up"
 # Only dangling (untagged, unreferenced) layers from this build. NOT `prune -a`, which
 # would delete ${IMAGE_NAME}:previous and destroy the rollback path.
 docker image prune -f >/dev/null
-log "Dangling build layers removed. ${IMAGE_NAME}:previous is preserved."
+log "Dangling build layers removed. ${IMAGE_NAME}:previous and ${WORKER_IMAGE}:previous are preserved."
 
 "${COMPOSE[@]}" ps
 
 step "Deploy complete"
 log "Commit:  $(git -C "${REPO_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 log "Image:   ${IMAGE_NAME}:${IMAGE_TAG}"
+log "Worker:  ${WORKER_IMAGE}:${IMAGE_TAG}"
 if [ "${ROLLBACK_AVAILABLE}" -eq 1 ]; then
 	log "Rollback available: yes  ->  ./infra/deploy.sh is not the way back; see RUNBOOK 'Rolling back'"
 else
