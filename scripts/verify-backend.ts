@@ -791,13 +791,40 @@ async function phaseB(): Promise<void> {
       Number(basis.rows[0]?.n ?? -1) === 0,
     );
 
-    const disabled = await db.execute<{ n: string }>(sql`
-      select count(*) as n from connectors where enabled
+    /**
+     * NOT "every connector is disabled". `enabled` is an OPERATOR'S decision (ADR 0012 §1),
+     * and the seed deliberately never resets it — so on any database where someone has
+     * turned a connector on, that assertion would fail on correct behaviour. That the SEED
+     * writes `enabled = false` is asserted where it belongs, as a unit test against
+     * `FLIGHTS_CONNECTOR_SEED` in `lib/connectors/connectors.test.ts`.
+     *
+     * What must hold of ANY database, at any time, is this: nothing can be live without a
+     * recorded legal basis. ADR 0011 rule 1 — "a connector with no recorded basis does not
+     * ship" — and `getLiveConnector` enforces the same predicate at request time.
+     */
+    const liveWithoutBasis = await db.execute<{ n: string }>(sql`
+      select count(*) as n from connectors
+      where enabled
+        and (terms_url is null or legal_basis is null or last_checked_at is null)
     `);
     check(
-      "every seeded connector is enabled = false (fail closed, ADR 0012 §1)",
-      Number(disabled.rows[0]?.n ?? -1) === 0,
+      "no ENABLED connector is missing its legal basis, terms URL or check date (ADR 0011 rule 1)",
+      Number(liveWithoutBasis.rows[0]?.n ?? -1) === 0,
     );
+
+    const enabled = await db.execute<{ slug: string }>(sql`
+      select slug from connectors where enabled order by slug
+    `);
+    if (enabled.rows.length > 0) {
+      advisory(
+        "connectors are enabled in this database",
+        `${enabled.rows.map((r) => r.slug).join(", ")} — an operator turned these on. The ` +
+          "seed writes enabled = false and never resets the flag, so this is the kill-switch " +
+          "working, not drift.",
+      );
+    } else {
+      pass("no connector is enabled (the seeded fail-closed state)");
+    }
   });
 }
 
