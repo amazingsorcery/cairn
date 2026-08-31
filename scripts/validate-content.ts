@@ -7,9 +7,12 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import {
+  cameraProviderFileSchema,
   categoryFileSchema,
+  checkCameraIntegrity,
   checkCatalogueIntegrity,
   playbookFrontMatterSchema,
+  type CameraProviderFile,
   type CategoryFile,
   type PlaybookFrontMatter,
 } from "../lib/content/schema";
@@ -19,6 +22,7 @@ const FRONT_MATTER = /^---\r?\n([\s\S]*?)\r?\n---/;
 let failures = 0;
 const categories: CategoryFile[] = [];
 const playbooks: PlaybookFrontMatter[] = [];
+const cameraFiles: CameraProviderFile[] = [];
 
 const toolsDir = join(process.cwd(), "content", "tools");
 for (const file of readdirSync(toolsDir).filter((f) => f.endsWith(".json"))) {
@@ -89,7 +93,27 @@ if (existsSync(playbookDir)) {
   }
 }
 
-const problems = checkCatalogueIntegrity(categories, playbooks);
+const camerasDir = join(process.cwd(), "content", "cameras");
+if (existsSync(camerasDir)) {
+  for (const file of readdirSync(camerasDir).filter((f) => f.endsWith(".json"))) {
+    const raw: unknown = JSON.parse(readFileSync(join(camerasDir, file), "utf8"));
+    const result = cameraProviderFileSchema.safeParse(raw);
+    if (!result.success) {
+      failures += 1;
+      console.error(`FAIL content/cameras/${file}`);
+      for (const issue of result.error.issues) {
+        console.error(`   ${issue.path.join(".")}: ${issue.message}`);
+      }
+    } else {
+      cameraFiles.push(result.data);
+    }
+  }
+}
+
+const problems = [
+  ...checkCatalogueIntegrity(categories, playbooks),
+  ...checkCameraIntegrity(cameraFiles),
+];
 const toolCount = categories.reduce((n, c) => n + c.tools.length, 0);
 const stepCount = playbooks.reduce((n, p) => n + p.steps.length, 0);
 const toolLinks = playbooks.reduce(
@@ -108,6 +132,13 @@ console.log(`tools           : ${toolCount}`);
 console.log(`playbooks       : ${playbooks.length}`);
 console.log(`playbook steps  : ${stepCount}`);
 console.log(`step tool links : ${toolLinks} (every one resolved against the catalogue)`);
+const cameraCount = cameraFiles.reduce((n, f) => n + f.cameras.length, 0);
+const embeddable = cameraFiles.reduce(
+  (n, f) => n + f.cameras.filter((c) => c.embedPermitted).length,
+  0,
+);
+console.log(`camera sources  : ${cameraFiles.length}`);
+console.log(`cameras         : ${cameraCount} (${embeddable} embeddable, ${cameraCount - embeddable} link-only)`);
 console.log(
   `confidence      : ${[...byConfidence.entries()].map(([k, v]) => `${k}=${v}`).join(" ")}`,
 );

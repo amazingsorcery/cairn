@@ -217,3 +217,123 @@ export function checkCatalogueIntegrity(
 
   return problems;
 }
+
+/* ------------------------------------------------------------------ *
+ * Live pillar — camera registry (ADR 0011, ADR 0015)
+ * ------------------------------------------------------------------ */
+
+/**
+ * A published camera feed.
+ *
+ * The line this schema enforces is *intentionally published* versus *merely reachable*.
+ * Everything here is a feed an operator chose to publish, normally under a named licence.
+ * Nothing Shodan-indexed, nothing on Insecam, nothing behind a default password: viewing
+ * one of those is unauthorised access under the CFAA and the Computer Misuse Act, and it
+ * is frequently a domestic interior.
+ *
+ * `embedPermitted` defaults to the safe side by construction — the refinements below make
+ * it impossible to record an embed without also recording the URL and the reason it is
+ * allowed. Link-out is always safe; a wrong embed misrepresents a third party's terms.
+ */
+export const cameraSubjects = [
+  "traffic",
+  "transport",
+  "weather",
+  "scenic",
+  "tourism",
+] as const;
+export type CameraSubject = (typeof cameraSubjects)[number];
+
+export const cameraSchema = z
+  .object({
+    slug: slugSchema,
+    name: z.string().min(1).max(160),
+    operator: z.string().min(2),
+    jurisdiction: z.string().min(2).max(40),
+    locationLabel: z.string().min(2).max(160),
+    latitude: z.number().min(-90).max(90),
+    longitude: z.number().min(-180).max(180),
+    sourceUrl: z.string().url(),
+    embedUrl: z.string().url().nullable(),
+    embedPermitted: z.boolean(),
+    embedNotes: z.string().min(10),
+    attributionRequired: z.boolean(),
+    attribution: z.string().min(2).nullable(),
+    licence: z.string().min(2),
+    subject: z.enum(cameraSubjects),
+    confidence: z.enum(confidenceLevels),
+    confidenceNotes: z.string().optional(),
+    lastVerifiedAt: isoDateSchema,
+  })
+  .superRefine((camera, ctx) => {
+    if (camera.embedPermitted && !camera.embedUrl) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["embedUrl"],
+        message: `"${camera.slug}" claims embedding is permitted but records no embed URL.`,
+      });
+    }
+    if (!camera.embedPermitted && camera.embedUrl) {
+      // Storing a URL we are not permitted to load is how it eventually gets loaded.
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["embedUrl"],
+        message: `"${camera.slug}" records an embed URL but embedding is not permitted. Remove the URL.`,
+      });
+    }
+    if (camera.attributionRequired && !camera.attribution?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["attribution"],
+        message: `"${camera.slug}" requires attribution but records no attribution string to render.`,
+      });
+    }
+    if (
+      (camera.confidence === "medium" || camera.confidence === "needsReview") &&
+      !camera.confidenceNotes?.trim()
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["confidenceNotes"],
+        message: `"${camera.slug}" is ${camera.confidence} confidence but does not say what is uncertain.`,
+      });
+    }
+  });
+
+export const cameraProviderFileSchema = z.object({
+  provider: z.object({
+    slug: slugSchema,
+    name: z.string().min(2).max(120),
+    description: z.string().min(20).max(600),
+  }),
+  cameras: z.array(cameraSchema).min(1),
+});
+
+export type CameraRecord = z.infer<typeof cameraSchema>;
+export type CameraProviderFile = z.infer<typeof cameraProviderFileSchema>;
+
+/** Duplicate slugs across provider files would collide on `/live/cameras/[slug]`. */
+export function checkCameraIntegrity(files: readonly CameraProviderFile[]): string[] {
+  const problems: string[] = [];
+  const seenCameras = new Map<string, string>();
+  const seenProviders = new Set<string>();
+
+  for (const file of files) {
+    if (seenProviders.has(file.provider.slug)) {
+      problems.push(`Duplicate camera provider slug: ${file.provider.slug}`);
+    }
+    seenProviders.add(file.provider.slug);
+
+    for (const camera of file.cameras) {
+      const previous = seenCameras.get(camera.slug);
+      if (previous) {
+        problems.push(
+          `Duplicate camera slug "${camera.slug}" in providers "${previous}" and "${file.provider.slug}"`,
+        );
+      }
+      seenCameras.set(camera.slug, file.provider.slug);
+    }
+  }
+
+  return problems;
+}
