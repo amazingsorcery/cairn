@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 
+import { createCase, deleteCase } from "./helpers/cases";
 import { signIn } from "./helpers/session";
 
 /**
@@ -79,34 +80,35 @@ test.describe("the vertical slice", () => {
     const page = await context.newPage();
 
     // A case to save into.
-    await page.goto("/workspaces/new");
     const caseTitle = `Vertical slice ${Date.now()}`;
-    await page.getByLabel("name this case").fill(caseTitle);
-    await page.getByRole("button", { name: "start the case" }).click();
-    await page.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/);
-    const workspaceUrl = page.url();
+    const workspaceUrl = await createCase(page, caseTitle);
 
-    // SAVE IT TO A COLLECTION. Matched by role and by what the control must say, not by a
-    // test id, so any reasonable implementation satisfies it.
-    await page.goto(`/tools/${TOOL_SLUG}`);
-    const save = page.getByRole("button", { name: /save .*(case|collection)/i });
-    await expect(
-      save,
-      "no control on /tools/[slug] saves an entry into a case — the vertical slice stops here",
-    ).toBeVisible();
+    try {
+      // SAVE IT TO A COLLECTION. Matched by role and by what the control must say, not by a
+      // test id, so any reasonable implementation satisfies it.
+      await page.goto(`/tools/${TOOL_SLUG}`);
+      const save = page.getByRole("button", { name: /save .*(case|collection)/i });
+      await expect(
+        save,
+        "no control on /tools/[slug] saves an entry into a case — the vertical slice stops here",
+      ).toBeVisible();
 
-    await save.click();
-    await page.getByRole("button", { name: new RegExp(caseTitle, "i") }).click();
+      await save.click();
+      await page.getByRole("button", { name: new RegExp(caseTitle, "i") }).click();
 
-    // SEE IT IN A WORKSPACE, with the two credibility signals travelling with it: a case
-    // opened in three months has to carry them or it is a list of names (HANDOFF §9.1).
-    await page.goto(workspaceUrl);
-    const savedTools = page.getByRole("region", { name: /saved tools/i });
-    await expect(savedTools.getByRole("link", { name: TOOL_NAME })).toBeVisible();
-    await expect(savedTools.getByRole("link", { name: /Our confidence in this entry:/ })).toBeVisible();
-    await expect(savedTools.getByText(/Last verified /)).toBeVisible();
-
-    await context.close();
+      // SEE IT IN A WORKSPACE, with the two credibility signals travelling with it: a case
+      // opened in three months has to carry them or it is a list of names (HANDOFF §9.1).
+      await page.goto(workspaceUrl);
+      const savedTools = page.getByRole("region", { name: /saved tools/i });
+      await expect(savedTools.getByRole("link", { name: TOOL_NAME })).toBeVisible();
+      await expect(
+        savedTools.getByRole("link", { name: /Our confidence in this entry:/ }),
+      ).toBeVisible();
+      await expect(savedTools.getByText(/Last verified /)).toBeVisible();
+    } finally {
+      await deleteCase(page, workspaceUrl, caseTitle);
+      await context.close();
+    }
   });
 
   /**

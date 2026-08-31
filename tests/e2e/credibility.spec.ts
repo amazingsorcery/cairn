@@ -27,6 +27,9 @@ test.describe("credibility signals", () => {
     await page.goto("/directory");
 
     const cards = page.getByRole("listitem").filter({ has: page.getByRole("heading", { level: 3 }) });
+    // `count()` does not auto-wait, so the grid has to be on screen before it is counted —
+    // otherwise a slow first render reads as "the catalogue is empty".
+    await expect(cards.first()).toBeVisible();
     const cardCount = await cards.count();
     expect(cardCount, "the seeded catalogue has entries on the first page").toBeGreaterThan(0);
 

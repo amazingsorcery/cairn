@@ -148,6 +148,18 @@ jobs:
       - name: Check the generated CSP matches the content
         run: pnpm csp:check
 
+      # There was no dependency gate here, and the audit that found that also found 3
+      # critical and 7 high advisories sitting in the tree unnoticed — including one in the
+      # auth library about existence-based checks failing open, which is the mechanism every
+      # other control in this app sits behind. A gate is what stops that recurring.
+      #
+      # Fails on high and critical only. One moderate is knowingly allowed: esbuild's
+      # dev-server advisory, which requires a running `vite dev` and is not present in the
+      # production image at all. Tightening to `moderate` would gate the build on a
+      # vulnerability that cannot be reached by anything we ship.
+      - name: Audit dependencies
+        run: pnpm audit --audit-level high
+
       # Migrations before build: any page that reads the database during static generation
       # needs the schema to exist. Running them here also means the migration script itself
       # is exercised on every commit, against a real Postgres 16 — which is the only way a

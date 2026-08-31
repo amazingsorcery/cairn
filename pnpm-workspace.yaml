@@ -1,3 +1,11 @@
 allowBuilds:
   esbuild: set this to true or false
   unrs-resolver: set this to true or false
+
+# Force the patched postcss everywhere. Next vendors postcss@8.4.31 internally, which carries
+# two HIGH advisories (arbitrary file read, and path traversal via source-map auto-loading).
+# Our own direct dependency is already patched; this pulls Next's copy up too. postcss 8.x is
+# semver-compatible, so this is a patch bump rather than a behavioural change, and the full
+# production build is verified against it.
+overrides:
+  postcss: ^8.5.26
