@@ -43,12 +43,16 @@ export const outputTypes = [
 ] as const;
 
 /**
- * Mirrors `COST_MODELS` in `db/schema.ts`. `free-with-registration` is a distinct and
+ * Mirrors `COST_MODELS` in `db/schema.ts`. `freeWithRegistration` is a distinct and
  * operationally important tier: it means the operator learns who you are before you get a
  * result, which for this audience is a threat-model fact, not a pricing detail.
+ *
+ * Casing rule (ADR 0004): CHECK-constrained vocabularies that code branches on are
+ * camelCase, matching `needsReview`. Open `text[]` vocabularies that content grows —
+ * `inputTypes`, `outputTypes` — stay kebab-case. `costModel` is the former.
  */
 export const costModels = [
-  "free", "free-with-registration", "freemium", "paid", "subscription", "enterprise",
+  "free", "freeWithRegistration", "freemium", "paid", "subscription", "enterprise",
 ] as const;
 
 export const confidenceLevels = ["verified", "high", "medium", "needsReview"] as const;

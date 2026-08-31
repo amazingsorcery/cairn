@@ -1,0 +1,544 @@
+/* =============================================================================
+ * DESIGN TOKENS
+ * =============================================================================
+ *
+ * Owner: ux-designer. Imported by `app/globals.css` (which owns motion classes,
+ * base layer and the skip link — do not duplicate any of that here).
+ *
+ * Contract:  docs/design-token-contract.md   (token NAMES)
+ * Palette:   docs/brand/colour.md            (brand-strategist-owned; VALUES + ratios)
+ * Rationale: docs/design/tokens.md           (this file, explained; mapping table)
+ *
+ * STRUCTURE
+ *   1. Primitives         — raw values, no meaning, theme-invariant. Never used by a
+ *                           component; only semantic tokens below may reference them.
+ *   2. Semantic — dark    — on bare `:root`. Dark is the default theme.
+ *   3. Semantic — light   — on `[data-theme="light"]`. Same tokens, same bar.
+ *   4. Geometry / motion  — theme-invariant. Defined once; inherited by both themes.
+ *   5. @theme blocks      — expose the above to Tailwind v4 utilities.
+ *
+ * RULES
+ *   - Every palette token is defined in BOTH themes. A token in only one is a bug.
+ *   - No component may hardcode a colour. If a colour is missing, it is added here
+ *     (and to the contract) first.
+ *   - Colour is never the sole carrier of meaning. See the confidence ramp in §2.
+ *   - Contrast ratios in the comments were computed with WCAG 2.1 relative luminance,
+ *     carried over from docs/brand/colour.md. They are not estimates.
+ * ========================================================================== */
+
+/* -----------------------------------------------------------------------------
+ * 1. PRIMITIVES — theme-invariant. Do not reference these from a component.
+ * -------------------------------------------------------------------------- */
+
+:root {
+  /* Slate — cool neutral */
+  --slate-950: #05080c;
+  --slate-900: #0b0f15;
+  --slate-850: #111821;
+  --slate-800: #18212c;
+  --slate-750: #1f2937;
+  --slate-700: #2a3646;
+  --slate-600: #425468;
+  --slate-500: #586e86;
+  --slate-450: #74899e;
+  --slate-400: #8296ab;
+  --slate-350: #5a6c81;
+  --slate-300: #a8b9c9;
+  --slate-100: #e5ecf3;
+
+  /* Paper — light-theme neutral */
+  --paper-200: #dee6ed;
+  --paper-100: #eef2f6;
+  --paper-50: #f7f9fb;
+  --paper-0: #ffffff;
+
+  /* Azure — accent, focus, info */
+  --azure-200: #a8dbf7;
+  --azure-300: #74c6f2;
+  --azure-500: #1e8dc9;
+  --azure-600: #166fa3;
+  --azure-700: #11527a;
+  --azure-900: #08283c;
+  --azure-050: #e7f1f8;
+
+  /* Mint — confidence: verified */
+  --mint-200: #a3f0d8;
+  --mint-700: #084b3e;
+  --mint-900: #07281f;
+  --mint-050: #e4f4ef;
+
+  /* Green — status: success */
+  --green-300: #84de9a;
+  --green-600: #1f7d39;
+  --green-900: #0a2916;
+  --green-050: #e7f5eb;
+
+  /* Amber — status: warning, confidence: medium */
+  --amber-300: #f2c97a;
+  --amber-500: #ca942f;
+  --amber-600: #946513;
+  --amber-650: #85580c;
+  --amber-900: #2e2008;
+  --amber-050: #fbf1dc;
+
+  /* Clay — confidence: needs review */
+  --clay-400: #ca6939;
+  --clay-600: #b94b14;
+  --clay-900: #2e1608;
+  --clay-050: #fef6f0;
+
+  /* Red — status: danger / destructive */
+  --red-300: #ff9a90;
+  --red-600: #b02c21;
+  --red-900: #2e0f0c;
+  --red-050: #fbeae8;
+}
+
+/* -----------------------------------------------------------------------------
+ * 2. SEMANTIC PALETTE — DARK (default)
+ *
+ * Ratios below are foreground-on-background, computed. `AAA` = >= 7:1,
+ * `AA` = >= 4.5:1, `UI` = >= 3:1 non-text only (WCAG 1.4.11).
+ * -------------------------------------------------------------------------- */
+
+:root {
+  color-scheme: dark;
+
+  /* --- Surface and text ---------------------------------------------------- */
+
+  --background: var(--slate-900); /* #0B0F15 — page canvas */
+  --foreground: var(--slate-100); /* 16.12:1 on background — AAA */
+
+  --card: var(--slate-850); /* #111821 — tool cards, playbook cards, note cards */
+  --card-foreground: var(--slate-100); /* 14.98:1 — AAA */
+
+  --popover: var(--slate-800); /* #18212C — menus, dialogs, comboboxes */
+  --popover-foreground: var(--slate-100); /* 13.63:1 — AAA */
+
+  --muted: var(--slate-750); /* #1F2937 — recessed fills, skeletons, muted chips */
+  --muted-foreground: var(--slate-400); /* 6.31:1 on bg · 5.86:1 on card · 4.83:1 on muted — AA */
+
+  /* Additive (not in the contract): the third text step. `--foreground` is primary,
+     `--muted-foreground` is tertiary; this is the secondary step brand/colour.md §3
+     specifies and the contract omitted. Body copy under a heading, card descriptions
+     that are not de-emphasised, table cell values. */
+  --foreground-secondary: var(--slate-300); /* 9.56:1 on bg · 8.88:1 on card — AAA */
+
+  /* Additive: non-text ornament ONLY — rules, dividers, disabled icon strokes.
+     Capped at 3.65:1. It must never carry a word a user needs to read. */
+  --foreground-faint: var(--slate-500);
+
+  --border: var(--slate-750); /* 1.31:1 — decorative dividers only, by design */
+  --input: var(--slate-500); /* 3.65:1 on bg · 3.39:1 on card · 3.09:1 on popover — UI */
+  --ring: var(--azure-300); /* 10.15:1 on bg · 9.44:1 on card · 8.59:1 on popover — UI */
+
+  /* --- Intent -------------------------------------------------------------- */
+
+  --primary: var(--azure-300); /* brand accent */
+  --primary-foreground: var(--slate-950); /* 10.61:1 on primary — AAA */
+  /* Additive: the measured hover fill. Prefer this over `bg-primary/90`, whose
+     composite ratio is unmeasured by definition. See docs/design/tokens.md §7. */
+  --primary-hover: var(--azure-200); /* 12.93:1 with --primary-foreground */
+  /* Additive: non-text fills only — progress bars, chart strokes, selected-row rails. */
+  --primary-solid: var(--azure-500);
+
+  --secondary: var(--slate-600);
+  --secondary-foreground: var(--slate-100); /* 6.53:1 — AA */
+
+  --accent: var(--slate-700); /* hover / selected row in lists and menus */
+  --accent-foreground: var(--slate-100); /* 10.28:1 — AAA */
+
+  --destructive: var(--red-300);
+  --destructive-foreground: var(--slate-950); /* 9.82:1 on destructive — AAA */
+  --destructive-surface: var(--red-900); /* chip/alert tint; 8.64:1 with --destructive */
+
+  --success: var(--green-300);
+  --success-foreground: var(--slate-950); /* 12.33:1 — AAA */
+  --success-surface: var(--green-900); /* 9.61:1 with --success */
+
+  --warning: var(--amber-300);
+  --warning-foreground: var(--slate-950); /* 12.82:1 — AAA */
+  --warning-surface: var(--amber-900); /* 10.11:1 with --warning */
+
+  --info: var(--azure-300); /* deliberately the same hue as --primary */
+  --info-foreground: var(--slate-950); /* 10.61:1 — AAA */
+  --info-surface: var(--azure-900); /* 8.05:1 with --info */
+
+  /* --- Confidence ramp ------------------------------------------------------
+   * A monotonic luminance staircase: verified (Y 75.1%) > high (47.2%) >
+   * medium (33.9%) > review (23.0%). Ordinal data on an ordered channel, so the
+   * order survives every colour vision deficiency.
+   *
+   * NEVER render this value as colour alone. Every chip carries all three of:
+   *   count  — a four-segment meter (4/3/2/1 filled)
+   *   shape  — `review` is the only dashed border and the only filled chip
+   *   word   — "verified" / "high" / "medium" / "needs review"
+   * See docs/design/components.md → ConfidenceChip.
+   *
+   *   --confidence-*            ink: label, border, filled meter segments
+   *   --confidence-*-foreground ink that sits ON a solid --confidence-* fill
+   *   --confidence-*-surface    tinted chip background (v1 uses `review` only)
+   * ------------------------------------------------------------------------ */
+
+  --confidence-verified: var(--mint-200); /* 14.65:1 on bg · 13.61:1 on card — AAA */
+  --confidence-verified-foreground: var(--slate-950); /* 15.31:1 — AAA */
+  --confidence-verified-surface: var(--mint-900); /* 12.02:1 with the ink */
+
+  --confidence-high: var(--slate-300); /* 9.56:1 on bg · 8.88:1 on card — AAA */
+  --confidence-high-foreground: var(--slate-950); /* 9.99:1 — AAA */
+  --confidence-high-surface: var(--slate-750); /* 7.30:1 with the ink */
+
+  --confidence-medium: var(--amber-500); /* 7.12:1 on bg · 6.62:1 on card — AAA */
+  --confidence-medium-foreground: var(--slate-950); /* 7.45:1 — AAA */
+  --confidence-medium-surface: var(--amber-900); /* 5.87:1 with the ink */
+
+  --confidence-review: var(--clay-400); /* 5.11:1 on bg · 4.75:1 on card — AA */
+  --confidence-review-foreground: var(--slate-950); /* 5.35:1 — AA */
+  --confidence-review-surface: var(--clay-900); /* 4.53:1 with the ink */
+
+  /* Unfilled meter segments. Same value as --input; a separate token so the meter is
+     not coupled to form-control styling. 3.65:1 against the page — the empty segments
+     must be countable, which makes this a 1.4.11 component boundary, not decoration. */
+  --confidence-track: var(--slate-500);
+
+  /* --- Scrim ----------------------------------------------------------------
+   * Additive. The dimming layer behind a modal. Use `bg-overlay-scrim`, never a
+   * hardcoded `bg-black/70`. */
+  --overlay-scrim: rgb(2 4 6 / 0.72);
+
+  /* --- Elevation ------------------------------------------------------------
+   * On dark surfaces elevation reads as lightness, not as shadow, so these are
+   * restrained; the surface ladder does the work. */
+  --elevation-1: 0 1px 2px 0 rgb(0 0 0 / 0.5);
+  --elevation-2:
+    0 4px 12px -2px rgb(0 0 0 / 0.6), 0 2px 4px -2px rgb(0 0 0 / 0.5);
+  --elevation-3:
+    0 16px 40px -8px rgb(0 0 0 / 0.7), 0 4px 12px -4px rgb(0 0 0 / 0.55);
+}
+
+/* -----------------------------------------------------------------------------
+ * 3. SEMANTIC PALETTE — LIGHT
+ *
+ * Not an inversion. The surface ladder goes *lighter* with elevation, because on a
+ * light ground elevation reads as brightness. Same tokens, same contrast bar.
+ * -------------------------------------------------------------------------- */
+
+[data-theme="light"] {
+  color-scheme: light;
+
+  --background: var(--paper-50); /* #F7F9FB */
+  --foreground: var(--slate-900); /* 18.20:1 — AAA */
+
+  --card: var(--paper-0); /* #FFFFFF */
+  --card-foreground: var(--slate-900); /* 19.21:1 — AAA */
+
+  --popover: var(--paper-0);
+  --popover-foreground: var(--slate-900); /* 19.21:1 — AAA */
+
+  --muted: var(--paper-100); /* #EEF2F6 */
+  --muted-foreground: var(--slate-350); /* 5.11:1 on bg · 5.39:1 on card · 4.79:1 on muted — AA */
+
+  --foreground-secondary: var(--slate-700); /* 11.61:1 on bg · 12.25:1 on card — AAA */
+  --foreground-faint: var(--slate-450); /* 3.42:1 — non-text ornament only */
+
+  --border: var(--paper-200); /* 1.20:1 — decorative dividers only, by design */
+  --input: var(--slate-450); /* 3.42:1 on bg · 3.61:1 on card — UI */
+  --ring: var(--azure-600); /* 5.19:1 on bg · 5.47:1 on card — UI */
+
+  --primary: var(--azure-600);
+  --primary-foreground: var(--paper-0); /* 5.47:1 on primary — AA */
+  --primary-hover: var(--azure-700); /* 7.92:1 with --primary-foreground */
+  --primary-solid: var(--azure-600);
+
+  --secondary: var(--paper-200);
+  --secondary-foreground: var(--slate-900); /* 15.22:1 — AAA */
+
+  --accent: var(--slate-100); /* #E5ECF3 — hover / selected */
+  --accent-foreground: var(--slate-900); /* 16.11:1 — AAA */
+
+  --destructive: var(--red-600);
+  --destructive-foreground: var(--paper-0); /* 6.51:1 — AA */
+  --destructive-surface: var(--red-050); /* 5.59:1 with --destructive */
+
+  --success: var(--green-600);
+  --success-foreground: var(--paper-0); /* 5.19:1 — AA */
+  --success-surface: var(--green-050); /* 4.61:1 with --success */
+
+  --warning: var(--amber-600);
+  --warning-foreground: var(--paper-0); /* 5.08:1 — AA */
+  --warning-surface: var(--amber-050); /* 4.53:1 with --warning */
+
+  --info: var(--azure-600);
+  --info-foreground: var(--paper-0); /* 5.47:1 — AA */
+  --info-surface: var(--azure-050); /* 4.78:1 with --info */
+
+  /* Confidence ramp — light. Still monotonic, inverted: certainty now carries the
+     DARKEST ink, so visual weight still tracks epistemic weight. */
+  --confidence-verified: var(--mint-700); /* 9.54:1 on bg · 10.07:1 on card — AAA */
+  --confidence-verified-foreground: var(--paper-0); /* 10.07:1 — AAA */
+  --confidence-verified-surface: var(--mint-050); /* 8.86:1 with the ink */
+
+  --confidence-high: var(--slate-600); /* 7.37:1 on bg · 7.78:1 on card — AAA */
+  --confidence-high-foreground: var(--paper-0); /* 7.78:1 — AAA */
+  --confidence-high-surface: var(--paper-100); /* 6.91:1 with the ink */
+
+  --confidence-medium: var(--amber-650); /* 5.85:1 on bg · 6.18:1 on card — AA */
+  --confidence-medium-foreground: var(--paper-0); /* 6.18:1 — AA */
+  --confidence-medium-surface: var(--amber-050); /* 5.51:1 with the ink */
+
+  --confidence-review: var(--clay-600); /* 4.88:1 on bg · 5.15:1 on card — AA */
+  --confidence-review-foreground: var(--paper-0); /* 5.15:1 — AA */
+  --confidence-review-surface: var(--clay-050); /* 4.82:1 with the ink */
+
+  --confidence-track: var(--slate-450); /* 3.42:1 — countable empty segments */
+
+  --overlay-scrim: rgb(11 15 21 / 0.45);
+
+  --elevation-1: 0 1px 2px 0 rgb(11 15 21 / 0.06);
+  --elevation-2:
+    0 4px 12px -2px rgb(11 15 21 / 0.1), 0 2px 4px -2px rgb(11 15 21 / 0.06);
+  --elevation-3:
+    0 16px 40px -8px rgb(11 15 21 / 0.16), 0 4px 12px -4px rgb(11 15 21 / 0.08);
+}
+
+/* -----------------------------------------------------------------------------
+ * 4. GEOMETRY, MOTION, LAYERING — theme-invariant.
+ *
+ * Defined once on `:root`; both themes inherit them. Only the palette is
+ * re-declared under `[data-theme="light"]`.
+ * -------------------------------------------------------------------------- */
+
+:root {
+  /* Base radius. `--radius-xs|sm|md|lg|xl|2xl` derive from it in §5. */
+  --radius: 0.5rem; /* 8px */
+
+  /* Motion. `app/globals.css` consumes these by name in .dm-fade / .dm-pop. */
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --duration-slow: 280ms;
+
+  /* The z-index ladder. Tailwind v4 has no themeable z-index namespace, so these
+     stay plain custom properties, consumed as `z-[var(--z-modal)]`.
+     There is no other layering mechanism in this product: no ad-hoc `z-[9999]`. */
+  --z-sticky: 30; /* sticky header, sticky filter bar, sticky step nav */
+  --z-dropdown: 40; /* dropdown menus, comboboxes, popovers, tooltips */
+  --z-overlay: 50; /* modal scrim */
+  --z-modal: 60; /* dialog / sheet content */
+  --z-toast: 70; /* toasts and the skip link — always on top */
+}
+
+/* Every duration collapses to 0ms when the user asks for reduced motion. This is a
+   correctness requirement: `globals.css` also neutralises animations, and both layers
+   are deliberate — a future component that reads --duration-base directly must also
+   get 0ms without remembering to add a media query. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-base: 0ms;
+    --duration-slow: 0ms;
+  }
+}
+
+/* -----------------------------------------------------------------------------
+ * 5. TAILWIND v4 THEME EXPOSURE
+ *
+ * `@theme inline` — the utility gets `var(--token)` verbatim, so switching
+ * `data-theme` on <html> re-resolves every utility. Used for anything that changes
+ * between themes.
+ *
+ * `@theme` (not inline) — used where the Tailwind namespace key IS the token name
+ * the rest of the app consumes (`--font-*`, `--ease-*`). Writing those as
+ * `inline` would produce `--ease-out: var(--ease-out)`, a self-reference that
+ * resolves to nothing.
+ * -------------------------------------------------------------------------- */
+
+@theme inline {
+  /* Surface and text */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-foreground-secondary: var(--foreground-secondary);
+  --color-foreground-faint: var(--foreground-faint);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-overlay-scrim: var(--overlay-scrim);
+
+  /* Intent */
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-solid: var(--primary-solid);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-destructive-surface: var(--destructive-surface);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-success-surface: var(--success-surface);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-warning-surface: var(--warning-surface);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-info-surface: var(--info-surface);
+
+  /* Confidence ramp */
+  --color-confidence-verified: var(--confidence-verified);
+  --color-confidence-verified-foreground: var(--confidence-verified-foreground);
+  --color-confidence-verified-surface: var(--confidence-verified-surface);
+  --color-confidence-high: var(--confidence-high);
+  --color-confidence-high-foreground: var(--confidence-high-foreground);
+  --color-confidence-high-surface: var(--confidence-high-surface);
+  --color-confidence-medium: var(--confidence-medium);
+  --color-confidence-medium-foreground: var(--confidence-medium-foreground);
+  --color-confidence-medium-surface: var(--confidence-medium-surface);
+  --color-confidence-review: var(--confidence-review);
+  --color-confidence-review-foreground: var(--confidence-review-foreground);
+  --color-confidence-review-surface: var(--confidence-review-surface);
+  --color-confidence-track: var(--confidence-track);
+
+  /* Radii — `rounded-lg` is the card, `rounded-md` the button, `rounded-sm` the
+     menu item. Bare `rounded` resolves to --radius-sm in Tailwind v4. */
+  --radius-xs: calc(var(--radius) - 6px); /* 2px */
+  --radius-sm: calc(var(--radius) - 4px); /* 4px */
+  --radius-md: calc(var(--radius) - 2px); /* 6px */
+  --radius-lg: var(--radius); /* 8px */
+  --radius-xl: calc(var(--radius) + 4px); /* 12px */
+  --radius-2xl: calc(var(--radius) + 8px); /* 16px */
+
+  /* Elevation */
+  --shadow-sm: var(--elevation-1);
+  --shadow-md: var(--elevation-2);
+  --shadow-lg: var(--elevation-3);
+}
+
+@theme {
+  /* --- Type ---------------------------------------------------------------
+   * The `-loaded` variables are generated by next/font in `app/layout.tsx`:
+   *
+   *   IBM_Plex_Sans({ subsets:['latin'], weight:['400','600'], display:'swap',
+   *                   variable:'--font-sans-loaded' })
+   *   IBM_Plex_Mono({ subsets:['latin'], weight:['400'],       display:'swap',
+   *                   variable:'--font-mono-loaded' })
+   *
+   * The `-loaded` suffix is required: next/font must NOT be given `variable:
+   * '--font-sans'`, because that is this token, and the token would then reference
+   * itself and lose its fallback stack. See docs/design/HANDOFF.md §2.
+   * ---------------------------------------------------------------------- */
+  --font-sans:
+    var(--font-sans-loaded), ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji",
+    "Segoe UI Emoji";
+
+  --font-mono:
+    var(--font-mono-loaded), ui-monospace, SFMono-Regular, "SF Mono", Menlo,
+    Consolas, "DejaVu Sans Mono", "Liberation Mono", "Courier New", monospace;
+
+  /* Three font files is the budget (docs/brand/type.md §3). There is no third
+     family, so display type is the sans at 600 with tighter tracking. The token
+     exists because the contract requires it and because a future display face
+     becomes a one-line change here rather than a sweep through components. */
+  --font-display: var(--font-sans);
+
+  /* Type scale. Body never below 14px, mono never below 13px (type.md §7).
+     `--text-xs` is 13px, not Tailwind's default 12px, so that nothing in the
+     product — badge, chip label, dropdown group label — renders below 13px. */
+  --text-xs: 0.8125rem; /* 13px */
+  --text-xs--line-height: 1.125rem; /* 18px */
+  --text-sm: 0.875rem; /* 14px */
+  --text-sm--line-height: 1.25rem; /* 20px */
+  --text-base: 1rem; /* 16px */
+  --text-base--line-height: 1.5rem; /* 24px */
+  --text-lg: 1.125rem; /* 18px */
+  --text-lg--line-height: 1.625rem; /* 26px */
+  --text-xl: 1.25rem; /* 20px */
+  --text-xl--line-height: 1.75rem; /* 28px */
+  --text-2xl: 1.5rem; /* 24px */
+  --text-2xl--line-height: 2rem; /* 32px */
+  --text-3xl: 1.875rem; /* 30px */
+  --text-3xl--line-height: 2.25rem; /* 36px */
+  --text-4xl: 2.25rem; /* 36px */
+  --text-4xl--line-height: 2.5rem; /* 40px */
+
+  /* Only Sans 400 and 600 ship. `font-medium` (500) and `font-bold` (700) are
+     remapped to 600 so the browser never synthesises a weight it does not have —
+     synthetic emboldening thickens strokes unevenly and is exactly what breaks
+     character disambiguation in a domain or a hash. */
+  --font-weight-normal: 400;
+  --font-weight-medium: 600;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 600;
+
+  /* Spacing base. 4px, so `p-1` = 4px and the whole dynamic scale is a multiple. */
+  --spacing: 0.25rem;
+
+  /* Easing. Consumed by name in `app/globals.css` (.dm-fade / .dm-pop) and as the
+     `ease-out` / `ease-in-out` utilities. */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+
+  /* Tailwind's bare `transition` / `transition-colors` utilities read these. Pointing
+     them at our motion tokens means a `hover:bg-accent` on a button uses the same
+     curve as a dialog, and inherits the 0ms reduced-motion collapse for free. */
+  --default-transition-duration: var(--duration-fast);
+  --default-transition-timing-function: var(--ease-out);
+}
+
+/* -----------------------------------------------------------------------------
+ * 6. TOKEN-LEVEL BASE RULES
+ *
+ * Only rules that are inseparable from a token live here. Everything else is in
+ * `app/globals.css`, which the maintainer owns.
+ * -------------------------------------------------------------------------- */
+
+@layer base {
+  /*
+   * Required behaviour for the monospace face (docs/brand/type.md §5). These are
+   * correctness rules, not preferences:
+   *   - ligatures off: a hash must render as the characters it contains, on every
+   *     machine, including when a fallback face with code ligatures is in use.
+   *   - tabular numerals: dates and counts must align in a column or the directory
+   *     table cannot be scanned.
+   *   - 0.92em: mono sets optically larger than sans at the same px.
+   *   - overflow-wrap: a 64-character hash must not force horizontal page scroll
+   *     on a 375px screen.
+   */
+  .font-mono,
+  code,
+  kbd,
+  samp,
+  pre {
+    font-variant-ligatures: none;
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+  }
+
+  /*
+   * The 0.92em optical correction is scoped to INLINE mono inside prose, where the
+   * size is inherited from the surrounding sans and no size utility is in play.
+   * It is deliberately NOT applied to `.font-mono`: a `text-sm font-mono` table cell
+   * must be exactly 14px, and an em-based rule fighting a utility class is the kind
+   * of surprise that gets worked around with `!important`.
+   *
+   * For mono in a utility-sized context, step down one step instead — sans
+   * `text-sm` pairs optically with mono `text-xs`. See docs/design/tokens.md §5.
+   */
+  :where(p, li, td, dd, blockquote) > :is(code, kbd, samp) {
+    font-size: 0.92em;
+  }
+
+  /* Dates, counts, reliability scores and quota figures set in the sans face still
+     have to align in columns. Apply `.tabular` to any such cell. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}

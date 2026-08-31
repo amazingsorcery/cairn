@@ -13,6 +13,7 @@ export default defineConfig({
       NODE_ENV: "test",
       APP_URL: "http://localhost:3000",
       AUTH_SECRET: "test-secret-not-real-0123456789abcdef",
+      RATE_LIMIT_SECRET: "test-rate-limit-secret-not-real-0123456789",
       DATABASE_URL: "postgresql://test:test@localhost:5432/test",
       LOG_LEVEL: "silent",
     },

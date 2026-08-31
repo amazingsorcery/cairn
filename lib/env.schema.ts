@@ -24,6 +24,20 @@ const serverSchema = z
       "AUTH_SECRET must be at least 32 characters — generate with: openssl rand -base64 32",
     ),
 
+    /**
+     * HMAC key for rate-limit and audit-log subject hashing. Never a raw email or IP
+     * reaches the database (ADR 0009, ADR 0013). Generate with: openssl rand -hex 32
+     *
+     * Rotating it resets every rate-limit window and breaks audit-log correlation across
+     * the rotation. Both are acceptable: windows are minutes long and audit retention is
+     * 30 days. It must NOT be the same value as AUTH_SECRET — one is a session-forgery key
+     * and the other is a pseudonymisation key, and they have different blast radii.
+     */
+    RATE_LIMIT_SECRET: nonEmpty("RATE_LIMIT_SECRET").min(
+      32,
+      "RATE_LIMIT_SECRET must be at least 32 characters — generate with: openssl rand -hex 32",
+    ),
+
     /** Required when running behind Caddy so Auth.js honours x-forwarded-* headers. */
     AUTH_TRUST_HOST: z
       .enum(["true", "false"])
@@ -57,6 +71,15 @@ const serverSchema = z
     ADMIN_EMAILS: z.string().default(""),
   })
   .superRefine((env, ctx) => {
+    if (env.RATE_LIMIT_SECRET === env.AUTH_SECRET) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["RATE_LIMIT_SECRET"],
+        message:
+          "RATE_LIMIT_SECRET must not be the same value as AUTH_SECRET. Generate a separate one with: openssl rand -hex 32",
+      });
+    }
+
     const github = [env.AUTH_GITHUB_ID, env.AUTH_GITHUB_SECRET];
     if (github.some(Boolean) && !github.every(Boolean)) {
       ctx.addIssue({

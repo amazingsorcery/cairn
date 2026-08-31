@@ -5,6 +5,7 @@ const base = {
   NODE_ENV: "test",
   APP_URL: "https://example.test",
   AUTH_SECRET: "0123456789abcdef0123456789abcdef",
+  RATE_LIMIT_SECRET: "fedcba9876543210fedcba9876543210",
   DATABASE_URL: "postgresql://user:pass@db:5432/app",
 } satisfies NodeJS.ProcessEnv;
 
@@ -33,6 +34,23 @@ describe("parseEnv", () => {
 
   it("rejects a short AUTH_SECRET with an actionable message", () => {
     expect(() => parseEnv({ ...base, AUTH_SECRET: "tooshort" })).toThrow(/openssl rand -base64 32/);
+  });
+
+  it("rejects a missing RATE_LIMIT_SECRET", () => {
+    const { RATE_LIMIT_SECRET: _omitted, ...withoutSecret } = base;
+    expect(() => parseEnv(withoutSecret)).toThrow(/RATE_LIMIT_SECRET/);
+  });
+
+  it("rejects a short RATE_LIMIT_SECRET with an actionable message", () => {
+    expect(() => parseEnv({ ...base, RATE_LIMIT_SECRET: "short" })).toThrow(
+      /openssl rand -hex 32/,
+    );
+  });
+
+  it("rejects RATE_LIMIT_SECRET reused as AUTH_SECRET", () => {
+    expect(() =>
+      parseEnv({ ...base, RATE_LIMIT_SECRET: base.AUTH_SECRET }),
+    ).toThrow(/must not be the same value as AUTH_SECRET/);
   });
 
   it("rejects a non-postgres DATABASE_URL", () => {

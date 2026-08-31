@@ -16,6 +16,9 @@
  * - Deletion is hard with `on delete cascade` except where a user's own record must
  *   survive an editorial change; those FKs are `on delete set null` and the row keeps a
  *   denormalised snapshot of what it referenced. See ADR 0008.
+ * - The Live subtree (`connectors`, `connector_requests`, `cameras`) implements ADR 0011.
+ *   Read the block comment above `connectors` before adding anything to it: what that
+ *   subtree must never grow is as much a part of the design as what it contains.
  *
  * Things this file deliberately does NOT contain, because drizzle-kit cannot generate
  * them and they live in a hand-written follow-up migration instead — the exact SQL is in
@@ -34,6 +37,7 @@ import {
   boolean,
   check,
   customType,
+  doublePrecision,
   index,
   integer,
   pgTable,
@@ -81,8 +85,36 @@ export type AccountType = (typeof ACCOUNT_TYPES)[number]
 export const PUBLICATION_STATUSES = ['draft', 'published'] as const
 export type PublicationStatus = (typeof PUBLICATION_STATUSES)[number]
 
-/** product-brief.md §2, Directory table, `costModel`. */
-export const COST_MODELS = ['free', 'freemium', 'paid', 'subscription', 'enterprise'] as const
+/**
+ * product-brief.md §2, Directory table, `costModel`. Ordered as an ascending ladder of both
+ * cost and exposure, so a UI that renders the array in order reads correctly.
+ *
+ * `freeWithRegistration` is a tier rather than a `costNotes` string because for this
+ * audience it is a threat-model fact, not a pricing nuance. "Free" and "free once the
+ * operator knows who you are" are materially different propositions: registration means an
+ * identity, an email address and a query log held by the operator, which is a decision a
+ * journalist or human-rights researcher must be able to make *before* touching the source.
+ * Buried in prose it cannot be filtered on, cannot be badged, and will be missed by exactly
+ * the reader who most needed it. As a tier it is a first-class facet of the directory.
+ *
+ * Spelling: camelCase, like every other CLOSED vocabulary here (`needsReview`,
+ * `checklistStep`, `upstreamError`). The kebab-case forms in `lib/content/schema.ts` are
+ * correct for the OPEN vocabularies it owns — `input_types` and `output_types` are
+ * unconstrained `text[]`, never TypeScript union members, and kebab reads better as a
+ * facet value. `costModel` is not one of those: it is a CHECK-constrained enum that code
+ * branches on and that needs a label map, so it follows `confidence`. If the content
+ * contract's `free-with-registration` is preferred instead, this array and
+ * `lib/content/schema.ts` must change together — the CHECK constraint will reject any
+ * mismatch loudly at seed time rather than storing a value the filters cannot see.
+ */
+export const COST_MODELS = [
+  'free',
+  'freeWithRegistration',
+  'freemium',
+  'paid',
+  'subscription',
+  'enterprise',
+] as const
 export type CostModel = (typeof COST_MODELS)[number]
 
 /**
@@ -104,6 +136,32 @@ export type WorkspaceItemKind = (typeof WORKSPACE_ITEM_KINDS)[number]
 
 export const REVIEW_STATUSES = ['pending', 'approved', 'rejected'] as const
 export type ReviewStatus = (typeof REVIEW_STATUSES)[number]
+
+/** The two Live surfaces of ADR 0011. One connector kind per surface. */
+export const CONNECTOR_KINDS = ['flights', 'cameras'] as const
+export type ConnectorKind = (typeof CONNECTOR_KINDS)[number]
+
+/**
+ * Outcome of one outbound call. `quotaDenied` and `disabled` are recorded even though no
+ * request left the building — a refusal is exactly the event an operator needs to see.
+ * Stored camelCase, like every other vocabulary here (product-brief §6.2: one spelling,
+ * no translation layer).
+ */
+export const CONNECTOR_REQUEST_OUTCOMES = [
+  'ok',
+  'upstreamError',
+  'quotaDenied',
+  'disabled',
+  'timeout',
+] as const
+export type ConnectorRequestOutcome = (typeof CONNECTOR_REQUEST_OUTCOMES)[number]
+
+/**
+ * What a camera looks at. Exactly the three kinds product-brief §2 names for the Live
+ * pillar — no invented vocabulary. Extending is a two-line change (ADR 0004).
+ */
+export const CAMERA_VIEW_KINDS = ['traffic', 'transport', 'tourism'] as const
+export type CameraViewKind = (typeof CAMERA_VIEW_KINDS)[number]
 
 /** Renders the body of a CHECK constraint from an enum vocabulary. */
 const oneOf = (column: string, values: readonly string[]) =>
@@ -637,6 +695,274 @@ export const reviews = pgTable(
 )
 
 /* ================================================================== *
+ * Live — the connector seam, built. ADR 0011, 0012, 0013, 0014.
+ *
+ * WHAT THIS SUBTREE MUST NEVER GROW
+ * ---------------------------------
+ * product-brief §2 (Live) and ADR 0011 rule 8: *live means live*. The following tables and
+ * columns are forbidden, and a pull request adding one is rejected on sight:
+ *
+ *   - Any table of aircraft positions, tracks, callsigns, registrations or flight history.
+ *   - Any table or column holding camera imagery, thumbnails, frames or video, in any
+ *     encoding, including a "cache" of them. Retaining imagery turns us from a viewer into
+ *     a redistributor and, for anything with a person in frame, a controller of their image
+ *     data.
+ *   - Any column on `connector_requests` recording *what* was asked for: no path, no query
+ *     string, no parameters, no bounding box, no camera id, no response body. The audit log
+ *     records that a call happened, what it cost and how it ended. Never its content.
+ *   - Any raw actor identifier anywhere in this subtree. See `connectorRequests.actorKey`.
+ *
+ * The absence of these tables is the design, not an omission to be filled in later.
+ * ================================================================== */
+
+/**
+ * The connector registry. One row per upstream we are permitted to call, carrying the legal
+ * basis for calling it, the attribution we owe, its quota envelope, its freshness policy and
+ * its kill-switch.
+ *
+ * Two independent axes, deliberately not merged:
+ *   - `status`  — editorial. Is this connector part of the shipped product? draft/published.
+ *   - `enabled` — operational. May it make a request *right now*? Defaults to false, so a
+ *                 newly seeded connector is inert until an operator turns it on, and a
+ *                 source that changes its terms is stopped by a config change rather than
+ *                 a deploy (ADR 0011 rule 6).
+ */
+export const connectors = pgTable(
+  'connectors',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    slug: text('slug').notNull().unique('connectors_slug_key'),
+    name: text('name').notNull(),
+    kind: text('kind', { enum: CONNECTOR_KINDS }).notNull(),
+
+    /** The organisation that publishes the data, e.g. the transport authority or network. */
+    operatorName: text('operator_name').notNull(),
+    homepageUrl: text('homepage_url').notNull(),
+    /** URL of the licence or terms of service that permit our use. Required to publish. */
+    termsUrl: text('terms_url'),
+    /**
+     * The exact string we are obliged to render next to the data. Nullable *only* when
+     * `attributionRequired` is false — the pair forces an explicit editorial statement so
+     * "no attribution is required" is distinguishable from "nobody filled this in".
+     */
+    attribution: text('attribution'),
+    attributionRequired: boolean('attribution_required').notNull().default(true),
+    /** Why we are permitted to do this, in prose, citing the clause. Required to publish. */
+    legalBasis: text('legal_basis'),
+
+    baseUrl: text('base_url').notNull(),
+    requiresApiKey: boolean('requires_api_key').notNull().default(false),
+    /**
+     * The NAME of the environment variable holding the credential — never the credential.
+     * A CHECK constraint restricts this to `^[A-Z][A-Z0-9_]*$`, which no real API key
+     * matches, so the schema itself refuses to become a place secrets can be pasted.
+     */
+    apiKeyEnvVar: text('api_key_env_var'),
+
+    /** Requests per `windowSeconds`, per user. Enforced through `rate_limits` (ADR 0009). */
+    perUserQuota: integer('per_user_quota').notNull(),
+    /** Requests per `windowSeconds` across all users, so we cannot breach upstream fair use. */
+    globalCeiling: integer('global_ceiling').notNull(),
+    windowSeconds: integer('window_seconds').notNull(),
+    timeoutMs: integer('timeout_ms').notNull(),
+
+    /** How long a fetched payload is served as fresh. ADR 0014. */
+    cacheTtlSeconds: integer('cache_ttl_seconds').notNull(),
+    /** How long past the TTL we keep serving, labelled stale, before the degraded state. */
+    staleWhileRevalidateSeconds: integer('stale_while_revalidate_seconds').notNull(),
+
+    /** The operator kill-switch. False means: make no outbound call, serve the degraded state. */
+    enabled: boolean('enabled').notNull().default(false),
+    status: text('status', { enum: PUBLICATION_STATUSES }).notNull().default('draft'),
+    /** When a human last confirmed the endpoint works and the terms are unchanged. */
+    lastCheckedAt: timestamptz('last_checked_at'),
+    notes: text('notes'),
+
+    updatedById: uuid('updated_by_id').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+    updatedAt: timestamptz('updated_at')
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (t) => [
+    /** "Give me the live connectors for this surface" — the only hot read on this table. */
+    index('connectors_kind_status_enabled_idx').on(t.kind, t.status, t.enabled),
+    index('connectors_updated_by_id_idx').on(t.updatedById),
+
+    check('connectors_kind_check', oneOf('kind', CONNECTOR_KINDS)),
+    check('connectors_status_check', oneOf('status', PUBLICATION_STATUSES)),
+    /**
+     * ADR 0011 rule 1, enforced by the database rather than by remembering: a connector
+     * with no recorded licence, no legal basis and no verification date cannot be published.
+     * Mirrors `tools_published_requires_verification_check`. ADR 0012.
+     */
+    check(
+      'connectors_published_requires_legal_basis_check',
+      sql`status <> 'published' or (terms_url is not null and legal_basis is not null and last_checked_at is not null)`,
+    ),
+    /** ADR 0011 rule 2: if attribution is owed, the string we owe must be on the row. */
+    check(
+      'connectors_attribution_check',
+      sql`attribution_required = false or attribution is not null`,
+    ),
+    /** A connector that needs a key must name the env var that holds it. */
+    check(
+      'connectors_api_key_env_var_check',
+      sql`(requires_api_key = false or api_key_env_var is not null) and (api_key_env_var is null or api_key_env_var ~ '^[A-Z][A-Z0-9_]*$')`,
+    ),
+    check(
+      'connectors_quota_check',
+      sql`per_user_quota > 0 and global_ceiling >= per_user_quota and window_seconds > 0 and timeout_ms > 0`,
+    ),
+    check(
+      'connectors_cache_check',
+      sql`cache_ttl_seconds >= 0 and stale_while_revalidate_seconds >= 0`,
+    ),
+  ],
+)
+
+/**
+ * The outbound audit log required by product-brief §3.3 and ADR 0011 rule 6.
+ *
+ * It answers operational questions — is this connector failing, how often are we being
+ * quota-denied, how slow is upstream — and deliberately cannot answer "who looked at what".
+ * There is no column for the request content, and the actor is a keyed hash. ADR 0013.
+ */
+export const connectorRequests = pgTable(
+  'connector_requests',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    connectorId: uuid('connector_id')
+      .notNull()
+      .references(() => connectors.id, { onDelete: 'cascade' }),
+    requestedAt: timestamptz('requested_at').notNull().defaultNow(),
+    outcome: text('outcome', { enum: CONNECTOR_REQUEST_OUTCOMES }).notNull(),
+    /** Wall-clock cost of the attempt. 0 for `quotaDenied` and `disabled`. */
+    durationMs: integer('duration_ms').notNull(),
+    /** Upstream HTTP status. Null when no request was made, or when it timed out. */
+    upstreamStatus: integer('upstream_status'),
+    /**
+     * `HMAC-SHA256(userId or client IP, RATE_LIMIT_SECRET)`, lowercase hex — the same
+     * construction as `rate_limits.key` (ADR 0009). A CHECK constraint requires exactly 64
+     * hex characters, so a raw user id, email or IP address is structurally impossible to
+     * store here: a uuid contains hyphens, an email an `@`, an IPv4 address dots. The
+     * constraint is the enforcement; the code convention is only the first line of defence.
+     */
+    actorKey: text('actor_key').notNull(),
+    /** Retention horizon. This table grows unboundedly and is swept, not archived. ADR 0013. */
+    expiresAt: timestamptz('expires_at').notNull(),
+  },
+  (t) => [
+    /** Per-connector health and error rate over a time window — the ops read. */
+    index('connector_requests_connector_time_idx').on(t.connectorId, t.requestedAt.desc()),
+    index('connector_requests_outcome_time_idx').on(t.outcome, t.requestedAt.desc()),
+    index('connector_requests_expires_at_idx').on(t.expiresAt),
+    /*
+     * There is deliberately NO index on `actor_key`. Indexing it would make "everything this
+     * actor did" a fast query, which is the surveillance affordance ADR 0013 exists to
+     * remove. Quota enforcement does not need it either — that runs against `rate_limits`.
+     */
+    check('connector_requests_outcome_check', oneOf('outcome', CONNECTOR_REQUEST_OUTCOMES)),
+    check('connector_requests_duration_check', sql`duration_ms >= 0`),
+    check(
+      'connector_requests_upstream_status_check',
+      sql`upstream_status is null or upstream_status between 100 and 599`,
+    ),
+    check('connector_requests_actor_key_check', sql`actor_key ~ '^[0-9a-f]{64}$'`),
+  ],
+)
+
+/**
+ * The curated registry of *officially published* camera feeds. Content, held to the same
+ * editorial standard as `tools`: operator, jurisdiction, source, confidence, verification
+ * date, and the same publish gate.
+ *
+ * Cameras carry no `search_vector` and no tags. See `data-model.md` §11 for why: the browse
+ * axes here are geography and subject, both of which are columns, and the registry is small
+ * enough that the whole published set is one cached query.
+ */
+export const cameras = pgTable(
+  'cameras',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    slug: text('slug').notNull().unique('cameras_slug_key'),
+    name: text('name').notNull(),
+    /** The authority or company that publishes this feed. */
+    operatorName: text('operator_name').notNull(),
+
+    /**
+     * The connector this feed is reached through. Nullable: an entry we merely link out to
+     * needs no connector, because the user's browser goes to the operator directly and we
+     * make no outbound call. A CHECK below requires one as soon as we embed.
+     */
+    connectorId: uuid('connector_id').references(() => connectors.id, { onDelete: 'restrict' }),
+
+    /** Not nullable: a camera whose jurisdiction is unknown cannot have its position assessed. */
+    jurisdiction: text('jurisdiction').notNull(),
+    latitude: doublePrecision('latitude').notNull(),
+    longitude: doublePrecision('longitude').notNull(),
+    /** Human-readable place, e.g. the junction or landmark the camera points at. */
+    locationLabel: text('location_label').notNull(),
+    viewKind: text('view_kind', { enum: CAMERA_VIEW_KINDS }).notNull(),
+
+    /** The operator's own page for this camera. Always present; always where we link. */
+    sourceUrl: text('source_url').notNull(),
+    /** The embeddable image or stream URL, when the licence permits embedding. */
+    embedUrl: text('embed_url'),
+    /** Fail closed: we link out unless an editor has established that embedding is permitted. */
+    embedPermitted: boolean('embed_permitted').notNull().default(false),
+    /** Why embedding is or is not permitted, citing the licence clause. Required to publish. */
+    embedNotes: text('embed_notes'),
+    /** The attribution string this feed obliges us to render, if any beyond the connector's. */
+    attribution: text('attribution'),
+
+    lastVerifiedAt: timestamptz('last_verified_at'),
+    confidence: text('confidence', { enum: CONFIDENCE_LEVELS }).notNull().default('needsReview'),
+    status: text('status', { enum: PUBLICATION_STATUSES }).notNull().default('draft'),
+    publishedAt: timestamptz('published_at'),
+
+    updatedById: uuid('updated_by_id').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+    updatedAt: timestamptz('updated_at')
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (t) => [
+    index('cameras_status_name_idx').on(t.status, t.name),
+    index('cameras_status_jurisdiction_idx').on(t.status, t.jurisdiction, t.name),
+    index('cameras_status_view_kind_idx').on(t.status, t.viewKind, t.name),
+    index('cameras_connector_id_idx').on(t.connectorId),
+    /** `/admin/queue`, alongside tools and playbooks. */
+    index('cameras_confidence_verified_idx').on(t.confidence, t.lastVerifiedAt.asc().nullsFirst()),
+    index('cameras_updated_by_id_idx').on(t.updatedById),
+
+    check('cameras_view_kind_check', oneOf('view_kind', CAMERA_VIEW_KINDS)),
+    check('cameras_status_check', oneOf('status', PUBLICATION_STATUSES)),
+    check('cameras_confidence_check', oneOf('confidence', CONFIDENCE_LEVELS)),
+    check('cameras_latitude_check', sql`latitude between -90 and 90`),
+    check('cameras_longitude_check', sql`longitude between -180 and 180`),
+    /** Same credibility gate as tools and playbooks. ADR 0007. */
+    check(
+      'cameras_published_requires_verification_check',
+      sql`status <> 'published' or (last_verified_at is not null and embed_notes is not null)`,
+    ),
+    /** You cannot embed what you have no embed URL for. */
+    check('cameras_embed_url_check', sql`embed_permitted = false or embed_url is not null`),
+    /**
+     * ADR 0011 rule 1 again: the moment we render a third party's feed inside our own page
+     * we are making a call that needs a recorded legal basis, and a legal basis lives on a
+     * connector. A link-out entry needs none.
+     */
+    check(
+      'cameras_embed_requires_connector_check',
+      sql`status <> 'published' or embed_permitted = false or connector_id is not null`,
+    ),
+  ],
+)
+
+/* ================================================================== *
  * Rate limiting — fixed-window counters in Postgres. There is no Redis. ADR 0009.
  * ================================================================== */
 
@@ -764,6 +1090,24 @@ export const reviewsRelations = relations(reviews, ({ one }) => ({
   user: one(users, { fields: [reviews.userId], references: [users.id] }),
 }))
 
+export const connectorsRelations = relations(connectors, ({ one, many }) => ({
+  updatedBy: one(users, { fields: [connectors.updatedById], references: [users.id] }),
+  cameras: many(cameras),
+  requests: many(connectorRequests),
+}))
+
+export const connectorRequestsRelations = relations(connectorRequests, ({ one }) => ({
+  connector: one(connectors, {
+    fields: [connectorRequests.connectorId],
+    references: [connectors.id],
+  }),
+}))
+
+export const camerasRelations = relations(cameras, ({ one }) => ({
+  connector: one(connectors, { fields: [cameras.connectorId], references: [connectors.id] }),
+  updatedBy: one(users, { fields: [cameras.updatedById], references: [users.id] }),
+}))
+
 /* ================================================================== *
  * Inferred row types
  * ================================================================== */
@@ -796,3 +1140,9 @@ export type Review = typeof reviews.$inferSelect
 export type NewReview = typeof reviews.$inferInsert
 export type RateLimit = typeof rateLimits.$inferSelect
 export type NewRateLimit = typeof rateLimits.$inferInsert
+export type Connector = typeof connectors.$inferSelect
+export type NewConnector = typeof connectors.$inferInsert
+export type ConnectorRequest = typeof connectorRequests.$inferSelect
+export type NewConnectorRequest = typeof connectorRequests.$inferInsert
+export type Camera = typeof cameras.$inferSelect
+export type NewCamera = typeof cameras.$inferInsert
