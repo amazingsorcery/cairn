@@ -1,0 +1,46 @@
+[Unit]
+Description=Nightly PostgreSQL dump, verification, rotation and offsite copy
+Documentation=file:///opt/app/docs/deploy/RUNBOOK.md
+# The script talks to the Docker daemon, so Docker has to be up first. `Requires` (not
+# `Wants`) because there is nothing useful this unit can do without it.
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+
+# EDIT THESE TWO LINES to match where you cloned the repository and which user owns it.
+# The user must be in the `docker` group and must own BACKUP_DIR.
+User=deploy
+WorkingDirectory=/opt/app
+ExecStart=/opt/app/infra/backup.sh
+
+# The script keeps a lock and a single run takes seconds to a couple of minutes. If it is
+# still going after 30 minutes something is wrong (a hung pg_dump, an rclone upload
+# stalled on a dead network) and it should be killed rather than left to overlap the next
+# night's run.
+TimeoutStartSec=30min
+
+# One retry, five minutes later. Covers a transient network failure during the offsite
+# copy without hammering a genuinely broken system.
+Restart=on-failure
+RestartSec=5min
+
+# Everything the script prints goes to the journal:
+#   journalctl -u app-backup.service --since yesterday
+StandardOutput=journal
+StandardError=journal
+
+# Modest hardening. The script needs the docker socket, the repository and BACKUP_DIR, and
+# nothing else. NoNewPrivileges is safe here; stricter sandboxing (ProtectSystem=strict)
+# tends to break docker CLI socket access and is not worth the debugging.
+NoNewPrivileges=true
+
+# PrivateTmp MUST stay false. backup.sh takes an exclusive flock on a file in /tmp, and
+# deploy.sh takes the same lock when it runs a pre-deploy backup. With a private /tmp the
+# timer's run would hold a lock in its own namespace that the deploy cannot see, and a
+# nightly backup could then run concurrently with a deploy's pg_dump on a 2 GB box.
+PrivateTmp=false
+
+[Install]
+WantedBy=multi-user.target

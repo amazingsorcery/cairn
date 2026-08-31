@@ -1,0 +1,265 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# A second push to the same branch makes the first run irrelevant. Cancel it rather than
+# paying for it and waiting behind it. Keyed on the ref, so pushes to different branches
+# and to a PR's head do not cancel each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege. Nothing here writes to the repository, opens a PR, or pushes a package.
+permissions:
+  contents: read
+
+env:
+  # Silences the "Corepack is about to download..." prompt, which otherwise hangs a
+  # non-interactive runner until the step times out.
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+  NEXT_TELEMETRY_DISABLED: "1"
+
+# ACTION PINNING: these are pinned to major-version tags, which GitHub moves as patches
+# land. That is the common practice and it is not the strongest option — a tag can be
+# repointed at different code. To pin to immutable commit SHAs instead, resolve each one:
+#
+#   gh api repos/actions/checkout/git/refs/tags/v4 --jq .object.sha
+#
+# and rewrite as `actions/checkout@<sha> # v4`. Real SHAs are deliberately not guessed
+# here; look them up rather than trust a value copied from a document.
+
+jobs:
+  # =====================================================================================
+  # Everything that needs the application and its database.
+  #
+  # Deliberately ONE job rather than four. Each extra job repeats the checkout, the pnpm
+  # install and the Next.js build — on this project that is roughly two minutes of pure
+  # duplication per job, and it buys nothing, because the steps below are strictly
+  # ordered anyway: there is no useful world in which e2e runs while typecheck is still
+  # unknown. Steps fail fast in order, so a lint error still stops the run before the
+  # browser download.
+  # =====================================================================================
+  verify:
+    name: typecheck, lint, test, build, e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        # The same major version as production. Testing against a different major is how
+        # you find out about a syntax or planner difference in production instead of here.
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: app_test
+        ports:
+          - 5432:5432
+        # Without this the job proceeds as soon as the container starts and the first
+        # migration races initdb. --health-start-period covers first-boot initdb.
+        options: >-
+          --health-cmd "pg_isready -U postgres -d app_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+          --health-start-period 20s
+
+    env:
+      # The database the app, the migrations and Playwright all talk to. `localhost`
+      # because the service container's port is published onto the runner.
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/app_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: app_test
+
+      APP_URL: http://localhost:3000
+      AUTH_URL: http://localhost:3000
+      AUTH_TRUST_HOST: "true"
+
+      # Obviously non-functional values. They exist so that boundary validation (Zod on
+      # process.env) passes and the build completes; no test may depend on them working.
+      # Real OAuth and SMTP are not exercised in CI — an e2e sign-in test must stub the
+      # provider or use a test-only credentials path. See docs/deploy/HANDOFF.md #9.
+      AUTH_GITHUB_ID: ci-not-a-real-client-id
+      AUTH_GITHUB_SECRET: ci-not-a-real-client-secret
+      SMTP_HOST: localhost
+      SMTP_PORT: "1025"
+      SMTP_USER: ci
+      SMTP_PASSWORD: ci
+      SMTP_FROM: ci@example.invalid
+      LOG_LEVEL: warn
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm must exist before setup-node, because setup-node's `cache: pnpm` shells out
+      # to `pnpm store path` to find the directory it is caching. Reversing these two
+      # steps produces a confusing "Unable to locate executable file: pnpm".
+      # No `version:` is given: action-setup v4 reads the packageManager field in
+      # package.json (pnpm@11.1.3), so CI cannot drift from the lockfile's producer.
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          # Keyed on pnpm-lock.yaml. A lockfile change is the only thing that should
+          # invalidate the dependency cache.
+          cache: pnpm
+
+      - name: Install dependencies
+        # --frozen-lockfile fails rather than silently resolving a different tree when
+        # package.json and pnpm-lock.yaml disagree. That disagreement is a real bug and CI
+        # is where it should surface.
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate an ephemeral AUTH_SECRET
+        # Generated per run rather than committed. A committed placeholder that looks like
+        # a secret invites someone to copy it into a real .env; a value that only exists
+        # for 20 minutes cannot be.
+        run: echo "AUTH_SECRET=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Unit tests
+        run: pnpm test
+
+      # Migrations before build: any page that reads the database during static generation
+      # needs the schema to exist. Running them here also means the migration script itself
+      # is exercised on every commit, against a real Postgres 16 — which is the only way a
+      # broken migration gets caught before it reaches the production deploy.
+      - name: Run migrations
+        run: pnpm db:migrate
+
+      - name: Seed the database
+        run: pnpm db:seed
+
+      - name: Build
+        run: pnpm build
+
+      # Chromium only. Installing all three engines costs several minutes and a few hundred
+      # megabytes per run; the production target is a normal desktop browser and the
+      # cross-engine matrix is not what this pipeline is for. Add firefox/webkit here on
+      # the day a rendering bug justifies it.
+      # --with-deps pulls the shared libraries Chromium needs on a bare ubuntu runner.
+      - name: Install Playwright (chromium)
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: End-to-end tests
+        run: pnpm test:e2e
+
+      - name: Upload the Playwright report
+        # `always()` so the report survives a failing run — which is the only run where
+        # anyone wants it.
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # =====================================================================================
+  # Prove the Dockerfile still builds.
+  #
+  # This is not redundant with the job above. It exercises things `pnpm build` on a runner
+  # never touches: the pnpm install inside a Linux container, layer ordering, the
+  # standalone-output guard, and the file layout of the final image. Without it, a broken
+  # Dockerfile is discovered on the VPS at deploy time, which is the worst possible moment.
+  # Runs in parallel — no `needs:` — so a Dockerfile regression is reported even when a
+  # test is failing.
+  # =====================================================================================
+  docker:
+    name: docker image builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the runtime image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runner
+          # Nothing is pushed: there is no registry in this deployment. The VPS builds
+          # from source in deploy.sh. This job only has to answer "does it build".
+          push: false
+          # load: true would export the image into the runner's docker daemon, which costs
+          # time and disk for no benefit here. The build succeeding is the assertion.
+          load: false
+          tags: app-web:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build the migration image
+        # Built separately because it is a different Dockerfile target with a different
+        # dependency set (it keeps devDependencies so tsx is available). A change that
+        # breaks only this target would otherwise reach production and fail at the
+        # migration step of a deploy, after the backup and after the build.
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: migrator
+          push: false
+          load: false
+          tags: app-migrate:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # =====================================================================================
+  # Static validation of the infrastructure files themselves.
+  # Cheap (well under a minute) and catches the class of error that is otherwise only
+  # found by running the thing on the server at 2 a.m.
+  # =====================================================================================
+  infra:
+    name: shell + compose + caddy validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint the shell scripts
+        # ubuntu-latest ships shellcheck. -S warning: style suggestions are noise; genuine
+        # quoting and portability bugs are not.
+        run: shellcheck -S warning infra/*.sh
+
+      - name: Validate docker-compose.prod.yml
+        # `compose config` performs the full ${...} substitution, so it needs a .env. The
+        # example file is used with its placeholder values, which is exactly what we want
+        # to validate: the FILE's structure, not any real credential. deploy.sh separately
+        # refuses to run while those placeholders are still in place.
+        run: |
+          cp .env.example .env
+          docker compose -f docker-compose.prod.yml config --quiet
+          docker compose -f docker-compose.yml config --quiet
+          rm -f .env
+
+      - name: Validate the Caddyfile
+        # `caddy validate` parses the config and builds the full provisioning graph, so it
+        # catches a misspelled directive, a bad matcher, and an unbalanced brace. DOMAIN
+        # and ACME_EMAIL are supplied because the file reads them as {$VAR} at load time;
+        # the values are irrelevant to whether the syntax is correct.
+        run: |
+          docker run --rm \
+            -e DOMAIN=ci.example.invalid \
+            -e ACME_EMAIL=ci@example.invalid \
+            -e ACME_CA=https://acme-staging-v02.api.letsencrypt.org/directory \
+            -v "${{ github.workspace }}/infra/Caddyfile:/etc/caddy/Caddyfile:ro" \
+            caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile

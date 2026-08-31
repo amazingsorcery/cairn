@@ -1,0 +1,121 @@
+@import "tailwindcss";
+@import "./tokens.css";
+
+/*
+ * Motion.
+ *
+ * Tailwind v4 ships no enter/exit animation utilities and we add no plugin for them —
+ * two classes cover every Radix data-state transition in the app. Both are inert under
+ * prefers-reduced-motion, which is a correctness requirement, not a nicety: vestibular
+ * disorders are common and this is a tool people use for hours.
+ */
+@keyframes dm-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes dm-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes dm-pop-in {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(0.98); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+@keyframes dm-pop-out {
+  from { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  to { opacity: 0; transform: translate(-50%, -50%) scale(0.98); }
+}
+
+.dm-fade[data-state="open"] {
+  animation: dm-fade-in var(--duration-fast) var(--ease-out);
+}
+.dm-fade[data-state="closed"] {
+  animation: dm-fade-out var(--duration-fast) var(--ease-out);
+}
+.dm-pop[data-state="open"] {
+  animation: dm-pop-in var(--duration-base) var(--ease-out);
+}
+.dm-pop[data-state="closed"] {
+  animation: dm-pop-out var(--duration-fast) var(--ease-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dm-fade[data-state],
+  .dm-pop[data-state] {
+    animation: none;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  html {
+    scroll-behavior: smooth;
+    /* Anchored playbook steps must not land under the sticky header. */
+    scroll-padding-top: 5rem;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /*
+   * A single visible focus style for anything reachable by keyboard. Radix components
+   * layer their own ring on top; this is the floor, so nothing can be focusable and
+   * invisible.
+   */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  /* Domains, hashes, coordinates and commands are everywhere in this product. */
+  code,
+  kbd,
+  samp,
+  pre {
+    font-family: var(--font-mono);
+    font-feature-settings: "zero" 1;
+  }
+
+  ::selection {
+    background-color: color-mix(in oklab, var(--primary) 30%, transparent);
+  }
+}
+
+@layer utilities {
+  /*
+   * Skip link: present in the DOM and reachable by Tab, off-screen until focused.
+   * `sr-only` alone would keep it hidden even when focused.
+   */
+  .skip-link {
+    position: absolute;
+    left: -9999px;
+    top: 0;
+    z-index: var(--z-toast);
+  }
+  .skip-link:focus {
+    left: 1rem;
+    top: 1rem;
+    padding: 0.75rem 1rem;
+    border-radius: var(--radius);
+    background-color: var(--primary);
+    color: var(--primary-foreground);
+  }
+}

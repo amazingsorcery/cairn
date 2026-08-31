@@ -109,6 +109,12 @@ RUN set -eu; \
     fi; \
     echo "OK: standalone entrypoint at .next/standalone/server.js"
 
+# `COPY /app/public ./public` in the runner stage is a hard error when the directory does
+# not exist ("no source files were specified"), and a Next.js app is not required to have
+# one. Guaranteeing it exists here keeps the runner stage's COPY unconditional instead of
+# making the image build depend on whether anyone has added a favicon yet.
+RUN mkdir -p public
+
 
 # ---------------------------------------------------------------------------------------
 # migrator — one-shot image, never long-running
