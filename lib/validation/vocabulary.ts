@@ -125,55 +125,55 @@ export const outputTypesFilterSchema = z
   );
 
 /* ------------------------------------------------------------------ *
- * The one translation layer in the codebase, and why it exists
+ * Cost model: one spelling, asserted rather than assumed
  * ------------------------------------------------------------------ */
 
 /**
- * `costModel` is spelled kebab-case in authored content (`free-with-registration`) and
- * camelCase in the database (`freeWithRegistration`). `db/schema.ts` explains the split:
- * kebab reads better as a facet value in content, and camelCase is the convention for every
- * CHECK-constrained enum that code branches on.
+ * `costModel` is spelled camelCase on BOTH sides — `freeWithRegistration` in
+ * `db/schema.ts` COST_MODELS and in `lib/content/schema.ts` costModels. There is
+ * deliberately no translation layer: product-brief §6.2's rule is one spelling, no
+ * translation, and a map between two spellings is exactly the thing that goes stale.
  *
- * This map is the ONLY place the two spellings meet. It is exhaustive by construction — the
- * `Record<ContentCostModel, CostModel>` type makes a missing or misspelled member a compile
- * error rather than a `tools_cost_model_check` violation at seed time.
- */
-export const CONTENT_COST_MODEL_TO_DB: Readonly<Record<ContentCostModel, CostModel>> = {
-  free: "free",
-  "free-with-registration": "freeWithRegistration",
-  freemium: "freemium",
-  paid: "paid",
-  subscription: "subscription",
-  enterprise: "enterprise",
-};
-
-/** Reverse map, for rendering an authored file back out of the database. */
-export const DB_COST_MODEL_TO_CONTENT: Readonly<Record<CostModel, ContentCostModel>> =
-  Object.freeze(
-    Object.fromEntries(
-      Object.entries(CONTENT_COST_MODEL_TO_DB).map(([content, database]) => [database, content]),
-    ) as Record<CostModel, ContentCostModel>,
-  );
-
-/**
- * Guard against the two lists silently diverging. Called by the seed script and asserted in
- * the unit tests, so a value added to one array and not the other fails before it can write
- * a row the CHECK constraint would reject.
+ * The convention, settled by the architect:
+ *   - CLOSED, CHECK-constrained vocabularies that code branches on are camelCase
+ *     (`needsReview`, `freeWithRegistration`, `checklistStep`, `upstreamError`).
+ *   - OPEN `text[]` vocabularies that content grows stay kebab-case (`company-name`,
+ *     `raw-dataset`, `free-text`) — they are never TypeScript union members and kebab
+ *     reads better as a facet value.
+ *
+ * What remains is the risk that the two arrays drift. `assertCostModelsAligned` is called
+ * by the seed script before it writes anything and asserted in the unit tests, so a value
+ * added to one array and not the other fails loudly at seed time rather than as a
+ * `tools_cost_model_check` violation half-way through a load.
  */
 export function assertCostModelsAligned(): void {
-  const contentSide = new Set(contentCostModels);
-  const dbSide = new Set<string>(COST_MODELS);
+  const contentSide = [...contentCostModels].sort();
+  const dbSide = [...COST_MODELS].sort();
 
-  const mapped = new Set(Object.values(CONTENT_COST_MODEL_TO_DB));
-  const missingFromMap = [...contentSide].filter((v) => !(v in CONTENT_COST_MODEL_TO_DB));
-  const unmappedDbValues = [...dbSide].filter((v) => !mapped.has(v as CostModel));
+  const missingFromDb = contentSide.filter((v) => !(dbSide as readonly string[]).includes(v));
+  const missingFromContent = dbSide.filter((v) => !(contentSide as readonly string[]).includes(v));
 
-  if (missingFromMap.length > 0 || unmappedDbValues.length > 0) {
+  if (missingFromDb.length > 0 || missingFromContent.length > 0) {
     throw new Error(
       "Cost-model vocabularies have diverged. " +
-        `Content values with no database mapping: [${missingFromMap.join(", ")}]. ` +
-        `Database values nothing maps to: [${unmappedDbValues.join(", ")}]. ` +
-        "Fix lib/content/schema.ts, db/schema.ts and CONTENT_COST_MODEL_TO_DB together.",
+        `In lib/content/schema.ts but not db/schema.ts: [${missingFromDb.join(", ")}]. ` +
+        `In db/schema.ts but not lib/content/schema.ts: [${missingFromContent.join(", ")}]. ` +
+        "They must be the same list, in the same spelling (product-brief §6.2).",
     );
   }
+}
+
+/**
+ * A content `costModel` narrowed to the database enum. It is a straight identity check
+ * rather than a lookup, but it is the boundary where an unexpected value stops.
+ */
+export function toDbCostModel(value: ContentCostModel): CostModel {
+  const parsed = costModelSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error(
+      `"${value}" is not a value of COST_MODELS in db/schema.ts. ` +
+        "Add it there with a CHECK-constraint migration, or fix the content.",
+    );
+  }
+  return parsed.data;
 }
