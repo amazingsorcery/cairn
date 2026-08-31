@@ -33,7 +33,18 @@ import type { ActorIdentity, ConnectorDriver, ConnectorEnvelope } from "./types"
  * an exception loses both.
  */
 
-if (typeof window !== "undefined") {
+/**
+ * "Is this a real browser?" — `window` alone is not the test, because jsdom (Vitest's default
+ * environment) defines it while still running under Node. `process.versions.node` is present
+ * in every server runtime and in jsdom, and absent in a browser bundle, so the pair
+ * distinguishes the case that matters.
+ */
+const IN_BROWSER =
+  typeof window !== "undefined" &&
+  typeof document !== "undefined" &&
+  typeof process === "undefined";
+
+if (IN_BROWSER) {
   throw new Error(
     "lib/connectors is server-only. Importing it into a Client Component would send the " +
       "user's IP and viewport straight to the upstream, which ADR 0011 §1 forbids. Call it " +

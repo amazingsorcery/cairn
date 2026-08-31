@@ -16,6 +16,9 @@ const config = [
       "playwright-report/**",
       "test-results/**",
       "next-env.d.ts",
+      // Throwaway probe scripts written while verifying. Never shipped, never imported.
+      ".scratch/**",
+      ".devpg/**",
     ],
   },
   ...compat.extends("next/core-web-vitals", "next/typescript"),

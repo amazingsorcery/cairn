@@ -32,7 +32,7 @@
  * flag" — so this script copies the authored value and nothing else.
  */
 import { readFileSync, readdirSync, existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { eq, sql } from "drizzle-orm";
@@ -919,24 +919,38 @@ async function main(): Promise<void> {
   );
 }
 
-main()
-  .then(async () => {
-    // Close the pool and let the process exit naturally. NOT `process.exit(0)`: an explicit
-    // exit can cut the socket before the connection's terminate packet is flushed, which
-    // leaves a single-connection server (the local PGlite harness) holding a dead handler
-    // and refusing the next client. `pool.end()` already waits for every connection to
-    // close, so there is nothing left to hurry.
-    await closeDb();
-  })
-  .catch(async (error: unknown) => {
-    console.error("");
-    console.error(error instanceof SeedError ? error.message : error);
-    console.error("");
-    console.error("Nothing was written. Fix the content and run again.");
-    try {
+/**
+ * Only run when this file is the process entry point.
+ *
+ * Without the guard, `import { toOrderIndex } from "./seed"` in a unit test would execute the
+ * whole load — which is both a surprise and, against a configured DATABASE_URL, a write.
+ * The translation helpers above are exported precisely so they can be tested, so the guard
+ * is what makes that safe.
+ */
+const invokedDirectly =
+  process.argv[1] !== undefined &&
+  fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+
+if (invokedDirectly) {
+  main()
+    .then(async () => {
+      // Close the pool and let the process exit naturally. NOT `process.exit(0)`: an explicit
+      // exit can cut the socket before the connection's terminate packet is flushed, which
+      // leaves a single-connection server (the local PGlite harness) holding a dead handler
+      // and refusing the next client. `pool.end()` already waits for every connection to
+      // close, so there is nothing left to hurry.
       await closeDb();
-    } catch {
-      // A pool that never opened is not the failure worth reporting.
-    }
-    process.exit(1);
-  });
+    })
+    .catch(async (error: unknown) => {
+      console.error("");
+      console.error(error instanceof SeedError ? error.message : error);
+      console.error("");
+      console.error("Nothing was written. Fix the content and run again.");
+      try {
+        await closeDb();
+      } catch {
+        // A pool that never opened is not the failure worth reporting.
+      }
+      process.exit(1);
+    });
+}

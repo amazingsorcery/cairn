@@ -127,10 +127,21 @@ const aircraftSchema = z
   })
   .passthrough();
 
+/**
+ * `ac` and `now` are REQUIRED, not defaulted.
+ *
+ * Both are in the upstream's own `required` list, and defaulting either would be the worst
+ * possible failure here: a response of a completely different shape would parse as "zero
+ * aircraft" and the map would render an empty, confident, wrong sky. ADR 0014's whole
+ * argument is against a surface that lies about its own state — a shape change must degrade
+ * to `unavailable`, not to "nothing is flying".
+ *
+ * `total` stays optional because nothing depends on it beyond a displayed count.
+ */
 const responseSchema = z.object({
-  ac: z.array(aircraftSchema).default([]),
+  ac: z.array(aircraftSchema),
   /** Upstream clock, milliseconds since the epoch. */
-  now: z.number().optional(),
+  now: z.number(),
   total: z.number().optional(),
 });
 

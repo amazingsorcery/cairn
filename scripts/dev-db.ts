@@ -1,58 +1,137 @@
 /**
- * A disposable PostgreSQL for local verification. **Development only.**
+ * Local PostgreSQL for development and verification. **Development only.**
  *
- * Production runs real PostgreSQL 16 in a container (docker-compose.prod.yml) and CI runs
- * the `postgres:16` service image. This exists solely so the application can actually be
- * booted and looked at on a machine with no Docker and no database credentials — because
- * shipping a build nobody has ever run is not a build, it is a hypothesis.
+ * Production runs PostgreSQL 16 in a container (`docker-compose.prod.yml`); CI runs the
+ * `postgres:16` service image. This script manages a *separate, disposable* cluster in
+ * `.devpg/` using whatever PostgreSQL binaries are on PATH, so the build can actually be
+ * run on a machine with no Docker — because shipping a build nobody has executed is not a
+ * build, it is a hypothesis.
  *
- * PGlite runs Postgres compiled to WebAssembly in this process, and `pglite-socket` exposes
- * it on a TCP port speaking the real wire protocol. That means `pg` connects to it
- * unchanged: no driver swap, no second code path in `lib/db.ts`, nothing that could make
- * local behaviour diverge from production behaviour.
+ * It deliberately does NOT touch any existing cluster, does not need credentials for one,
+ * and does not modify any system configuration. It initialises its own data directory with
+ * trust authentication bound to 127.0.0.1 on a non-default port.
  *
- * Known divergences from the production database, which is why this verifies and never
- * certifies:
- *   - PGlite is single-connection, so it proves nothing about pooling or concurrency.
- *   - It is Postgres 17-derived; production and CI are 16.
- *   - Extension availability is narrower. If `pg_trgm` is unavailable the trigram
- *     fallback in search cannot be exercised here — CI is the gate for that.
+ * Commands:
+ *   pnpm dev:db start     initdb if needed, start, create the database and pg_trgm
+ *   pnpm dev:db stop      stop the cluster
+ *   pnpm dev:db status    is it running
+ *   pnpm dev:db reset     stop, delete the data directory, start fresh
+ *
+ * Divergences from production, which is why this verifies and never certifies:
+ *   - PostgreSQL 17 here; 16 in production and CI. CI remains the gate for planner
+ *     behaviour and anything version-sensitive.
+ *   - trust auth on loopback. Never use this configuration for anything reachable.
  */
-import { PGlite } from "@electric-sql/pglite";
-import { PGLiteSocketServer } from "@electric-sql/pglite-socket";
-import { pg_trgm } from "@electric-sql/pglite/contrib/pg_trgm";
+import { spawnSync } from "node:child_process";
+import { existsSync, rmSync } from "node:fs";
+import { join } from "node:path";
 
-const PORT = Number(process.env.DEV_DB_PORT ?? 55432);
-const DATA_DIR = process.env.DEV_DB_DIR ?? ".dev-db";
+const DATA_DIR = process.env.DEV_DB_DIR ?? join(process.cwd(), ".devpg");
+const PORT = process.env.DEV_DB_PORT ?? "55433";
+const DB_NAME = process.env.DEV_DB_NAME ?? "cairn_dev";
+const LOG = join(DATA_DIR, "server.log");
 
-async function main(): Promise<void> {
-  // pg_trgm is not built in: PGlite ships contrib extensions as explicit imports. Without
-  // it the trigram fallback in search (docs/architecture/search.md) could not be exercised
-  // locally at all, and that fallback is the path a user hits when full-text finds nothing.
-  const db = await PGlite.create({ dataDir: DATA_DIR, extensions: { pg_trgm } });
+const url = (db: string) => `postgresql://postgres@127.0.0.1:${PORT}/${db}`;
 
-  const available = await db.query<{ name: string }>(
-    "select name from pg_available_extensions where name = 'pg_trgm'",
-  );
-  const hasTrgm = available.rows.length > 0;
-
-  const server = new PGLiteSocketServer({ db, port: PORT, host: "127.0.0.1" });
-  await server.start();
-
-  console.log(`dev database listening on 127.0.0.1:${PORT} (data in ${DATA_DIR})`);
-  console.log(`pg_trgm available: ${hasTrgm ? "yes" : "NO — trigram fallback is untestable here"}`);
-  console.log(`DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:${PORT}/postgres"`);
-
-  const shutdown = async () => {
-    await server.stop();
-    await db.close();
-    process.exit(0);
-  };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+function run(bin: string, args: string[], allowFailure = false): string {
+  const result = spawnSync(bin, args, { encoding: "utf8" });
+  if (result.error) {
+    throw new Error(
+      `${bin} could not be run. Is PostgreSQL installed and on PATH?\n${result.error.message}`,
+    );
+  }
+  if (result.status !== 0 && !allowFailure) {
+    throw new Error(`${bin} ${args.join(" ")} failed:\n${result.stdout}\n${result.stderr}`);
+  }
+  return `${result.stdout}${result.stderr}`;
 }
 
-main().catch((error: unknown) => {
-  console.error("dev database failed to start:", error);
-  process.exit(1);
-});
+function isRunning(): boolean {
+  const result = spawnSync("pg_ctl", ["-D", DATA_DIR, "status"], { encoding: "utf8" });
+  return result.status === 0;
+}
+
+function psql(db: string, sql: string, allowFailure = false): string {
+  return run("psql", ["-w", url(db), "-tAc", sql], allowFailure);
+}
+
+function start(): void {
+  if (!existsSync(join(DATA_DIR, "PG_VERSION"))) {
+    console.log(`initialising a fresh cluster in ${DATA_DIR}`);
+    run("initdb", [
+      "-D",
+      DATA_DIR,
+      "-U",
+      "postgres",
+      "--auth-local=trust",
+      "--auth-host=trust",
+      "-E",
+      "UTF8",
+      "--no-locale",
+    ]);
+  }
+
+  if (isRunning()) {
+    console.log(`already running on 127.0.0.1:${PORT}`);
+  } else {
+    // Modest settings: this mirrors the constrained VPS rather than the developer's laptop,
+    // so a query that is only fast because of a huge cache does not look fine here.
+    run("pg_ctl", [
+      "-D",
+      DATA_DIR,
+      "-l",
+      LOG,
+      "-o",
+      `-p ${PORT} -c listen_addresses=127.0.0.1 -c max_connections=50 -c shared_buffers=128MB`,
+      "-w",
+      "start",
+    ]);
+    console.log(`started on 127.0.0.1:${PORT}`);
+  }
+
+  const exists = psql("postgres", `select 1 from pg_database where datname = '${DB_NAME}'`).trim();
+  if (!exists) {
+    psql("postgres", `create database ${DB_NAME}`);
+    console.log(`created database ${DB_NAME}`);
+  }
+
+  // pg_trgm backs the fuzzy fallback in search. Without it the trigram indexes in
+  // migration 0002 cannot be created and the fallback path is untestable.
+  psql(DB_NAME, "create extension if not exists pg_trgm");
+
+  console.log("");
+  console.log(`DATABASE_URL=${url(DB_NAME)}`);
+  console.log(`logs: ${LOG}`);
+}
+
+function stop(): void {
+  if (!isRunning()) {
+    console.log("not running");
+    return;
+  }
+  run("pg_ctl", ["-D", DATA_DIR, "-m", "fast", "-w", "stop"]);
+  console.log("stopped");
+}
+
+const command = process.argv[2] ?? "start";
+
+switch (command) {
+  case "start":
+    start();
+    break;
+  case "stop":
+    stop();
+    break;
+  case "status":
+    console.log(isRunning() ? `running on 127.0.0.1:${PORT}` : "not running");
+    break;
+  case "reset":
+    stop();
+    rmSync(DATA_DIR, { recursive: true, force: true });
+    console.log(`removed ${DATA_DIR}`);
+    start();
+    break;
+  default:
+    console.error(`Unknown command "${command}". Use start, stop, status or reset.`);
+    process.exit(1);
+}

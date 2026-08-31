@@ -43,3 +43,7 @@ backups/
 caddy_data/
 caddy_config/
 .dev-db/
+.devpg/
+
+# Agent scratch space. Never part of the build.
+.scratch/

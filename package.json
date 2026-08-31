@@ -24,6 +24,7 @@
     "db:studio": "drizzle-kit studio",
     "content:check": "tsx scripts/validate-content.ts",
     "dev:db": "tsx scripts/dev-db.ts",
+    "dev:db:counts": "tsx scripts/row-counts.ts",
     "dev:db:verify": "tsx scripts/verify-db.ts",
     "csp:generate": "tsx scripts/generate-csp.ts",
     "csp:check": "tsx scripts/generate-csp.ts --check"
@@ -61,8 +62,6 @@
     "zod": "^3.24.2"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "^0.5.8",
-    "@electric-sql/pglite-socket": "^0.2.11",
     "@eslint/eslintrc": "^3.3.6",
     "@playwright/test": "^1.50.1",
     "@tailwindcss/postcss": "^4.0.6",

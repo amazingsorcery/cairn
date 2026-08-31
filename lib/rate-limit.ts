@@ -242,3 +242,27 @@ export async function sweepExpired(
     connectorRequests: requests.length,
   };
 }
+
+/**
+ * The rate-limit subject for an unauthenticated HTTP request.
+ *
+ * Caddy sets `X-Forwarded-For` with `header_up X-Forwarded-For {remote_host}` — SET, not
+ * append — so a client cannot influence what the app sees (docs/deploy/HANDOFF.md A#3).
+ * That guarantee holds only for as long as that Caddyfile line does; if a CDN is ever put in
+ * front of Caddy, this function and that file must be revisited together.
+ *
+ * The first entry is taken and everything after it ignored, because a spoofed prefix is the
+ * classic bypass. The value never leaves this function unhashed: it goes straight into
+ * `consume`, which HMACs it before it reaches the database (ADR 0009).
+ *
+ * When no header is present — a direct request to `web:3000` inside the Compose network, or
+ * a local `next dev` — the subject falls back to a constant. That means every such caller
+ * shares one counter, which is the correct fail-closed behaviour: it cannot be used to
+ * bypass a limit, only to hit one sooner.
+ */
+export function clientSubject(request: Request): string {
+  const forwarded = request.headers.get("x-forwarded-for");
+  const first = forwarded?.split(",")[0]?.trim();
+  if (first) return first;
+  return request.headers.get("x-real-ip")?.trim() || "unknown-client";
+}
