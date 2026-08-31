@@ -1,0 +1,325 @@
+# Caddy v2 — TLS termination, security headers, reverse proxy to the app container.
+#
+# The hostname is NEVER written in this file. {$DOMAIN} and {$ACME_EMAIL} are substituted
+# from the container environment at config-load time (docker-compose.prod.yml passes them
+# through from .env). Re-pointing at a different domain is:
+#
+#     edit .env  ->  docker compose -f docker-compose.prod.yml up -d caddy
+#
+# It is not an edit to this file and it is not a rebuild.
+#
+# Validate after any change, before restarting:
+#     docker compose -f docker-compose.prod.yml exec caddy caddy validate --config /etc/caddy/Caddyfile
+# Reload without dropping connections or re-requesting certificates:
+#     docker compose -f docker-compose.prod.yml exec caddy caddy reload --config /etc/caddy/Caddyfile
+
+{
+	# ACME contact address. Let's Encrypt uses it for expiry warnings if renewal ever
+	# stalls — it is the last line of defence before a certificate lapses.
+	email {$ACME_EMAIL}
+
+	# Defaults to the Let's Encrypt production directory. Override in .env with the
+	# staging directory while testing DNS or firewall changes:
+	#   ACME_CA=https://acme-staging-v02.api.letsencrypt.org/directory
+	# Production allows 5 failed authorisations per hostname per hour. Burning that
+	# during a DNS misconfiguration locks you out of issuance for the rest of the hour,
+	# so test on staging first. Staging certificates are untrusted by browsers; that is
+	# expected and is how you know you are on staging.
+	acme_ca {$ACME_CA}
+
+	servers {
+		# Caddy IS the edge here — there is no CDN or load balancer in front of it, so
+		# there is no upstream whose X-Forwarded-For should ever be believed. Leaving
+		# trusted_proxies unset (the default: trust nothing) means Caddy derives the
+		# client IP from the actual TCP peer. The reverse_proxy block below then *sets*
+		# rather than appends the forwarded headers, so a client cannot inject a fake
+		# X-Forwarded-For and have the app log or rate-limit the wrong address.
+		#
+		# If a CDN is ever placed in front, this must become:
+		#     trusted_proxies static <cdn-egress-cidr> ...
+		# and the header_up lines below must go back to appending.
+	}
+}
+
+{$DOMAIN} {
+	# --- Compression ------------------------------------------------------------------
+	# zstd first (better ratio, cheaper to decompress), gzip for everything older.
+	# Caddy negotiates from Accept-Encoding and skips already-compressed content types.
+	encode zstd gzip
+
+	# --- Request body limit -----------------------------------------------------------
+	# A cap on how much a single request may push into the app before Caddy rejects it
+	# with 413. Without it, one client can stream gigabytes at the Node process on a box
+	# with 768 MB of headroom.
+	#
+	# 10 MB is a safe ceiling that cannot break a route that has not been written yet.
+	# v1 has no file-upload surface (directory, playbooks, workspace notes and exports —
+	# all of which are small JSON or form posts), so once that is confirmed against the
+	# shipped routes this should drop to 1MB, which is still ~50x the largest legitimate
+	# request. Change the number below; no other edit is needed.
+	request_body {
+		max_size 10MB
+	}
+
+	# --- Security headers -------------------------------------------------------------
+	header {
+		# HSTS. 2 years, all subdomains, preload-eligible.
+		#
+		# !! READ THIS BEFORE THE DOMAIN IS PUBLIC !!
+		# `preload` is a request to be hard-coded into browsers' built-in HSTS lists. It
+		# is effectively IRREVERSIBLE for months, it applies to EVERY subdomain, and
+		# removal from the list ships on the browsers' own release cadence. If any
+		# subdomain of this domain will ever need to serve plain HTTP — a staging box, a
+		# mail-provider verification host, an IoT thing on a subdomain — preload will
+		# break it and you cannot quickly undo it.
+		#
+		# The token here does nothing on its own; inclusion only happens after a manual
+		# submission at https://hstspreload.org. So: ship this header, run the site for a
+		# few weeks, and only submit once you are certain about subdomains.
+		# To back out before submitting, drop `preload` and lower max-age.
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+
+		# Stops content-type sniffing. Matters for user-supplied Markdown and for the
+		# generated PDF export, both of which must be interpreted as what we say they are.
+		X-Content-Type-Options "nosniff"
+
+		# `no-referrer`, not the more common `strict-origin-when-cross-origin`.
+		# The directory's whole purpose is outbound links to third-party OSINT tools. With
+		# any origin-leaking policy, every one of those vendors learns that the visitor
+		# arrived from this site — which, for an audience of journalists and human-rights
+		# researchers, is exactly the interest-graph leak the product brief forbids
+		# (§3.2, "no behavioural analytics"). The cost is that our own server-side
+		# analytics cannot see internal navigation paths; we do not have server-side
+		# analytics.
+		# If a future need requires same-origin referrers, the correct loosening is
+		# `same-origin` — never `strict-origin-when-cross-origin`.
+		Referrer-Policy "no-referrer"
+
+		# Clickjacking. X-Frame-Options is the legacy control for old browsers; the CSP
+		# `frame-ancestors 'none'` below is the modern one and takes precedence where both
+		# are understood. Both are set on purpose.
+		X-Frame-Options "DENY"
+
+		# Explicitly surrender browser capabilities the app does not use. This is a real
+		# control, not decoration: it means a successful XSS cannot silently reach the
+		# camera, microphone, or geolocation of a journalist's machine.
+		# `browsing-topics=()` opts out of Chrome's Topics API — required by the brief's
+		# no-behavioural-advertising constraint, and it is not covered by CSP.
+		Permissions-Policy "accelerometer=(), autoplay=(), browsing-topics=(), camera=(), display-capture=(), encrypted-media=(), fullscreen=(self), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), publickey-credentials-get=(), screen-wake-lock=(), usb=(), xr-spatial-tracking=()"
+
+		# Cross-origin isolation primitives. COOP severs the window.opener relationship so
+		# a page we link to cannot reach back into our window. CORP stops other origins
+		# embedding our responses as subresources.
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Resource-Policy "same-origin"
+
+		# The legacy XSS auditor is itself exploitable and is disabled in every current
+		# browser. `0` is the correct modern value; `1; mode=block` is cargo cult.
+		X-XSS-Protection "0"
+
+		# Do not advertise the stack.
+		-Server
+		-X-Powered-By
+
+		# ==============================================================================
+		# CONTENT SECURITY POLICY
+		# ==============================================================================
+		# The `?` prefix means "set this ONLY if the response does not already carry a
+		# Content-Security-Policy header". That is deliberate and load-bearing:
+		#
+		#   * Today, the app sets no CSP, so this policy applies to every response.
+		#   * If the app later adopts per-request nonces via Next.js middleware (the only
+		#     way to remove 'unsafe-inline' from script-src — see below), its stricter
+		#     header wins automatically and this line stops applying. No coordinated
+		#     edit-and-redeploy of two components, no window where both or neither is set.
+		#
+		# ---- Directives that are as tight as they can be -----------------------------
+		#   default-src 'self'      everything not named below is same-origin only.
+		#   base-uri 'none'         blocks <base href> injection, which otherwise
+		#                           re-points every relative URL on the page.
+		#   object-src 'none'       no <object>/<embed>. The PDF export is delivered as a
+		#                           download response, not an embedded plugin, so this
+		#                           costs nothing. See HANDOFF.md #6.
+		#   frame-ancestors 'none'  nobody may frame us.
+		#   frame-src 'none'        we frame nobody. No embedded maps, no YouTube.
+		#   font-src 'self'         next/font self-hosts: it downloads the font files at
+		#                           BUILD time and emits them into .next/static. There is
+		#                           no request to fonts.googleapis.com or fonts.gstatic.com
+		#                           at runtime. Confirmed from package.json: no font CDN
+		#                           package and no analytics/tag-manager package is present,
+		#                           so there is genuinely no third-party origin to allow.
+		#                           ASSUMPTION: the app uses next/font (or local files) and
+		#                           never a <link> to a font CDN. HANDOFF.md #5 records this
+		#                           as a constraint on the frontend engineer.
+		#   connect-src 'self'      RSC payload fetches, server actions and route handlers
+		#                           are all same-origin.
+		#   manifest-src 'self'
+		#   upgrade-insecure-requests
+		#                           any accidental http:// subresource is fetched over TLS
+		#                           instead of being blocked or downgrading the page.
+		#
+		# ---- Directives that are LOOSENED, why, and how to tighten each --------------
+		#
+		# 1) script-src 'self' 'unsafe-inline'
+		#    WHY: the Next.js App Router streams the RSC payload to the browser as a
+		#    sequence of inline <script>self.__next_f.push(...)</script> tags, and emits an
+		#    inline bootstrap script. Their contents differ per request, so neither a hash
+		#    allowlist nor a static policy can cover them. Without 'unsafe-inline' the
+		#    page renders its server HTML and then never hydrates: no client interactivity
+		#    at all, and a console full of CSP violations.
+		#    IMPACT: this is the one directive here that materially weakens XSS defence.
+		#    An injected inline <script> would execute. Injected *external* scripts are
+		#    still blocked by 'self'.
+		#    TO TIGHTEN: Next.js supports nonce propagation. The app must add a middleware
+		#    that generates a fresh nonce per request, forwards it on the request headers,
+		#    and sets its own Content-Security-Policy response header containing
+		#    `script-src 'nonce-<value>' 'strict-dynamic'`. Next.js then stamps that nonce
+		#    onto every script it emits. Two real costs: (a) every route becomes
+		#    dynamically rendered, because a per-request nonce cannot be baked into a
+		#    static page — on a directory site that is mostly static content this is a
+		#    genuine performance regression; (b) it is app code, not infra. Because of the
+		#    `?` prefix above, that middleware's header would take over with no change to
+		#    this file. Recorded as HANDOFF.md #4.
+		#
+		# 2) style-src 'self' 'unsafe-inline'
+		#    WHY: two independent causes, both unavoidable today.
+		#      (a) The Radix UI primitives in use (popover, select, dropdown, tooltip,
+		#          dialog) position themselves by writing computed values into the
+		#          `style` attribute on every open. CSP treats inline style *attributes*
+		#          as inline styles, and nonces cannot apply to attributes — there is no
+		#          place to put one.
+		#      (b) React's own `style={{...}}` prop produces the same thing.
+		#    IMPACT: much lower than an inline script. The realistic attack is CSS-based
+		#    exfiltration or UI redressing, not code execution.
+		#    TO TIGHTEN: split the directive —
+		#        style-src-elem 'self';  style-src-attr 'unsafe-inline';
+		#    which keeps <style> elements and stylesheets restricted to same-origin while
+		#    conceding only the attribute case. This is a real improvement and is very
+		#    likely to work here (Tailwind v4 emits a linked stylesheet, and Next.js only
+		#    inlines CSS into <style> elements when the opt-in experimental.inlineCss is
+		#    enabled, which it is not). It is not the default only because it must be
+		#    verified against the built site before it ships — see RUNBOOK
+		#    "Tightening the CSP" for the procedure.
+		#
+		# 3) img-src 'self' data: blob:
+		#    WHY: `data:` covers inline SVG icons and any base64 placeholder;
+		#    `blob:` covers client-side object URLs, which the Markdown/PDF export path
+		#    uses to hand the user a generated file.
+		#    IMPACT: minor. `data:` images are an exfiltration channel only in
+		#    combination with a separate injection flaw.
+		#    TO TIGHTEN: drop `blob:` if export is confirmed to be a plain server response
+		#    with Content-Disposition rather than a client-constructed object URL. Drop
+		#    `data:` if all icons are confirmed to be served as files.
+		#    NOTE: directory entries must NOT hotlink third-party favicons or vendor
+		#    logos. Every such origin added here is a party that learns which entries a
+		#    visitor viewed — the same interest-graph leak Referrer-Policy closes above.
+		#    Self-host or omit. Recorded as HANDOFF.md #7.
+		#
+		# 4) form-action 'self' https://github.com
+		#    WHY: this is not decoration and it is not a mistake. Signing in with GitHub
+		#    is a form POST to our own /api/auth/signin/github, which answers with a 302
+		#    to https://github.com/login/oauth/authorize. Chrome enforces form-action
+		#    against the *entire redirect chain*, so a bare `form-action 'self'` silently
+		#    breaks GitHub sign-in with a CSP violation and no useful UI error.
+		#    IMPACT: negligible. It permits form submission to exactly one well-known
+		#    origin.
+		#    TO TIGHTEN: it cannot be tightened while GitHub OAuth is a feature. If the
+		#    GitHub provider is ever dropped, remove the origin.
+		#
+		# ---- Not set, and why --------------------------------------------------------
+		#   report-uri / report-to: reporting requires an endpoint that accepts and stores
+		#     violation reports. That is app code and a small privacy question of its own
+		#     (reports contain URLs the user visited). Not built, so not claimed.
+		#   require-trusted-types-for 'script': would break React's DOM writes and Radix.
+		#     Not viable without upstream support.
+		# ==============================================================================
+		?Content-Security-Policy "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; frame-src 'none'; form-action 'self' https://github.com; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; manifest-src 'self'; upgrade-insecure-requests"
+	}
+
+	# --- Access log -------------------------------------------------------------------
+	# The Docker healthcheck probes the container directly and never reaches Caddy, but an
+	# external uptime monitor will hit this path every minute. Skipping it keeps the log
+	# readable and stops a monitor from being the only thing in it.
+	@health path /api/health
+	log_skip @health
+
+	log {
+		# stdout, not a file. The json-file driver in docker-compose.prod.yml already
+		# rotates at 10 MB x 3, so logging to a file inside the container would create a
+		# SECOND unrotated growth path on the same disk — which is the exact failure this
+		# stack is trying to avoid. `docker compose logs caddy` is the single place to
+		# look. See RUNBOOK "Logs".
+		output stdout
+
+		format filter {
+			wrap json
+
+			fields {
+				# Caddy already redacts credentials by default (log_credentials is off),
+				# but these are stated explicitly so the guarantee survives a future
+				# config change or a version bump that alters the default.
+				request>headers>Cookie delete
+				request>headers>Authorization delete
+				resp_headers>Set-Cookie delete
+
+				# Truncate client IPs before they are written: /24 for IPv4, /48 for IPv6.
+				# Enough to diagnose an abusive network or a routing problem; not enough
+				# to place an individual reader of an investigative-tooling site. The
+				# audience is people for whom that distinction is the product. This is a
+				# deliberate trade: per-host abuse attribution becomes harder.
+				request>remote_ip ip_mask {
+					ipv4 24
+					ipv6 48
+				}
+			}
+		}
+	}
+
+	# --- Reverse proxy ----------------------------------------------------------------
+	# `web` is the compose service name, resolved on the `edge` docker network. Port 3000
+	# is not published to the host by that service — this is the only path to it.
+	reverse_proxy web:3000 {
+		# SET, not append. Caddy's default is to append the peer address to any incoming
+		# X-Forwarded-For, which means a client sending
+		#     X-Forwarded-For: 10.0.0.1
+		# gets that value delivered to the app ahead of its real address. Every one of
+		# these lines overwrites the incoming header with a value Caddy derived from the
+		# actual connection, so nothing client-controlled reaches the app in these fields.
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Real-IP {remote_host}
+
+		# Auth.js v5 builds absolute callback URLs from these. Without X-Forwarded-Proto
+		# the app sees the plaintext http:// hop from Caddy to web:3000 and generates
+		# http:// magic-link and OAuth callback URLs, which then fail. The app must also
+		# set AUTH_TRUST_HOST=true for these to be honoured — see HANDOFF.md #3.
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-Host {host}
+
+		# Caddy preserves the original Host header by default, which is what Auth.js and
+		# Next.js want. Stated here so nobody "fixes" it later.
+		header_up Host {host}
+
+		# Give up on a dead upstream quickly rather than holding connections open through
+		# a restart. Next.js server-renders in tens of milliseconds; 30 s of read timeout
+		# is generous even for the PDF export path.
+		transport http {
+			dial_timeout 5s
+			response_header_timeout 30s
+		}
+	}
+
+	# --- Error pages ------------------------------------------------------------------
+	# When the app is down, Caddy's default is an empty body. A plain-text status is
+	# enough to tell a human "this is the proxy, not the app" without inventing a branded
+	# error page (brand strings live in config/brand.ts and are the app's to render).
+	handle_errors {
+		header Content-Type "text/plain; charset=utf-8"
+		respond "{err.status_code} {err.status_text}" {err.status_code}
+	}
+}
+
+# A `www.` redirect is intentionally NOT configured here. Adding `www.{$DOMAIN}` to the
+# site address above makes Caddy request a certificate for it, and if the www DNS record
+# does not exist the failed authorisation counts against the Let's Encrypt rate limit for
+# the whole hostname and can block issuance for the apex too. Set up the DNS record first,
+# then follow "Adding a www redirect" in docs/deploy/RUNBOOK.md.
