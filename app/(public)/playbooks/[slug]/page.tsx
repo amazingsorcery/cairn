@@ -32,8 +32,7 @@ import { staticParamsOrEmpty } from "@/lib/static-params";
  */
 
 /** A Markdown body's own leading title, which the route already renders as its `h1`. */
-const LEADING_HEADING = /^\s*#\s+.*?
-+/;
+const LEADING_HEADING = /^\s*#\s+.*\r?\n+/;
 
 export const revalidate = 3600;
 

@@ -58,7 +58,7 @@ import { staticParamsOrEmpty } from "@/lib/static-params";
  * desktop version is the one that gained space, never the one that gained features.
  */
 
-export const dynamic = "force-dynamic";
+export const revalidate = 3600;
 
 interface ToolPageProps {
   params: Promise<{ slug: string }>;
