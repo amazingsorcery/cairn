@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
@@ -40,6 +40,14 @@ export interface NoteComposerProps {
   placeholder: string;
   submitLabel?: string;
   onSaved?: () => void;
+  /**
+   * Focus the field on mount. Set where the composer is revealed by a control that then
+   * disappears — otherwise the browser has nowhere to put focus and drops it on `<body>`,
+   * sending a keyboard user back to the top of the document (Q-09, WCAG 2.4.3).
+   */
+  autoFocus?: boolean;
+  /** Rendered beside the submit when the composer can be dismissed again. */
+  onCancel?: () => void;
 }
 
 export function NoteComposer({
@@ -49,6 +57,8 @@ export function NoteComposer({
   placeholder,
   submitLabel = "add note",
   onSaved,
+  autoFocus = false,
+  onCancel,
 }: NoteComposerProps) {
   const router = useRouter();
   const fieldId = useId();
@@ -60,6 +70,10 @@ export function NoteComposer({
   const [error, setError] = useState<string | null>(null);
 
   useUnsavedGuard(body.trim() !== "");
+
+  useEffect(() => {
+    if (autoFocus) fieldRef.current?.focus();
+  }, [autoFocus]);
 
   async function submit() {
     const candidate = body.trim();
@@ -132,13 +146,27 @@ export function NoteComposer({
         </p>
       ) : null}
 
-      <div className="mt-2 flex items-center justify-between gap-2">
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-muted-foreground">
           Timestamped when you add it. Markdown is rendered.
         </p>
-        <Button type="submit" className="h-11" disabled={pending || body.trim() === ""}>
-          {pending ? "saving…" : submitLabel}
-        </Button>
+        <div className="flex items-center gap-2">
+          {onCancel ? (
+            <Button
+              type="button"
+              variant="ghost"
+              className="h-11"
+              onClick={onCancel}
+              // The guard still fires if there is text: dismissing the composer is a
+              // navigation away from unsaved work like any other.
+            >
+              cancel
+            </Button>
+          ) : null}
+          <Button type="submit" className="h-11" disabled={pending || body.trim() === ""}>
+            {pending ? "saving…" : submitLabel}
+          </Button>
+        </div>
       </div>
     </form>
   );

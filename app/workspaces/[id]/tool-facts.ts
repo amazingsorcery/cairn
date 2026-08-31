@@ -1,42 +1,41 @@
 import type { ToolFacts } from "@/components/workspaces/tool-facts-types";
-import { getToolBySlug } from "@/lib/queries/tools";
+import type { WorkspaceItemView } from "@/lib/queries/workspaces";
 
 /**
- * Current confidence and last-verified date for the tools a case has saved.
+ * Current confidence and last-verified date for the tools a case has saved, keyed by slug.
  *
- * WHY THIS EXISTS RATHER THAN COMING OUT OF `getWorkspace`. `lib/queries/workspaces.ts`
- * returns `tool_slug` for an entry that still resolves but not the entry's `confidence` or
- * `lastVerifiedAt`, and architecture HANDOFF 9.1 requires both wherever an entry appears —
- * the workspace page and the export are named explicitly. Adding the two columns to the
- * items query would be one join and strictly better; `lib/` is another engineer's file, so
- * this composes the existing public read instead and the change is written up in
- * `docs/frontend/HANDOFF-workspaces.md` 7.
+ * NO QUERIES. Both facts now arrive on the item rows themselves, joined in
+ * `getWorkspace` — architecture HANDOFF §9.1 requires them wherever an entry appears, and
+ * they are on the row the page already has.
  *
- * `getToolBySlug` is `unstable_cache`d by slug and tagged `tools` / `tool:<slug>`. It takes
- * no `userId` and returns nothing private, so reading it here does not put case data into a
- * shared cache — the rule in `caching.md` 6 is about queries whose RESULT depends on the
- * session, and this one's does not.
+ * WHAT THIS REPLACED, and why (QA finding Q-15). This used to be
+ * `Promise.all(unique.map(getToolBySlug))` — one cached read per saved tool. A warm cache
+ * collapsed it to nothing, which is why it looked fine; a cold cache, a deploy, or any
+ * editorial publish firing `revalidateTag('tools')` restored the full fan-out. After the
+ * tool read was split for the partial states it was TWO round trips per tool, so a
+ * thirty-tool case was sixty concurrent statements against a pool sized for a 2 GB box.
+ * It was the one N+1 left in the read path.
  *
- * A slug that no longer resolves yields no entry in the map, and the caller renders the
- * "no longer in the catalogue" state (ADR 0008). A failure to read the catalogue must never
- * take the case page down with it: the case is the user's, the chip is ours.
+ * The previous version noted the correct fix in its own comment and did not apply it because
+ * `lib/` belonged to another engineer. The join is now in `lib/queries/workspaces.ts`.
+ *
+ * A tool that was deleted or unpublished has a null `toolSlug` and yields no entry, so the
+ * caller renders the "no longer in the catalogue" state (ADR 0008). Unchanged behaviour: the
+ * case is the user's, the chip is ours, and losing the chip must never cost them the case.
  */
-export async function loadToolFacts(slugs: readonly string[]): Promise<Record<string, ToolFacts>> {
-  const unique = [...new Set(slugs)];
-  if (unique.length === 0) return {};
+export function toolFactsFor(items: readonly WorkspaceItemView[]): Record<string, ToolFacts> {
+  const facts: Record<string, ToolFacts> = {};
 
-  const entries = await Promise.all(
-    unique.map(async (slug): Promise<[string, ToolFacts] | null> => {
-      try {
-        const tool = await getToolBySlug(slug);
-        if (!tool) return null;
-        return [slug, { confidence: tool.confidence, lastVerifiedAt: tool.lastVerifiedAt }];
-      } catch {
-        // Degrade to the snapshot-only row rather than failing the whole case file.
-        return null;
-      }
-    }),
-  );
+  for (const item of items) {
+    // `toolConfidence` is non-null exactly when `toolSlug` is — both come from the same
+    // `case when t.status = 'published'` in the items query — but the compiler cannot know
+    // that, and asserting it would be the kind of claim that stops being true after an edit.
+    if (item.toolSlug === null || item.toolConfidence === null) continue;
+    facts[item.toolSlug] = {
+      confidence: item.toolConfidence,
+      lastVerifiedAt: item.toolLastVerifiedAt,
+    };
+  }
 
-  return Object.fromEntries(entries.filter((entry): entry is [string, ToolFacts] => entry !== null));
+  return facts;
 }

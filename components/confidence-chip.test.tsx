@@ -46,6 +46,27 @@ describe("ConfidenceChip", () => {
     expect([...CONFIDENCE_LEVELS].sort()).toEqual([...handled].sort());
   });
 
+  it.each(CONFIDENCE_LEVELS)(
+    "keeps our record as the grammatical subject of the %s explanation, never the tool",
+    (level) => {
+      // Q-16 from the hostile audit: needsReview read as "confirm before relying on it",
+      // which a reader takes as a warning about the TOOL. Confidence says how sure WE are
+      // about what WE wrote down; tools.reliability is the separate field that rates the
+      // tool. states.md §3.4 exists to keep those two claims apart, and collapsing them is
+      // the failure this product cannot afford.
+      const meaning = confidenceMeaning(level);
+      // Stricter than "mentions us": the sentence must OPEN with us, so the claim cannot
+      // drift back onto the tool through a subordinate clause.
+      expect(meaning.startsWith("We ") || meaning.startsWith("Our ")).toBe(true);
+    },
+  );
+
+  it("does not tell the reader the tool itself is unreliable", () => {
+    const review = confidenceMeaning("needsReview");
+    expect(review).toMatch(/our record/i);
+    expect(review).toMatch(/not a judgement about the tool/i);
+  });
+
   it("uses the displayed spelling, never the stored one", () => {
     render(<ConfidenceChip level="needsReview" />);
     expect(screen.getByText("Needs review")).toBeInTheDocument();

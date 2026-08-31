@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ArrowRight, MessageSquarePlus } from "lucide-react";
@@ -39,6 +39,8 @@ export interface ChecklistProps {
   items: readonly WorkspaceItemView[];
   /** Notes anchored to a checklist entry, keyed by `workspaceItemId`. */
   notesByItem: Readonly<Record<string, readonly NoteView[]>>;
+  /** Server-rendered note bodies, keyed by note id. See `note-card.tsx` (Q-12). */
+  renderedNoteBodies: Readonly<Record<string, React.ReactNode>>;
   playbookSlug: string | null;
 }
 
@@ -47,18 +49,35 @@ function ChecklistRow({
   item,
   position,
   notes,
+  renderedNoteBodies,
   playbookSlug,
 }: {
   workspaceId: string;
   item: WorkspaceItemView;
   position: number;
   notes: readonly NoteView[];
+  renderedNoteBodies: Readonly<Record<string, React.ReactNode>>;
   playbookSlug: string | null;
 }) {
   const router = useRouter();
   const [checked, setChecked] = useState(item.checked);
   const [failed, setFailed] = useState(false);
   const [composing, setComposing] = useState(false);
+
+  /**
+   * Q-09 — WCAG 2.4.3. "add a note on this step" replaces itself with the composer, so
+   * without this focus lands on `<body>` and a keyboard user is thrown to the top of the
+   * document in the middle of the product's core loop. The composer focuses its own field on
+   * mount (`autoFocus`); this returns focus to the trigger when the composer goes away,
+   * whether it was cancelled or the note was saved.
+   */
+  const addNoteButtonRef = useRef<HTMLButtonElement>(null);
+  const wasComposing = useRef(false);
+
+  useEffect(() => {
+    if (!composing && wasComposing.current) addNoteButtonRef.current?.focus();
+    wasComposing.current = composing;
+  }, [composing]);
 
   const stepHref =
     playbookSlug && item.stepOrderIndex !== null
@@ -145,7 +164,7 @@ function ChecklistRow({
             <ul className="mt-3 flex flex-col gap-2">
               {notes.map((note) => (
                 <li key={note.id}>
-                  <NoteCard note={note} />
+                  <NoteCard note={note} renderedBody={renderedNoteBodies[note.id]} />
                 </li>
               ))}
             </ul>
@@ -158,11 +177,14 @@ function ChecklistRow({
                 workspaceItemId={item.id}
                 label={`add a note on step ${position}`}
                 placeholder="what you found, and where"
+                autoFocus
                 onSaved={() => setComposing(false)}
+                onCancel={() => setComposing(false)}
               />
             </div>
           ) : (
             <Button
+              ref={addNoteButtonRef}
               type="button"
               variant="ghost"
               size="sm"
@@ -179,7 +201,13 @@ function ChecklistRow({
   );
 }
 
-export function Checklist({ workspaceId, items, notesByItem, playbookSlug }: ChecklistProps) {
+export function Checklist({
+  workspaceId,
+  items,
+  notesByItem,
+  renderedNoteBodies,
+  playbookSlug,
+}: ChecklistProps) {
   if (items.length === 0) {
     return (
       <div className="p-4">
@@ -203,6 +231,7 @@ export function Checklist({ workspaceId, items, notesByItem, playbookSlug }: Che
           item={item}
           position={index + 1}
           notes={notesByItem[item.id] ?? []}
+          renderedNoteBodies={renderedNoteBodies}
           playbookSlug={playbookSlug}
         />
       ))}

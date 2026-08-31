@@ -26,21 +26,25 @@ export async function createCase(page: Page, title: string): Promise<string> {
  * failure message with a cleanup failure message, which is the wrong thing to report.
  */
 export async function deleteCase(page: Page, workspaceUrl: string, title: string): Promise<void> {
+  // Short, explicit timeouts throughout. Cleanup runs in a `finally`, including after a
+  // failing assertion, and a slow cleanup would turn a precise failure message into an
+  // uninformative "Test timeout exceeded".
+  const t = { timeout: 8_000 };
   try {
-    await page.goto(workspaceUrl);
-    await page.getByRole("button", { name: "more actions for this case" }).click();
-    await page.getByRole("menuitem", { name: "delete" }).click();
+    await page.goto(workspaceUrl, { timeout: 15_000 });
+    await page.getByRole("button", { name: "more actions for this case" }).click(t);
+    await page.getByRole("menuitem", { name: "delete" }).click(t);
 
     const dialog = page.getByRole("dialog");
-    await expect(dialog.getByText("Delete this case?")).toBeVisible();
+    await expect(dialog.getByText("Delete this case?")).toBeVisible(t);
 
     const confirm = dialog.getByRole("button", { name: "delete this case" });
     // The guard: nothing is deleted until the title has been typed back.
-    await expect(confirm).toBeDisabled();
-    await dialog.getByLabel("type the case title to confirm").fill(title);
-    await expect(confirm).toBeEnabled();
+    await expect(confirm).toBeDisabled(t);
+    await dialog.getByLabel("type the case title to confirm").fill(title, t);
+    await expect(confirm).toBeEnabled(t);
 
-    await confirm.click();
+    await confirm.click(t);
     await page.waitForURL(/\/workspaces\/?$/, { timeout: 15_000 });
   } catch {
     // Leave the row rather than fail the test on cleanup. `docs/qa/e2e.md` records the SQL.

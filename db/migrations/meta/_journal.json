@@ -22,6 +22,20 @@
       "when": 1788140591284,
       "tag": "0002_search_and_ordering",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1788140591286,
+      "tag": "0003_rate_limits_key_check",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788140591288,
+      "tag": "0004_flights_connector_backoff",
+      "breakpoints": true
     }
   ]
 }

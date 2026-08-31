@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Check } from "lucide-react";
+import { Check, ChevronRight } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -381,5 +381,72 @@ export function ResultsRegion({
         {children}
       </div>
     </section>
+  );
+}
+
+/**
+ * A collapsible facet group.
+ *
+ * WHY THIS EXISTS — audit finding Q-21. The tag vocabulary alone is 297 checkboxes. Rendered
+ * flat, the facet panel put 351 focusable controls in front of the first catalogue entry, so a
+ * keyboard reader needed 366 Tab presses to reach a tool. That is WCAG 2.4.1 failing on the
+ * product's primary browse surface, for an audience (`product-brief.md` §4) among whom
+ * keyboard and screen-reader use is not an edge case. A sighted mouse user never felt it only
+ * because they can look past a wall of checkboxes; nobody tabbing can.
+ *
+ * `<details>` is the right primitive rather than a hand-rolled disclosure: the browser gives
+ * keyboard operation, the correct `aria-expanded` semantics and, crucially, **removes the
+ * collapsed contents from the tab order** — while leaving them in the form, so a checked value
+ * inside a collapsed group is still submitted and a no-JavaScript reader can still open it.
+ *
+ * The open state is held here, seeded from the server, and never closes itself. Deriving it
+ * purely from "does this group have a selection" would snap the panel shut the moment a reader
+ * unticked their last tag — hiding the list at exactly the moment they were using it. The
+ * component is not remounted across a filter change (the page's `<Suspense>` is unkeyed), so
+ * the state survives navigation the same way the checkboxes do.
+ */
+export function FacetDisclosure({
+  legend,
+  selectedCount,
+  defaultOpen,
+  children,
+}: {
+  legend: string;
+  selectedCount: number;
+  defaultOpen: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = React.useState(defaultOpen);
+
+  return (
+    <details
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+      className="group"
+    >
+      <summary
+        className={cn(
+          "flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-md px-1",
+          "text-xs font-semibold uppercase tracking-wide text-muted-foreground",
+          "hover:bg-accent hover:text-accent-foreground",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          "focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+          "[&::-webkit-details-marker]:hidden",
+        )}
+      >
+        <ChevronRight
+          aria-hidden="true"
+          className="size-4 shrink-0 transition-transform group-open:rotate-90 motion-reduce:transition-none"
+        />
+        <span className="flex-1">{legend}</span>
+        {selectedCount > 0 ? (
+          <span className="tabular rounded-full bg-primary px-2 py-0.5 text-[11px] font-semibold text-primary-foreground">
+            {selectedCount}
+            <span className="sr-only"> selected</span>
+          </span>
+        ) : null}
+      </summary>
+      {children}
+    </details>
   );
 }

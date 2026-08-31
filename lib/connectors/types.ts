@@ -45,10 +45,19 @@ export type ConnectorState = "fresh" | "stale" | "unavailable";
  *  - `upstream-down`    — we called and it failed or timed out. Try again shortly.
  *  - `stale`            — we have data past its TTL and revalidation has not yet succeeded.
  *  - `quota-exhausted`  — a refusal we made, per-user or global. Nothing left the building.
+ *  - `rate-limited`     — a refusal THEY made: 429 or 420. Distinct from every other reason
+ *                         because it is the only one where continuing to call is a breach of
+ *                         product-brief §3.2 constraint 5, not merely futile. The client MUST
+ *                         stop polling on this reason (see `lib/connectors/runtime.ts`).
  *  - `disabled`         — an operator turned the kill-switch off, or the connector has no
  *                         recorded legal basis. Not a fault; a decision.
  */
-export type DegradedReason = "upstream-down" | "stale" | "quota-exhausted" | "disabled";
+export type DegradedReason =
+  | "upstream-down"
+  | "stale"
+  | "quota-exhausted"
+  | "rate-limited"
+  | "disabled";
 
 /**
  * A connector NEVER throws for an expected failure. It returns a degraded envelope.

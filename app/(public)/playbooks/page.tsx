@@ -58,16 +58,18 @@ export default async function PlaybooksPage() {
         its tool references still hold — and not whether the method is sound. Those are
         different claims, and the product's credibility rests on not letting a reader
         collapse them. Said once here rather than on every card, where it would become
-        wallpaper.
+        wallpaper — and kept to a POINTER at the definition rather than a second copy of it
+        (Q-16). The cards carry mixed levels, so there is no single meaning to render; the
+        playbook detail page, which has exactly one, renders `confidenceMeaning()` itself.
       */}
       <p className="mt-2 max-w-[68ch] text-sm text-muted-foreground">
-        The confidence chip on each card describes how current our record of that method is,
-        not whether the method works.{" "}
+        Each card&rsquo;s confidence level describes our record of that method, not the method
+        itself.{" "}
         <Link
           href={methodologyAnchorHref(LAST_VERIFIED_ANCHOR)}
           className="text-primary underline underline-offset-4"
         >
-          What the dates and levels promise
+          What the levels and dates promise
         </Link>
         .
       </p>

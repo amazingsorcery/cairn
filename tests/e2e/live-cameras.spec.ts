@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
-import { STUB_PNG, isOutbound, settled, watchOutbound } from "./helpers/net";
+import { settled } from "./helpers/dom";
+import { STUB_PNG, isOutbound, watchOutbound } from "./helpers/net";
 
 /**
  * `/live/cameras` and `/live/cameras/[slug]` — ADR 0011, ADR 0015, architecture HANDOFF §9.10.

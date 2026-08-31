@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
 
+import { Markdown } from "@/components/content/markdown";
 import { Checklist } from "@/components/workspaces/checklist";
 import { NoteComposer } from "@/components/workspaces/note-composer";
 import { NoteCard } from "@/components/workspaces/note-card";
@@ -11,7 +12,7 @@ import { Breadcrumb } from "@/components/ui/breadcrumb";
 import { pageMetadata } from "@/lib/metadata";
 import { getWorkspace, type NoteView } from "@/lib/queries/workspaces";
 import { requireSession } from "../session";
-import { loadToolFacts } from "./tool-facts";
+import { toolFactsFor } from "./tool-facts";
 
 /**
  * `/workspaces/[id]` — the whole case on ONE page.
@@ -57,9 +58,8 @@ export default async function WorkspaceDetailPage({
   const workspace = await getWorkspace(id, user.id);
   if (!workspace) notFound();
 
-  const facts = await loadToolFacts(
-    workspace.savedTools.map((item) => item.toolSlug).filter((slug): slug is string => slug !== null),
-  );
+  // No query: confidence and last-verified come joined on the item rows (QA finding Q-15).
+  const facts = toolFactsFor(workspace.savedTools);
 
   const notesByItem: Record<string, NoteView[]> = {};
   const caseNotes: NoteView[] = [];
@@ -71,6 +71,22 @@ export default async function WorkspaceDetailPage({
     }
   }
   const anchoredCount = workspace.notes.length - caseNotes.length;
+
+  /**
+   * Q-12. Note bodies are rendered to Markdown HERE, on the server, and passed into the
+   * client note cards as elements. `NoteCard` has to be a client component — editor,
+   * autosave timer, unload guard — but importing the Markdown renderer from it put
+   * react-markdown, remark-gfm and micromark into the browser bundle, and this was the only
+   * route in the app doing that. See `components/workspaces/note-card.tsx`.
+   */
+  const renderedNoteBodies: Record<string, React.ReactNode> = Object.fromEntries(
+    workspace.notes.map((note) => [
+      note.id,
+      <Markdown key={note.id} className="text-sm">
+        {note.body}
+      </Markdown>,
+    ]),
+  );
 
   const checkedCount = workspace.checklist.filter((item) => item.checked).length;
   const allDone = workspace.checklist.length > 0 && checkedCount === workspace.checklist.length;
@@ -118,6 +134,7 @@ export default async function WorkspaceDetailPage({
             workspaceId={workspace.id}
             items={workspace.checklist}
             notesByItem={notesByItem}
+            renderedNoteBodies={renderedNoteBodies}
             playbookSlug={workspace.playbook?.slug ?? null}
           />
         </Region>
@@ -154,7 +171,7 @@ export default async function WorkspaceDetailPage({
               <ul className="mt-4 flex flex-col gap-3">
                 {caseNotes.map((note) => (
                   <li key={note.id}>
-                    <NoteCard note={note} />
+                    <NoteCard note={note} renderedBody={renderedNoteBodies[note.id]} />
                   </li>
                 ))}
               </ul>

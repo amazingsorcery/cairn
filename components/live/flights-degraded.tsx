@@ -107,6 +107,14 @@ export function FlightsDegraded({
           </p>
         ) : null}
 
+        {reason === "rate-limited" ? (
+          <p>
+            {operator} asked us to slow down, so we stopped. Their limit is theirs to set and we
+            respect it; nothing is broken at either end. We&rsquo;ll start again shortly, and
+            this page will not keep asking in the meantime.
+          </p>
+        ) : null}
+
         {reason === "disabled" ? (
           <p>
             We&rsquo;ve disabled this connector. It is not a fault at {operator}&rsquo;s end and
@@ -121,6 +129,12 @@ export function FlightsDegraded({
           it would be a lie about the reader's options (states.md §5.6). The same applies to a
           quota we have not yet cleared: the control is there, but disabled and honest about
           when it will work.
+
+          NO RETRY BUTTON when the upstream rate-limited us either, and this one is not about
+          honesty but about conduct: a retry control is an invitation to keep calling a service
+          that has just asked us to stop. That is the behaviour QA finding Q-02 was about
+          (product-brief §3.2 constraint 5). The server holds a cooldown regardless, so the
+          button could not work — but it should not be offered in the first place.
         */}
         {reason === "upstream-down" || reason === "stale" ? <RetryButton /> : null}
         {reason === "quota-exhausted" && quotaResetAt ? (
@@ -138,5 +152,6 @@ const TITLE: Record<LiveReason, string> = {
   "upstream-down": "Aircraft positions unavailable",
   stale: "Aircraft positions unavailable",
   "quota-exhausted": "Aircraft positions paused",
+  "rate-limited": "Aircraft positions paused",
   disabled: "Flight tracking is switched off",
 };

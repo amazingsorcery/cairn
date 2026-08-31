@@ -82,7 +82,11 @@ function parseEnvelope(value: unknown, fallback: FlightsEnvelopeDto): FlightsEnv
         : null,
     attribution: typeof record.attribution === "string" ? record.attribution : fallback.attribution,
     reason:
-      reason === "upstream-down" || reason === "stale" || reason === "quota-exhausted" || reason === "disabled"
+      reason === "upstream-down" ||
+      reason === "stale" ||
+      reason === "quota-exhausted" ||
+      reason === "rate-limited" ||
+      reason === "disabled"
         ? reason
         : null,
     message: typeof record.message === "string" ? record.message : null,
@@ -112,7 +116,22 @@ export function FlightsSurface({
   const age = useLiveAge(envelope.fetchedAt, envelope.fetchedAt === initial.fetchedAt ? initialAgeSeconds : null);
 
   const aircraft = envelope.data?.aircraft ?? [];
-  const live = envelope.state === "fresh" || envelope.state === "stale";
+  /**
+   * Whether to keep polling.
+   *
+   * `rate-limited` means the UPSTREAM refused us — 429 or 420 — and it is excluded here even
+   * when we still hold a stale payload worth showing. Every other degraded reason is a
+   * condition that polling might resolve; this one is a condition polling makes worse.
+   * Continuing to call a service that has asked us to stop is the breach of product-brief
+   * §3.2 constraint 5 that QA finding Q-02 was about, and the audit log had 57 of them.
+   *
+   * The server holds its own cooldown (`lib/connectors/runtime.ts`), so a client that ignored
+   * this would be refused anyway — but it would still cost a request to our own server, and
+   * "the other layer will catch it" is how both layers end up not catching it.
+   */
+  const live =
+    (envelope.state === "fresh" || envelope.state === "stale") &&
+    envelope.reason !== "rate-limited";
 
   /* ---------------------------------------------------------------- *
    * Refresh — always through our own server, never to the upstream
@@ -394,6 +413,7 @@ const UNAVAILABLE_TITLE = {
   "upstream-down": "Aircraft positions unavailable",
   stale: "Aircraft positions unavailable",
   "quota-exhausted": "Aircraft positions paused",
+  "rate-limited": "Aircraft positions paused",
   disabled: "Flight tracking is switched off",
 } as const;
 

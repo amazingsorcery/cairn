@@ -1,4 +1,5 @@
 import type { Aircraft, FlightsPayload } from "@/lib/connectors/flights";
+import type { ConnectorState, DegradedReason } from "@/lib/connectors/types";
 
 /**
  * Shared vocabulary and formatting for the Live surfaces.
@@ -9,8 +10,20 @@ import type { Aircraft, FlightsPayload } from "@/lib/connectors/flights";
  * ADR 0011 §1). The two type imports below are `import type`, so they are erased.
  */
 
-export type LiveState = "fresh" | "stale" | "unavailable";
-export type LiveReason = "upstream-down" | "stale" | "quota-exhausted" | "disabled";
+/**
+ * ALIASES, not copies.
+ *
+ * These were hand-written duplicates of the server's own unions, and they silently went out
+ * of date the moment `DegradedReason` gained `rate-limited` (QA finding Q-02) — the server
+ * started emitting a reason the client had no copy, icon or tone for. Deriving them means the
+ * next member added server-side is a compile error in every `Record<LiveReason, …>` map here,
+ * which is exactly where a missing icon or missing copy should surface.
+ *
+ * `lib/connectors/types.ts` holds only types and is safe to import from a Client Component —
+ * unlike `lib/connectors/runtime.ts`, which refuses to load in a browser bundle on purpose.
+ */
+export type LiveState = ConnectorState;
+export type LiveReason = DegradedReason;
 
 /**
  * The connector envelope as it crosses the server/client boundary. It is the envelope from

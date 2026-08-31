@@ -29,12 +29,23 @@ import { fail, fromZodError, guard, ok, type ActionResult } from "./result";
 /**
  * Workspace mutations — the signed-in write path.
  *
- * EVERY ACTION FOLLOWS THE SAME FOUR STEPS, IN THIS ORDER:
+ * EVERY ACTION FOLLOWS THE SAME FIVE STEPS, IN THIS ORDER:
  *
  *   1. re-check the session (`requireUser`),
  *   2. Zod-validate the payload,
- *   3. re-check ownership IN SQL against the session user id,
- *   4. mutate.
+ *   3. consume a rate-limit budget,
+ *   4. re-check ownership IN SQL against the session user id,
+ *   5. mutate.
+ *
+ * Step 3 is not optional and there are no exemptions. Five of these actions used to skip it
+ * — including both deletes and the reorder, which opens a transaction and rewrites a whole
+ * list — and the omission read as an oversight rather than a decision, because nothing said
+ * why a delete should be cheaper to allow than a toggle (QA finding Q-11). It is not.
+ *
+ * The limiter is consumed AFTER validation but BEFORE the ownership check, except where the
+ * ownership check is the same statement as the mutation. Behind validation so malformed
+ * spam does not consume a legitimate user's budget; before ownership so a caller cannot
+ * probe ids for free.
  *
  * Ownership is a WHERE clause wherever the mutation is a single statement, and an explicit
  * `assertOwns*` inside the transaction wherever it is not. It is never a TypeScript
@@ -127,6 +138,9 @@ export async function updateWorkspace(input: unknown): Promise<ActionResult<{ id
     const parsed = updateWorkspaceSchema.safeParse(input);
     if (!parsed.success) return fromZodError(parsed.error);
 
+    const limit = await consumeSafely("workspace-write", user.id);
+    if (!limit.ok) return fail("conflict", TOO_FAST);
+
     const { id, title, status } = parsed.data;
 
     /**
@@ -152,6 +166,11 @@ export async function deleteWorkspace(input: unknown): Promise<ActionResult<{ id
 
     const parsed = workspaceIdSchema.safeParse(input);
     if (!parsed.success) return fromZodError(parsed.error);
+
+    // Rate limited like every other write. A delete cascades to every item and note in the
+    // case, so it is among the MORE expensive statements here, not a cheap one (Q-11).
+    const limit = await consumeSafely("workspace-write", user.id);
+    if (!limit.ok) return fail("conflict", TOO_FAST);
 
     // Items and notes cascade. This is a real deletion of the user's own record and is
     // correct: there is nothing of ours in their case file worth keeping (ADR 0008).
@@ -275,6 +294,9 @@ export async function removeWorkspaceItem(input: unknown): Promise<ActionResult<
     const parsed = removeWorkspaceItemSchema.safeParse(input);
     if (!parsed.success) return fromZodError(parsed.error);
 
+    const limit = await consumeSafely("workspace-write", user.id);
+    if (!limit.ok) return fail("conflict", TOO_FAST);
+
     const deleted = await db
       .delete(workspaceItems)
       .where(and(eq(workspaceItems.id, parsed.data.id), eq(workspaceItems.userId, user.id)))
@@ -300,6 +322,11 @@ export async function reorderWorkspaceItems(
 
     const parsed = reorderWorkspaceItemsSchema.safeParse(input);
     if (!parsed.success) return fromZodError(parsed.error);
+
+    // The most expensive action in this file: a transaction, an ownership scan over the
+    // submitted ids, and an `UPDATE … FROM unnest(...)` across the whole list (Q-11).
+    const limit = await consumeSafely("workspace-write", user.id);
+    if (!limit.ok) return fail("conflict", TOO_FAST);
 
     const { workspaceId, kind, itemIds } = parsed.data;
 
@@ -421,6 +448,9 @@ export async function deleteNote(input: unknown): Promise<ActionResult<{ id: str
 
     const parsed = deleteNoteSchema.safeParse(input);
     if (!parsed.success) return fromZodError(parsed.error);
+
+    const limit = await consumeSafely("note-write", user.id);
+    if (!limit.ok) return fail("conflict", TOO_FAST);
 
     if (!(await assertOwnsNote(parsed.data.id, user.id))) {
       return fail("notFound", "That note does not exist.");

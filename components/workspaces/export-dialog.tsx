@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type RefObject } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -39,6 +39,16 @@ export interface ExportDialogProps {
   onOpenChange: (open: boolean) => void;
   workspaceId: string;
   counts: { notes: number; tools: number; steps: number };
+  /**
+   * The control that opened this dialog. Focus goes back to it on close.
+   *
+   * Q-09. Radix restores focus to its own `DialogTrigger` for free, but this dialog is driven
+   * by controlled `open` state from the header rather than by a trigger element, so Radix has
+   * nothing to restore to and focus lands on `<body>`. Handing it the trigger explicitly is
+   * the smaller change of the two the audit offered, and it keeps the dialog mountable on
+   * demand — which is what Q-12 needed.
+   */
+  returnFocusTo?: RefObject<HTMLButtonElement | null>;
 }
 
 type Phase =
@@ -46,7 +56,13 @@ type Phase =
   | { kind: "building"; startedAt: number }
   | { kind: "failed"; message: string };
 
-export function ExportDialog({ open, onOpenChange, workspaceId, counts }: ExportDialogProps) {
+export function ExportDialog({
+  open,
+  onOpenChange,
+  workspaceId,
+  counts,
+  returnFocusTo,
+}: ExportDialogProps) {
   const groupId = useId();
   const [format, setFormat] = useState<"md" | "pdf">("md");
   const [phase, setPhase] = useState<Phase>({ kind: "choosing" });
@@ -132,6 +148,15 @@ export function ExportDialog({ open, onOpenChange, workspaceId, counts }: Export
         }}
         onEscapeKeyDown={(event) => {
           if (building) event.preventDefault();
+        }}
+        onCloseAutoFocus={(event) => {
+          // Take the restore away from Radix — it has no trigger to aim at here — and put
+          // focus back on the button that opened the dialog. Without this it goes to `<body>`
+          // and a keyboard user is returned to the top of the document (Q-09).
+          const trigger = returnFocusTo?.current;
+          if (!trigger) return;
+          event.preventDefault();
+          trigger.focus();
         }}
       >
         {phase.kind === "building" ? (

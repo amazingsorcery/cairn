@@ -28,6 +28,7 @@ export const RATE_LIMIT_ACTIONS = [
   "search-suggest",
   "workspace-write",
   "note-write",
+  "workspace-export",
   "connector-user",
   "connector-global",
 ] as const;
@@ -56,6 +57,16 @@ export const RATE_LIMIT_POLICIES: Readonly<Record<RateLimitAction, RateLimitPoli
   "search-suggest": { limit: 60, windowSeconds: 60 },
   "workspace-write": { limit: 120, windowSeconds: 60 },
   "note-write": { limit: 60, windowSeconds: 60 },
+  /**
+   * The most expensive path in the product. `renderCasePdf` runs pdfkit in-process on the
+   * Node runtime and was measured at 0.7–10.7 s per call; the deployment target is one 2–4 GB
+   * VPS running the app, Postgres and Caddy together (product-brief §5), and Caddy holds a
+   * request for 30 s rather than shedding it. A signed-in user looping this is a denial of
+   * service against the whole box, not just against their own session. QA finding Q-10.
+   *
+   * 10/minute is generous for a human exporting their own case file and ruinous for a loop.
+   */
+  "workspace-export": { limit: 10, windowSeconds: 60 },
   /** Per-user connector quota. The real numbers come from `connectors` (ADR 0011 rule 3). */
   "connector-user": { limit: 30, windowSeconds: 60 },
   /** Global ceiling so we cannot breach an upstream's fair use even under load. */

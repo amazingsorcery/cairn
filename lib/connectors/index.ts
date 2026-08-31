@@ -26,7 +26,16 @@
  * (`cameras_embed_requires_connector_check`), not to be called.
  */
 export * from "./types";
-export { runConnector, UpstreamStatusError, type RunOptions } from "./runtime";
+export {
+  runConnector,
+  UpstreamStatusError,
+  isRateLimitStatus,
+  parseRetryAfter,
+  cooldownRemaining,
+  openCooldown,
+  DEFAULT_COOLDOWN_SECONDS,
+  type RunOptions,
+} from "./runtime";
 export { recordConnectorRequest, AUDIT_RETENTION_DAYS, type AuditEntry } from "./audit";
 export {
   flightsDriver,

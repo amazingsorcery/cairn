@@ -93,6 +93,71 @@ function writeCache(key: string, entry: CacheEntry): void {
   payloadCache.set(key, entry);
 }
 
+/* ------------------------------------------------------------------ *
+ * Upstream backoff — the QA finding Q-02
+ * ------------------------------------------------------------------ */
+
+/**
+ * Per-connector cooldown: the instant after which we may call this upstream again.
+ *
+ * WHY THIS EXISTS. The audit log recorded 57 `429`s and one `420` against adsb.lol — 29% of
+ * every outbound call refused — because nothing here backed off. The envelope degraded to
+ * `stale`, the client kept polling, and we kept calling a free community service that had
+ * told us to stop. product-brief §3.2 constraint 5 — "respect robots.txt, terms of service
+ * and rate limits" — is the line between OSINT and a computer-misuse offence, and it is the
+ * thing this product tells its own users to care about.
+ *
+ * Our quota columns are a CEILING, not the authority. **The upstream's own limiter is the
+ * authority**, and a 429 is it speaking. When it speaks we stop, for `Retry-After` if it sent
+ * one and for `DEFAULT_COOLDOWN_SECONDS` if it did not.
+ *
+ * In-process, like the payload cache: bounded, ephemeral, no user attached, lost on restart.
+ * A restart costs one probe request, which is the correct trade — persisting it would mean a
+ * table of upstream state, and the Live subtree deliberately has none.
+ */
+const globalForCooldown = globalThis as typeof globalThis & {
+  __cairnConnectorCooldown__?: Map<string, Date>;
+};
+const cooldownUntil: Map<string, Date> = (globalForCooldown.__cairnConnectorCooldown__ ??=
+  new Map());
+
+/**
+ * Used when a 429 carries no `Retry-After` — which is the case for adsb.lol, measured
+ * 2026-08-31: neither a 200 nor a 429 from it carries one.
+ *
+ * 60 seconds is deliberately longer than the connector's window. The upstream's limiter is a
+ * load-dependent token bucket with no published number, so the only safe assumption is that
+ * it needs materially longer than our own window to refill. Backing off for less than a
+ * window would just re-enter the burst that caused the refusal.
+ */
+export const DEFAULT_COOLDOWN_SECONDS = 60;
+
+/** Seconds remaining on this connector's cooldown, or 0 when it may call. */
+export function cooldownRemaining(slug: string, now: Date = new Date()): number {
+  const until = cooldownUntil.get(slug);
+  if (!until) return 0;
+  const remaining = Math.ceil((until.getTime() - now.getTime()) / 1000);
+  if (remaining <= 0) {
+    cooldownUntil.delete(slug);
+    return 0;
+  }
+  return remaining;
+}
+
+/** Open (or extend) a cooldown. Never shortens one already running. */
+export function openCooldown(slug: string, seconds: number, now: Date = new Date()): Date {
+  const until = new Date(now.getTime() + Math.max(1, seconds) * 1000);
+  const existing = cooldownUntil.get(slug);
+  const effective = existing && existing > until ? existing : until;
+  cooldownUntil.set(slug, effective);
+  return effective;
+}
+
+/** Test seam. Not exported from the package index. */
+export function clearCooldowns(): void {
+  cooldownUntil.clear();
+}
+
 /** Age of a payload in seconds, from the timestamp stamped at the upstream response. */
 function ageSeconds(fetchedAt: Date, now: Date): number {
   return (now.getTime() - fetchedAt.getTime()) / 1000;
@@ -213,6 +278,55 @@ export async function runConnector<Params, Result>(
       reason: "stale",
     };
   };
+
+  /* 2b. Upstream backoff — do not call a service that told us to stop ---- */
+
+  /**
+   * Checked BEFORE our own quotas, because this is not our refusal to make. If the upstream
+   * has asked us to back off, no accounting of ours can authorise the call.
+   *
+   * A cached payload inside the stale horizon still serves — degrading to `stale` is honest
+   * and costs the upstream nothing. Only when there is nothing to serve does the surface go
+   * `unavailable`, and it says WHY, so the client stops polling instead of hammering.
+   */
+  const cooling = cooldownRemaining(connector.slug, now);
+  if (cooling > 0) {
+    /**
+     * Audited as `quotaDenied`: it is a refusal we made, nothing left the building, and
+     * `duration_ms = 0` (ADR 0013 §4 — refusals are exactly what an operator needs to see).
+     * `CONNECTOR_REQUEST_OUTCOMES` has no `rateLimited` member and adding one means editing
+     * `db/schema.ts` plus a CHECK migration; the 429 that OPENED this cooldown is already in
+     * the log with its real `upstream_status`, so the pair is reconstructible. Flagged in
+     * docs/backend/HANDOFF.md as a schema change worth making if the architect agrees.
+     */
+    await recordConnectorRequest({
+      connectorId: connector.id,
+      outcome: "quotaDenied",
+      durationMs: 0,
+      upstreamStatus: null,
+      subject: actor.subject,
+      at: now,
+    });
+
+    const message = `This source asked us to slow down. Waiting ${cooling}s before trying again.`;
+    return staleUsable
+      ? {
+          fetchedAt: staleUsable.fetchedAt,
+          state: "stale",
+          data: staleUsable.payload as Result,
+          connectorSlug: connector.slug,
+          attribution,
+          lastError: message,
+          reason: "rate-limited",
+        }
+      : unavailable(
+          connector.slug,
+          "rate-limited",
+          message,
+          attribution,
+          cached?.fetchedAt ?? null,
+        );
+  }
 
   /* 3. Quotas -------------------------------------------------------- */
 
@@ -346,6 +460,45 @@ export async function runConnector<Params, Result>(
       "Connector call failed",
     );
 
+    /**
+     * THEY TOLD US TO STOP. Open a cooldown so nothing calls again until it expires, and
+     * return a reason the client knows to stop polling on. Honouring `Retry-After` when it is
+     * sent is the difference between backing off and guessing.
+     */
+    if (!aborted && error instanceof UpstreamStatusError && isRateLimitStatus(error.status)) {
+      const seconds = error.retryAfterSeconds ?? DEFAULT_COOLDOWN_SECONDS;
+      const until = openCooldown(connector.slug, seconds);
+      logger.warn(
+        {
+          scope: "connector.run",
+          slug: connector.slug,
+          status: error.status,
+          retryAfterSeconds: error.retryAfterSeconds,
+          cooldownUntil: until.toISOString(),
+        },
+        "Upstream rate-limited us; backing off",
+      );
+
+      const message = `This source asked us to slow down. Waiting ${seconds}s before trying again.`;
+      return staleUsable
+        ? {
+            fetchedAt: staleUsable.fetchedAt,
+            state: "stale",
+            data: staleUsable.payload as Result,
+            connectorSlug: connector.slug,
+            attribution,
+            lastError: message,
+            reason: "rate-limited",
+          }
+        : unavailable(
+            connector.slug,
+            "rate-limited",
+            message,
+            attribution,
+            cached?.fetchedAt ?? null,
+          );
+    }
+
     return degradeToStale(
       aborted
         ? "This source did not respond in time."
@@ -359,11 +512,52 @@ export async function runConnector<Params, Result>(
 /** Thrown by a driver when the upstream answered with a non-2xx, so the status is auditable. */
 export class UpstreamStatusError extends Error {
   readonly status: number;
-  constructor(status: number) {
+  /** Seconds from `Retry-After`, when the upstream sent one. Null when it did not. */
+  readonly retryAfterSeconds: number | null;
+
+  constructor(status: number, retryAfterSeconds: number | null = null) {
     super(`Upstream responded ${status}`);
     this.name = "UpstreamStatusError";
     this.status = status;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
+}
+
+/**
+ * The two statuses that mean "stop calling us".
+ *
+ * 429 is the standard. **420 "Enhance Your Calm"** is non-standard but is what adsb.lol
+ * actually returns under load, and our audit log has one. Treating it as a generic upstream
+ * error would keep us calling into a service that has asked us twice, in two different ways,
+ * to stop.
+ */
+export function isRateLimitStatus(status: number): boolean {
+  return status === 429 || status === 420;
+}
+
+/** Parse `Retry-After`: delta-seconds, or an HTTP-date. Returns null for anything else. */
+export function parseRetryAfter(header: string | null, now: Date = new Date()): number | null {
+  if (!header) return null;
+
+  const trimmed = header.trim();
+  // `Number("")` and `Number("   ")` are both 0, not NaN — so without this guard an empty
+  // header would parse as "retry immediately" and open no cooldown at all. Caught by
+  // `backoff.test.ts`; it is the exact shape of bug that makes a backoff silently absent.
+  if (trimmed === "") return null;
+
+  /**
+   * A numeric value is a delta-seconds attempt, and we answer it here either way — we do NOT
+   * fall through to the date branch on a negative one. `Date.parse("-5")` yields a valid
+   * instant (year -5) in V8, so falling through would clamp a malformed header to 0 and open
+   * no cooldown. Malformed means "we were told nothing usable", which is null, which is the
+   * default cooldown.
+   */
+  const seconds = Number(trimmed);
+  if (Number.isFinite(seconds)) return seconds >= 0 ? Math.ceil(seconds) : null;
+
+  const when = Date.parse(trimmed);
+  if (Number.isNaN(when)) return null;
+  return Math.max(0, Math.ceil((when - now.getTime()) / 1000));
 }
 
 /** Test seam: drop every cached payload. Not exported from the package index. */

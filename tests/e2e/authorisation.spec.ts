@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 
+import { createCase, deleteCase } from "./helpers/cases";
 import { expectNotFoundBody, renderedIdentity } from "./helpers/dom";
 import { signIn } from "./helpers/session";
 
@@ -17,6 +18,13 @@ import { signIn } from "./helpers/session";
  */
 
 const OWNER_WORKSPACE_PATH_ENV = "E2E_OWNER_WORKSPACE_ID";
+
+/**
+ * A long-lived case belonging to the `owner` account, used as the "exists but is not yours"
+ * target. Created once and then reused, rather than created and deleted per run: this test
+ * needs a workspace that certainly exists, and churning a row per run to prove it is waste.
+ */
+const OWNER_PROBE_CASE = "Ownership boundary probe";
 
 /**
  * Split a response into the two things that carry information, with the dev server's
@@ -42,11 +50,6 @@ const OWNER_WORKSPACE_PATH_ENV = "E2E_OWNER_WORKSPACE_ID";
  * was *requested* into the header's own `callbackUrl`. That is the address the reader typed,
  * not a fact about whether a row exists.
  */
-/** `next dev` injects its devtools into the RSC stream; `next start` does not. */
-function isDevServer(html: string): boolean {
-  return html.includes("next-devtools");
-}
-
 function canonicalise(html: string, workspaceId: string): { markup: string; payload: string } {
   const normalised = html
     .replaceAll(workspaceId, "WORKSPACE_ID")
@@ -62,6 +65,11 @@ function canonicalise(html: string, workspaceId: string): { markup: string; payl
   const markup = normalised.replace(/<script[\s\S]*?<\/script>/g, "");
 
   return { markup, payload };
+}
+
+/** `next dev` injects its devtools into the RSC stream; `next start` does not. */
+function isDevServer(html: string): boolean {
+  return html.includes("next-devtools");
 }
 
 test.describe("signed out", () => {
@@ -126,17 +134,20 @@ test.describe("a signed-in non-owner", () => {
     let targetId = process.env[OWNER_WORKSPACE_PATH_ENV] ?? null;
     if (!targetId) {
       await ownerPage.goto("/workspaces");
-      const existing = ownerPage.locator('a[href^="/workspaces/"]').first();
-      const href = (await existing.count()) > 0 ? await existing.getAttribute("href") : null;
-      const match = href?.match(/^\/workspaces\/([0-9a-f-]{36})$/) ?? null;
-      if (match) {
-        targetId = match[1] ?? null;
+      // The list streams behind `loading.tsx`, so wait for it to resolve one way or the other
+      // before counting — a bare `count()` does not auto-wait and would read "no cases" from
+      // the skeleton, creating a fresh row on every run.
+      const probe = ownerPage.getByRole("link", { name: OWNER_PROBE_CASE, exact: true });
+      const empty = ownerPage.getByRole("heading", { name: "No cases yet" });
+      await expect(probe.first().or(empty).first()).toBeVisible();
+
+      if ((await probe.count()) > 0) {
+        const href = await probe.first().getAttribute("href");
+        targetId = href?.match(/^\/workspaces\/([0-9a-f-]{36})$/)?.[1] ?? null;
       } else {
-        await ownerPage.goto("/workspaces/new");
-        await ownerPage.getByLabel("name this case").fill("Ownership boundary probe");
-        await ownerPage.getByRole("button", { name: "start the case" }).click();
-        await ownerPage.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/);
-        targetId = new URL(ownerPage.url()).pathname.split("/").pop() ?? null;
+        // Kept rather than deleted: the next run finds it and creates nothing.
+        const created = await createCase(ownerPage, OWNER_PROBE_CASE);
+        targetId = new URL(created).pathname.split("/").pop() ?? null;
       }
     }
     expect(targetId, "a real workspace id is needed to make this assertion mean anything").not.toBe(
@@ -201,25 +212,26 @@ test.describe("a signed-in non-owner", () => {
     const context = await browser.newContext({ baseURL });
     await signIn(context, "owner", baseURL!);
     const ownerPage = await context.newPage();
-    await ownerPage.goto("/workspaces/new");
-    await ownerPage.getByLabel("name this case").fill("Export boundary probe");
-    await ownerPage.getByRole("button", { name: "start the case" }).click();
-    await ownerPage.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/);
-    const id = new URL(ownerPage.url()).pathname.split("/").pop()!;
-
-    const ownExport = await ownerPage.request.get(`/workspaces/${id}/export?format=md`);
-    expect(ownExport.status()).toBe(200);
-    expect(await ownExport.text()).toContain("Export boundary probe");
+    const caseTitle = `Export boundary probe ${Date.now()}`;
+    const workspaceUrl = await createCase(ownerPage, caseTitle);
+    const id = new URL(workspaceUrl).pathname.split("/").pop()!;
 
     const otherContext = await browser.newContext({ baseURL });
-    await signIn(otherContext, "other", baseURL!);
-    const otherPage = await otherContext.newPage();
-    const stolen = await otherPage.request.get(`/workspaces/${id}/export?format=md`);
-    expect(stolen.status()).not.toBe(200);
-    expect(await stolen.text()).not.toContain("Export boundary probe");
+    try {
+      const ownExport = await ownerPage.request.get(`/workspaces/${id}/export?format=md`);
+      expect(ownExport.status()).toBe(200);
+      expect(await ownExport.text()).toContain(caseTitle);
 
-    await context.close();
-    await otherContext.close();
+      await signIn(otherContext, "other", baseURL!);
+      const otherPage = await otherContext.newPage();
+      const stolen = await otherPage.request.get(`/workspaces/${id}/export?format=md`);
+      expect(stolen.status()).not.toBe(200);
+      expect(await stolen.text()).not.toContain(caseTitle);
+    } finally {
+      await deleteCase(ownerPage, workspaceUrl, caseTitle);
+      await context.close();
+      await otherContext.close();
+    }
   });
 });
 

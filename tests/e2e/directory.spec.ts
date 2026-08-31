@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+import { settled } from "./helpers/dom";
+
 /**
  * `/directory` — the filter contract.
  *
@@ -31,6 +33,9 @@ test.describe("directory filters", () => {
     page,
   }) => {
     await page.goto("/directory");
+    // The facet inputs mirror the URL through React state; ticking one before hydration is
+    // overwritten by the first client render. See the note in vertical-slice.spec.ts.
+    await settled(page);
 
     const free = sidebar(page).getByRole("checkbox", { name: "free", exact: true });
     await expect(free).not.toBeChecked();
@@ -142,6 +147,7 @@ test.describe("directory filters at 375px", () => {
    */
   test("the sheet opens, a facet ticks, and the result count updates", async ({ page }) => {
     await page.goto("/directory");
+    await settled(page);
 
     await page.getByRole("button", { name: /^filters/ }).click();
 

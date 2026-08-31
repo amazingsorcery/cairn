@@ -5,6 +5,7 @@ import {
   playbooks,
   workspaceItems,
   workspaces,
+  type ConfidenceLevel,
   type WorkspaceItemKind,
   type WorkspaceStatus,
 } from "@/db/schema";
@@ -115,6 +116,20 @@ export type WorkspaceItemView = {
    * a long-running case, not an edge case.
    */
   toolSlug: string | null;
+  /**
+   * The tool's CURRENT confidence and verification date — not a snapshot.
+   *
+   * Both are null whenever `toolSlug` is null, i.e. when the tool was deleted or unpublished.
+   * `title` is the snapshot and never changes (ADR 0008); these two deliberately do, because
+   * architecture HANDOFF §9.1 requires the live confidence and last-verified date wherever an
+   * entry appears, and a stale chip would assert a freshness we cannot support.
+   *
+   * They are joined here rather than fetched per row. QA finding Q-15: the previous approach
+   * called `getToolBySlug` once per saved tool, which after the read split is TWO round trips
+   * each — sixty statements for a thirty-tool case on a cold cache.
+   */
+  toolConfidence: ConfidenceLevel | null;
+  toolLastVerifiedAt: Date | null;
   toolId: string | null;
   stepId: string | null;
   playbookSlug: string | null;
@@ -183,6 +198,8 @@ export async function getWorkspace(
       created_at: Date;
       tool_id: string | null;
       tool_slug: string | null;
+      tool_confidence: ConfidenceLevel | null;
+      tool_last_verified_at: Date | null;
       step_id: string | null;
       step_order_index: number | null;
       playbook_slug: string | null;
@@ -198,6 +215,8 @@ export async function getWorkspace(
              -- Null for an unpublished or deleted tool: the snapshot title still renders,
              -- but as plain text rather than a link to a page that 404s.
              case when t.status = 'published' then t.slug end as tool_slug,
+             case when t.status = 'published' then t.confidence end as tool_confidence,
+             case when t.status = 'published' then t.last_verified_at end as tool_last_verified_at,
              i.step_id,
              s.order_index as step_order_index,
              case when pb.status = 'published' then pb.slug end as playbook_slug
@@ -232,6 +251,8 @@ export async function getWorkspace(
     createdAt: row.created_at,
     toolId: row.tool_id,
     toolSlug: row.tool_slug,
+    toolConfidence: row.tool_confidence,
+    toolLastVerifiedAt: row.tool_last_verified_at,
     stepId: row.step_id,
     stepOrderIndex: row.step_order_index,
     playbookSlug: row.playbook_slug,

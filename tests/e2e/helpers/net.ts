@@ -87,33 +87,6 @@ export async function watchOutbound(
   };
 }
 
-/**
- * Wait until the page has finished loading **and** the main thread has gone idle.
- *
- * `networkidle` is not usable here: `next dev` holds a hot-reload connection open, so it
- * never settles and the wait becomes a 30-second timeout under parallel workers. And a fixed
- * `waitForTimeout` would be exactly the arbitrary sleep this suite forbids.
- *
- * `requestIdleCallback` is the browser's own answer to "is there any work left": it fires
- * once the load event has gone and hydration has stopped occupying the main thread. That is
- * the moment after which a preconnect, a prefetch or an eagerly-mounted embed would already
- * have been requested — which is what the outbound assertions need to be true *of*.
- */
-export async function settled(page: Page): Promise<void> {
-  await page.waitForLoadState("load");
-  await page.waitForFunction(
-    () => (window as unknown as { next?: { router?: unknown } }).next?.router !== undefined,
-    null,
-    { timeout: 15_000 },
-  );
-  await page.evaluate(
-    () =>
-      new Promise<void>((resolve) => {
-        requestIdleCallback(() => resolve(), { timeout: 5_000 });
-      }),
-  );
-}
-
 /** A 1x1 transparent PNG, used to stand in for an operator-hosted camera frame. */
 export const STUB_PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",

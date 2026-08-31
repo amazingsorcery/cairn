@@ -6,6 +6,7 @@ import { PlaybookMeta } from "@/components/playbooks/playbook-meta";
 import { PlaybookStep } from "@/components/playbooks/playbook-step";
 import { StepNavigator } from "@/components/playbooks/step-navigator";
 import { ConfidenceChipLink } from "@/components/layout/methodology-anchor";
+import { confidenceMeaning } from "@/components/confidence-chip";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
 import { VerificationDate } from "@/components/verification-date";
@@ -125,15 +126,22 @@ export default async function PlaybookDetailPage({
             <VerificationDate lastVerifiedAt={playbook.lastVerifiedAt} />
           </div>
           {/*
-            Said explicitly, next to the chip, because this is the one place a reader is
-            most likely to misread it. The chip is a claim about OUR RECORD of the method —
-            whether we have re-checked that its steps and tool references still hold — not a
-            claim that the method itself is unsound. Collapsing those two is exactly the
-            confusion the product cannot afford (ADR 0007, `docs/design/states.md` 0).
+            Q-16. The definition is READ FROM `confidenceMeaning()` rather than paraphrased
+            here: the chip component is the single home of what each level means, and a
+            second wording on this page is a second thing to drift.
+            `components/layout/methodology-anchor.tsx` already makes the same argument for
+            the anchor map.
+            What this page adds is the FRAMING, and only the framing. `confidenceMeaning()`
+            is written as a statement about our record — the chip's own `sr-only` text
+            supplies "Our confidence in this entry:" before it — but a sighted reader never
+            hears that prefix, so the sentence below carries it visibly. Without it the
+            `needsReview` wording in particular reads as a verdict on the METHOD, which is
+            what `reliability` is for and exactly the confusion ADR 0007 exists to prevent.
           */}
           <p className="mt-2 max-w-[68ch] text-sm text-muted-foreground">
-            That level describes how current our record of this method is, not whether the
-            method works. Every step below is readable without an account.
+            <span className="text-foreground-secondary">Our record of this method:</span>{" "}
+            {confidenceMeaning(playbook.confidence)} Every step below is readable without an
+            account.
           </p>
 
           <Button asChild size="lg" className="mt-6 w-full sm:w-auto">

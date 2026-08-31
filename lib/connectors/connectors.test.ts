@@ -297,9 +297,45 @@ describe("the seeded flights registry row", () => {
     expect(seed.globalCeiling).toBeGreaterThanOrEqual(seed.perUserQuota);
   });
 
-  it("uses ADR 0014's starting windows for a flights surface", () => {
-    expect(seed.cacheTtlSeconds).toBe(15);
-    expect(seed.staleWhileRevalidateSeconds).toBe(60);
+  /**
+   * These pin the OUTCOME of QA finding Q-02, not ADR 0014's original starting values. ADR
+   * 0014 §2 called those "starting values, to be tuned against real upstream behaviour rather
+   * than guessed at twice"; the audit log — 57 HTTP 429s, 29% of all calls refused — was the
+   * measurement, and these are the tuning.
+   */
+  it("caches long enough that one viewport cannot exceed one call per minute", () => {
+    // The single biggest reduction in upstream load available: at a 15s TTL one viewport cost
+    // 4 calls/minute, which is most of the old ceiling on its own.
+    expect(seed.cacheTtlSeconds).toBeGreaterThanOrEqual(60);
     expect(seed.timeoutMs).toBe(5000);
+  });
+
+  it("keeps a stale payload well past the TTL so a backoff does not blank the surface", () => {
+    // While we are backed off we would rather show old positions clearly labelled with their
+    // age than an empty page (ADR 0014 §3 still bounds it at ttl + swr).
+    expect(seed.staleWhileRevalidateSeconds).toBeGreaterThanOrEqual(
+      seed.cacheTtlSeconds * 5,
+    );
+  });
+
+  it("sets a ceiling below the rate at which the upstream was observed to refuse us", () => {
+    // Measured 2026-08-31: a 25-request burst was refused from the 3rd request, and a smooth
+    // 10 requests/minute still drew 2 refusals in 8. Anything at or above 10/min is known to
+    // be refused, so the ceiling must sit under it — with room, because the bucket's state
+    // depends on load we cannot see.
+    expect(seed.globalCeiling).toBeLessThanOrEqual(6);
+    expect(seed.perUserQuota).toBeLessThanOrEqual(seed.globalCeiling);
+    expect(seed.windowSeconds).toBe(60);
+  });
+
+  it("records that the upstream's limiter is the authority, not our columns", () => {
+    // The defect Q-02 actually named: the previous legal_basis claimed we called "at a rate
+    // bounded by the columns on this row", and the audit log proved that false. A false
+    // statement in the connector registry is worse than the rate-limiting itself, for a
+    // product whose whole thesis is that its records are accurate.
+    expect(seed.legalBasis).toMatch(/THEIR LIMITER IS THE AUTHORITY AND NOT THESE COLUMNS/);
+    expect(seed.legalBasis).toContain("429");
+    expect(seed.legalBasis).toContain("cooldown");
+    expect(seed.legalBasis).not.toMatch(/at a rate bounded by the columns on this row/);
   });
 });

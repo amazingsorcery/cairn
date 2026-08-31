@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import { createCase, deleteCase } from "./helpers/cases";
+import { settled } from "./helpers/dom";
 import { signIn } from "./helpers/session";
 
 /**
@@ -38,6 +39,15 @@ test.describe("the vertical slice", () => {
     await page.goto("/directory");
     await expect(page.getByRole("heading", { level: 1, name: "Directory" })).toBeVisible();
     const unfiltered = await page.getByText(/^\d+ tools · sorted by/).innerText();
+
+    /*
+     * Hydration must have finished before the name field is typed into. It is a CONTROLLED
+     * input seeded from the URL, so a `fill()` that lands between the server HTML and React
+     * attaching is overwritten by the first client render: the field empties, the form
+     * submits nothing, and the failure reads as "the filter did not apply" rather than "the
+     * test typed too early".
+     */
+    await settled(page);
 
     // FILTER. The name field, because it is the one filter control present in both the
     // 375px and the 1280px layouts, so the slice is exercised at both widths.
@@ -124,27 +134,29 @@ test.describe("the vertical slice", () => {
     await signIn(context, "owner", baseURL!);
     const page = await context.newPage();
 
-    await page.goto("/workspaces/new");
-    await page.getByLabel("name this case").fill(`Slice readiness ${Date.now()}`);
-    await page.getByRole("button", { name: "start the case" }).click();
-    await page.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/);
+    const caseTitle = `Slice readiness ${Date.now()}`;
+    const workspaceUrl = await createCase(page, caseTitle);
 
-    const savedTools = page.getByRole("region", { name: /saved tools/i });
-    await expect(savedTools).toBeVisible();
-    await expect(savedTools.getByText(/No tools saved here\. Save one from any directory entry\./))
-      .toBeVisible();
-    await expect(savedTools.getByRole("link", { name: /browse the directory/i })).toBeVisible();
+    try {
+      const savedTools = page.getByRole("region", { name: /saved tools/i });
+      await expect(savedTools).toBeVisible();
+      await expect(
+        savedTools.getByText(/No tools saved here\. Save one from any directory entry\./),
+      ).toBeVisible();
+      await expect(savedTools.getByRole("link", { name: /browse the directory/i })).toBeVisible();
 
-    // Nothing about a case is written to browser storage — `states.md` §7.4. A case note on a
-    // shared machine is a threat-model failure for this audience, and this is the assertion
-    // that stops "offline drafts" arriving as a convenience commit.
-    const stored = await page.evaluate(() => ({
-      local: Object.keys(window.localStorage),
-      session: Object.keys(window.sessionStorage),
-    }));
-    expect(stored.local.filter((key) => key !== "theme")).toEqual([]);
-    expect(stored.session).toEqual([]);
-
-    await context.close();
+      // Nothing about a case is written to browser storage — `states.md` §7.4. A case note on
+      // a shared machine is a threat-model failure for this audience, and this is the
+      // assertion that stops "offline drafts" arriving as a convenience commit.
+      const stored = await page.evaluate(() => ({
+        local: Object.keys(window.localStorage),
+        session: Object.keys(window.sessionStorage),
+      }));
+      expect(stored.local.filter((key) => key !== "theme")).toEqual([]);
+      expect(stored.session).toEqual([]);
+    } finally {
+      await deleteCase(page, workspaceUrl, caseTitle);
+      await context.close();
+    }
   });
 });

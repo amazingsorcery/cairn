@@ -22,6 +22,13 @@ import { cn } from "@/lib/utils";
  * (CONFIDENCE_LEVELS in db/schema.ts), the token stem is `review`, the label reads
  * "Needs review". The map below is the single translation point.
  *
+ * EVERY `meaning` BELOW HAS OUR RECORD AS ITS SUBJECT, never the tool. A hostile audit found
+ * `needsReview` reading as "confirm before relying on it", which a reader takes as a warning
+ * about the tool — the precise confusion `docs/design/states.md` §3.4 exists to prevent.
+ * Confidence says how sure WE are about what WE wrote down; `lastVerifiedAt` says when we
+ * last looked; neither is a rating of the tool. `tools.reliability` is the rating, and it is
+ * a separate field. If you edit these strings, keep the grammatical subject on us.
+ *
  * Specified in docs/brand/HANDOFF.md section 3 and docs/design/tokens.md section 3.
  */
 
@@ -38,25 +45,32 @@ const PRESENTATION: Record<ConfidenceLevel, ConfidencePresentation> = {
     label: "Verified",
     filled: 4,
     icon: ShieldCheck,
-    meaning: "Checked against the primary source when this entry was last reviewed.",
+    meaning:
+      "We checked this entry against the primary source when it was last reviewed.",
   },
   high: {
     label: "High",
     filled: 3,
     icon: ShieldHalf,
-    meaning: "Long-established and widely documented, though not re-checked this cycle.",
+    meaning:
+      "We are confident in this entry: it is long-established and widely documented, " +
+      "though we did not re-check it this cycle.",
   },
   medium: {
     label: "Medium",
     filled: 2,
     icon: ShieldAlert,
-    meaning: "Real, but a detail such as pricing or availability may have moved.",
+    meaning:
+      "Our record of this entry may be out of date in a detail such as pricing or " +
+      "availability. The tool itself is real.",
   },
   needsReview: {
     label: "Needs review",
     filled: 1,
     icon: ShieldQuestion,
-    meaning: "Real but materially uncertain. Confirm before relying on it.",
+    meaning:
+      "Our record of this entry is materially uncertain. Confirm the details against the " +
+      "source before relying on them. This is not a judgement about the tool.",
   },
 };
 

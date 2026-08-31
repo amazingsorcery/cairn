@@ -33,18 +33,24 @@ const UNAVAILABLE_ICON: Record<LiveReason, LucideIcon> = {
   "upstream-down": CloudOff,
   stale: Clock,
   "quota-exhausted": Info,
+  "rate-limited": Info,
   disabled: PowerOff,
 };
 
 /**
- * Tone per reason. `quota-exhausted` and `disabled` are `--info`, not `--warning`: nothing
- * is broken. A ceiling we set and a switch we flipped are decisions, and colouring them as
- * faults would blame a third party for our own choices (states.md §5.5, §5.6).
+ * Tone per reason. `quota-exhausted`, `rate-limited` and `disabled` are `--info`, not
+ * `--warning`: nothing is broken. A ceiling we set, a switch we flipped, and a source asking
+ * us to slow down are all decisions being respected, and colouring them as faults would
+ * blame a third party for our own choices (states.md §5.5, §5.6).
+ *
+ * `rate-limited` is deliberately NOT `destructive`. The upstream working exactly as designed
+ * and us obeying it is the system behaving correctly, not an outage.
  */
 const UNAVAILABLE_TONE: Record<LiveReason, "destructive" | "info"> = {
   "upstream-down": "destructive",
   stale: "destructive",
   "quota-exhausted": "info",
+  "rate-limited": "info",
   disabled: "info",
 };
 

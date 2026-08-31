@@ -2,9 +2,10 @@ import { NextResponse } from "next/server";
 
 import { currentUser } from "@/lib/auth";
 import { logger } from "@/lib/logger";
+import { consumeSafely } from "@/lib/rate-limit";
 import { getWorkspaceForExport } from "@/lib/queries/workspaces";
 import { exportFormatSchema } from "@/lib/validation/workspaces";
-import { loadToolFacts } from "../tool-facts";
+import { toolFactsFor } from "../tool-facts";
 import { buildCaseDocument, exportBasename } from "./document";
 import { renderCaseMarkdown } from "./markdown";
 import { renderCasePdf } from "./pdf";
@@ -70,12 +71,33 @@ export async function GET(
     return new NextResponse("Not found", { status: 404, headers: privateHeaders({}) });
   }
 
+  /**
+   * 4. Rate limit — AFTER the ownership check, deliberately. QA finding Q-10.
+   *
+   * Rendering a PDF runs pdfkit in-process and was measured at 0.7–10.7 s per call, on a
+   * box that also runs Postgres and Caddy (product-brief §5). Unbounded, a signed-in user
+   * looping this is a denial of service against the whole deployment.
+   *
+   * The order matters: limiting BEFORE the ownership check would turn the limiter into an
+   * existence oracle — a caller could distinguish "this workspace is not yours" from "you
+   * are being throttled" and learn that the id is real. Behind the check, a non-owner always
+   * gets the same 404 and never reaches the counter at all.
+   *
+   * `consumeSafely` fails open on a database error, which is right here: the export needs
+   * the same database, so a failing limiter means the export was going to fail anyway.
+   */
+  const budget = await consumeSafely("workspace-export", user.id);
+  if (!budget.ok) {
+    const retryAfter = Math.max(1, Math.ceil((budget.resetAt.getTime() - Date.now()) / 1000));
+    return new NextResponse("Too many exports. Try again shortly.", {
+      status: 429,
+      headers: privateHeaders({ "Retry-After": String(retryAfter) }),
+    });
+  }
+
   const format = exportFormatSchema.parse(new URL(request.url).searchParams.get("format"));
-  const facts = await loadToolFacts(
-    workspace.savedTools
-      .map((item) => item.toolSlug)
-      .filter((slug): slug is string => slug !== null),
-  );
+  // No query: confidence and last-verified come joined on the item rows (QA finding Q-15).
+  const facts = toolFactsFor(workspace.savedTools);
 
   const caseDocument = buildCaseDocument(workspace, facts, new Date());
   const basename = exportBasename(caseDocument);

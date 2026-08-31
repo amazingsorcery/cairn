@@ -105,7 +105,35 @@ export async function expectNotFoundBody(
   headingPattern: RegExp = /not found/i,
 ): Promise<void> {
   await expect(page.getByRole("heading", { level: 1, name: headingPattern })).toBeVisible();
-  // A `<meta>` is never "visible", so this is a count assertion rather than a visibility one.
-  const robots = page.locator('meta[name="robots"][content*="noindex"]');
-  expect(await robots.count()).toBeGreaterThan(0);
+  // A `<meta>` is never "visible", so this is a count assertion rather than a visibility one
+  // — and an auto-waiting one, because `next dev` streams the head and a bare `count()` can
+  // read zero from a document that has not finished arriving.
+  await expect(page.locator('meta[name="robots"][content*="noindex"]')).not.toHaveCount(0);
+}
+
+/**
+ * Wait until the page has finished loading **and** the main thread has gone idle.
+ *
+ * `networkidle` is not usable here: `next dev` holds a hot-reload connection open, so it
+ * never settles and the wait becomes a 30-second timeout under parallel workers. And a fixed
+ * `waitForTimeout` would be exactly the arbitrary sleep this suite forbids.
+ *
+ * `requestIdleCallback` is the browser's own answer to "is there any work left": it fires
+ * once the load event has gone and hydration has stopped occupying the main thread. That is
+ * the moment after which a preconnect, a prefetch or an eagerly-mounted embed would already
+ * have been requested — which is what the outbound assertions need to be true *of*.
+ */
+export async function settled(page: Page): Promise<void> {
+  await page.waitForLoadState("load");
+  await page.waitForFunction(
+    () => (window as unknown as { next?: { router?: unknown } }).next?.router !== undefined,
+    null,
+    { timeout: 15_000 },
+  );
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        requestIdleCallback(() => resolve(), { timeout: 5_000 });
+      }),
+  );
 }

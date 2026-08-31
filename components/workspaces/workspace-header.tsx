@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Archive, CircleCheck, MoreHorizontal, Pencil, RotateCcw, Trash2 } from "lucide-react";
@@ -26,7 +27,6 @@ import { deleteWorkspace, updateWorkspace } from "@/lib/actions/workspaces";
 import type { WorkspaceStatus } from "@/db/schema";
 import { formatDate } from "@/lib/utils";
 import { isoDate } from "./dates";
-import { ExportDialog } from "./export-dialog";
 import { SaveIndicator, type SaveState } from "./save-indicator";
 import { useUnsavedGuard } from "./use-unsaved-guard";
 
@@ -46,6 +46,24 @@ import { useUnsavedGuard } from "./use-unsaved-guard";
  * exactly what is about to go and the button stays disabled until the title matches. Cancel
  * carries initial focus.
  */
+
+/**
+ * Q-12. `ExportDialog` pulls Radix Dialog and the format chooser in behind it, and this
+ * header renders on every case page — so a statically imported dialog put 54.7 kB of route
+ * chunk (219 kB First Load) on the one route a researcher sits on for hours, often on a bad
+ * connection in the field, whether or not they ever export anything.
+ *
+ * Loaded on demand instead, and mounted only once `exporting` is true. Same pattern, and the
+ * same reason, as `components/live/flights-surface.tsx` deferring its Leaflet map.
+ *
+ * `ssr: false` is correct rather than merely convenient: the dialog is closed on the server
+ * in every render that matters, so there is nothing to prerender, and it reaches for
+ * `window` (`URL.createObjectURL`, an `<a download>`) the moment it does anything.
+ */
+const ExportDialog = dynamic(
+  () => import("./export-dialog").then((module) => module.ExportDialog),
+  { ssr: false },
+);
 
 const AUTOSAVE_DELAY_MS = 800;
 
@@ -88,6 +106,26 @@ export function WorkspaceHeader({
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inFlight = useRef(false);
 
+  /**
+   * Q-09 — WCAG 2.4.3. Opening the rename form REPLACES its own trigger, so without this the
+   * browser has nowhere to put focus and drops it on `<body>`: a keyboard user asks to rename
+   * the case and is returned to the top of the document, with the whole header and nav to
+   * traverse before reaching the field they just asked for.
+   *
+   * `renameButtonRef` is the trigger and `titleInputRef` is what replaces it. Focus moves
+   * into the input when the mode opens and back to the trigger when it closes — the trigger
+   * is remounted by then, which is why the restore runs in an effect keyed on `renaming`
+   * rather than inside the click handler.
+   *
+   * `exportButtonRef` is passed to the dialog, which returns focus to it on close (Radix's
+   * own restore cannot find the trigger because the dialog is driven by controlled state
+   * rather than by `DialogTrigger`).
+   */
+  const renameButtonRef = useRef<HTMLButtonElement>(null);
+  const titleInputRef = useRef<HTMLInputElement>(null);
+  const exportButtonRef = useRef<HTMLButtonElement>(null);
+  const wasRenaming = useRef(false);
+
   const dirty = value.trim() !== saved.trim() && value.trim() !== "";
   useUnsavedGuard(dirty);
 
@@ -121,6 +159,18 @@ export function WorkspaceHeader({
   );
 
   useEffect(() => {
+    if (renaming) {
+      titleInputRef.current?.focus();
+      titleInputRef.current?.select();
+    } else if (wasRenaming.current) {
+      // Only on the close transition, never on first mount — stealing focus on load would
+      // be its own defect.
+      renameButtonRef.current?.focus();
+    }
+    wasRenaming.current = renaming;
+  }, [renaming]);
+
+  useEffect(() => {
     if (!renaming || !dirty) return;
     setState((current) => (current.status === "failed" ? current : { status: "dirty" }));
     if (timer.current) clearTimeout(timer.current);
@@ -147,12 +197,22 @@ export function WorkspaceHeader({
     <header>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
+          {/*
+            Q-13 — WCAG 1.3.1. The `h1` is mounted in BOTH modes. Renaming used to swap it out
+            for a bare input, leaving `/workspaces/[id]` with no level-one heading at all: a
+            screen-reader user navigating by heading lost the document's identity at exactly
+            the moment they were editing it. While renaming, the `h1` carries the current
+            title visually-hidden and wraps the field, so the outline survives the interaction
+            and the input is still labelled by its own `<label>`.
+          */}
           {renaming ? (
             <div className="max-w-[52ch]">
+              <h1 className="sr-only">{saved}</h1>
               <Label htmlFor={titleFieldId} className="sr-only">
                 case name
               </Label>
               <Input
+                ref={titleInputRef}
                 id={titleFieldId}
                 value={value}
                 maxLength={160}
@@ -190,6 +250,7 @@ export function WorkspaceHeader({
             <div className="flex items-start gap-2">
               <h1 className="text-xl font-semibold tracking-tight md:text-2xl">{saved}</h1>
               <Button
+                ref={renameButtonRef}
                 type="button"
                 variant="ghost"
                 size="icon"
@@ -220,7 +281,12 @@ export function WorkspaceHeader({
         </div>
 
         <div className="flex items-center gap-2">
-          <Button type="button" className="h-11" onClick={() => setExporting(true)}>
+          <Button
+            ref={exportButtonRef}
+            type="button"
+            className="h-11"
+            onClick={() => setExporting(true)}
+          >
             export
           </Button>
 
@@ -258,12 +324,15 @@ export function WorkspaceHeader({
         </div>
       </div>
 
-      <ExportDialog
-        open={exporting}
-        onOpenChange={setExporting}
-        workspaceId={workspaceId}
-        counts={counts}
-      />
+      {exporting ? (
+        <ExportDialog
+          open
+          onOpenChange={setExporting}
+          workspaceId={workspaceId}
+          counts={counts}
+          returnFocusTo={exportButtonRef}
+        />
+      ) : null}
 
       <Dialog open={deleting} onOpenChange={setDeleting}>
         <DialogContent closeLabel="keep this case">

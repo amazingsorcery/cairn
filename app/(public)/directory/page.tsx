@@ -127,6 +127,25 @@ export default async function DirectoryPage({ searchParams }: DirectoryPageProps
         checked our record of it.
       </p>
 
+      {/*
+        The second skip link — WCAG 2.4.1, technique G123.
+
+        The shell's own skip link targets `#main`, and `#main` CONTAINS the filter panel, so it
+        is no help in bypassing it (audit Q-21). With the results now ahead of the filters in
+        DOM order, the traverse that needs bypassing is the other one: a keyboard reader who
+        wants to filter would otherwise tab through every result card to get there.
+
+        It is `md:` and up because that is exactly where the sidebar exists. Below `md:` the
+        facets live in the sheet, whose trigger is three stops into the toolbar — a skip link
+        to a `display:none` sidebar would be a link to nowhere.
+      */}
+      <a
+        href="#directory-filters"
+        className="focus:border-input sr-only focus:not-sr-only focus:mt-4 focus:inline-flex focus:h-11 focus:items-center focus:rounded-md focus:border focus:px-4 focus:text-sm focus:font-medium md:focus:not-sr-only"
+      >
+        skip to filters
+      </a>
+
       <Suspense fallback={<DirectoryBodySkeleton />}>
         <DirectoryBody filters={filters} />
       </Suspense>
@@ -212,28 +231,20 @@ async function DirectoryBody({ filters }: { filters: Filters }) {
   return (
     <DirectoryFilters>
       <div className="mt-8 grid gap-8 md:grid-cols-[16rem_minmax(0,1fr)]">
-        {/* Desktop: a sticky sidebar. 375px: the same panel inside the sheet below. */}
-        <aside
-          aria-labelledby="directory-filters-heading"
-          className="hidden md:sticky md:top-20 md:block md:self-start"
-        >
-          <h2
-            id="directory-filters-heading"
-            className="text-muted-foreground mb-4 text-xs font-semibold tracking-wide uppercase"
-          >
-            filters
-          </h2>
-          <FilterPanel
-            action={BASE}
-            idPrefix="sidebar"
-            groups={groups}
-            hidden={facetHidden}
-            className="max-h-[calc(100dvh-8rem)]"
-            {...(countsNote ? { countsNote } : {})}
-          />
-        </aside>
+        {/*
+          DOM ORDER IS RESULTS FIRST, FILTERS SECOND — audit finding Q-21, WCAG 2.4.1.
 
-        <div className="min-w-0">
+          Visually the sidebar is still on the left at `md:` and above: `md:col-start-*` plus
+          `md:row-start-1` place both children explicitly, so the grid ignores source order
+          and the design is unchanged. What changes is the TAB order. A keyboard reader used
+          to pass 351 facet controls — 366 stops in all — before reaching the first catalogue
+          entry; now the results come first and the facet panel follows.
+
+          The reverse trip is served by the "skip to filters" link in the page shell, so
+          neither direction costs a traverse of the other. Do not "tidy" this back into
+          source order.
+        */}
+        <div className="min-w-0 md:col-start-2 md:row-start-1">
           <DirectoryToolbar
             action={BASE}
             q={filters.q}
@@ -299,6 +310,28 @@ async function DirectoryBody({ filters }: { filters: Filters }) {
             </div>
           </ResultsRegion>
         </div>
+
+        <aside
+          id="directory-filters"
+          tabIndex={-1}
+          aria-labelledby="directory-filters-heading"
+          className="hidden md:sticky md:top-20 md:col-start-1 md:row-start-1 md:block md:self-start"
+        >
+          <h2
+            id="directory-filters-heading"
+            className="text-muted-foreground mb-4 text-xs font-semibold tracking-wide uppercase"
+          >
+            filters
+          </h2>
+          <FilterPanel
+            action={BASE}
+            idPrefix="sidebar"
+            groups={groups}
+            hidden={facetHidden}
+            className="max-h-[calc(100dvh-8rem)]"
+            {...(countsNote ? { countsNote } : {})}
+          />
+        </aside>
       </div>
     </DirectoryFilters>
   );
@@ -365,6 +398,7 @@ function buildGroups(
       legend: "input type",
       kind: "checkbox",
       name: "input",
+      collapsible: true,
       scroll: true,
       options: INPUT_OPTIONS.map((value) => ({
         value,
@@ -378,6 +412,7 @@ function buildGroups(
       legend: "output type",
       kind: "checkbox",
       name: "output",
+      collapsible: true,
       note: OUTPUT_NOTE,
       scroll: true,
       options: OUTPUT_OPTIONS.map((value) => ({
@@ -395,6 +430,7 @@ function buildGroups(
       legend: "tag",
       kind: "checkbox",
       name: "tag",
+      collapsible: true,
       scroll: true,
       options: tags.map((tag) => ({
         value: tag.slug,

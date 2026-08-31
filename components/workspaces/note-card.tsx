@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
-import { Markdown } from "@/components/content/markdown";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -46,6 +45,19 @@ import { useUnsavedGuard } from "./use-unsaved-guard";
  *
  * `created_at` is never rewritten by `updateNote` — it is the "timestamped" in "timestamped
  * notes", and an investigator's record of when they wrote something has to be stable.
+ *
+ * THE BODY IS RENDERED ON THE SERVER AND PASSED IN AS `renderedBody` (Q-12). This component
+ * must be a client one — it holds the editor, the autosave timer and the unload guard — but
+ * importing `components/content/markdown.tsx` from here dragged react-markdown, remark-gfm
+ * and the whole micromark pipeline into the browser bundle. That was a 150 kB chunk on the
+ * ONE route a researcher sits on for hours, and `/workspaces/[id]` was the only route in the
+ * app shipping it: every other Markdown surface in the product already renders on the server.
+ * The page renders each note body and hands the element down, so the parser stays server-side
+ * and this file keeps its interactivity.
+ *
+ * While a local edit is ahead of the server (between the save landing and `router.refresh()`
+ * returning), the raw text is shown instead — the user's own words, unstyled for a moment,
+ * which is the honest thing to show and never a blank.
  */
 
 const AUTOSAVE_DELAY_MS = 800;
@@ -54,9 +66,14 @@ export interface NoteCardProps {
   note: NoteView;
   /** What this note is attached to, if anything, so a note is never orphaned in the UI. */
   anchorLabel?: string | undefined;
+  /**
+   * The note body, already rendered to Markdown on the server. See the note above: this is
+   * what keeps the Markdown parser out of the client bundle.
+   */
+  renderedBody: React.ReactNode;
 }
 
-export function NoteCard({ note, anchorLabel }: NoteCardProps) {
+export function NoteCard({ note, anchorLabel, renderedBody }: NoteCardProps) {
   const router = useRouter();
   const editorId = useId();
 
@@ -153,7 +170,12 @@ export function NoteCard({ note, anchorLabel }: NoteCardProps) {
         </>
       ) : (
         <div className="mt-2">
-          <Markdown className="text-sm">{saved}</Markdown>
+          {saved === note.body ? (
+            renderedBody
+          ) : (
+            // A local edit the server has not sent back yet. Their text, verbatim.
+            <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">{saved}</p>
+          )}
         </div>
       )}
 

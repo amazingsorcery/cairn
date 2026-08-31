@@ -249,6 +249,62 @@ async function phaseA(): Promise<void> {
     );
   });
 
+  await section("2b. rate_limits.key cannot hold a raw identifier (QA Q-05)", async () => {
+    /**
+     * The auditor inserted `signin-email:victim@example.com` and a dotted quad, and both
+     * SUCCEEDED — `deriveKey` was the only thing stopping them, and `consume` takes a plain
+     * string subject. ADR 0009's whole point is that the subject is unreadable, and a
+     * convention is not a guarantee. Migration 0003 adds the CHECK; these prove it bites.
+     */
+    const window = "now()";
+    const attempt = (key: string) =>
+      probe(
+        async () => undefined,
+        (client) =>
+          client.query(
+            `insert into rate_limits (key, window_start, count, expires_at)
+             values ($1, ${window}, 1, ${window} + interval '1 min')`,
+            [key],
+          ),
+        (client) => client.query("delete from rate_limits where key = $1", [key]),
+      );
+
+    const email = await attempt("signin-email:victim@example.com");
+    check(
+      "a raw email address is REJECTED",
+      !email.accepted && email.constraint === "rate_limits_key_check",
+      email.accepted ? "ACCEPTED — the privacy property is convention only" : `${email.code} ${email.constraint}`,
+    );
+
+    const ip = await attempt("search-suggest:203.0.113.9");
+    check(
+      "a dotted quad is REJECTED",
+      !ip.accepted && ip.constraint === "rate_limits_key_check",
+      ip.accepted ? "ACCEPTED" : `${ip.code} ${ip.constraint}`,
+    );
+
+    const uuid = await attempt("workspace-write:0f8f7c2e-2f7a-4d1a-9c1e-6d1b0a0c2f3d");
+    check(
+      "a uuid is REJECTED (hyphens are not hex)",
+      !uuid.accepted && uuid.constraint === "rate_limits_key_check",
+      uuid.accepted ? "ACCEPTED" : `${uuid.code} ${uuid.constraint}`,
+    );
+
+    const short = await attempt("signin-email:abc123");
+    check(
+      "a too-short hex string is REJECTED",
+      !short.accepted && short.constraint === "rate_limits_key_check",
+      short.accepted ? "ACCEPTED" : `${short.code} ${short.constraint}`,
+    );
+
+    const valid = await attempt(`signin-email:${"a".repeat(64)}`);
+    check(
+      "a correctly derived key is still accepted",
+      valid.accepted,
+      valid.accepted ? "" : `${valid.code} ${valid.constraint}`,
+    );
+  });
+
   await section("3. Deferred, not disabled (HANDOFF §6, §11.8)", async () => {
     /**
      * One UPDATE that duplicates an existing `order_index`, with no compensating update.
@@ -581,6 +637,28 @@ async function phaseB(): Promise<void> {
 
       const asOwner = await getWorkspace(workspace.id, owner.id);
       check("the owner sees the workspace", asOwner !== null);
+      /**
+       * QA finding Q-15: confidence and last-verified now arrive JOINED on the item rows.
+       * They used to cost one cached `getToolBySlug` per saved tool — two round trips each
+       * after the read split — which a warm cache hid and any editorial publish restored.
+       */
+      const savedTool = asOwner?.savedTools.find((item) => item.toolSlug !== null);
+      check(
+        "a saved tool carries its CURRENT confidence and last-verified date, joined",
+        savedTool !== undefined &&
+          savedTool.toolConfidence !== null &&
+          savedTool.toolLastVerifiedAt !== null,
+        savedTool
+          ? `${savedTool.toolSlug}: ${savedTool.toolConfidence}`
+          : "no resolvable saved tool",
+      );
+      check(
+        "a checklist entry carries no tool facts",
+        (asOwner?.checklist ?? []).every(
+          (item) => item.toolConfidence === null && item.toolLastVerifiedAt === null,
+        ),
+      );
+
       check(
         "the owner sees the derived checklist, the saved tool and the note",
         (asOwner?.checklist.length ?? 0) === steps.length &&

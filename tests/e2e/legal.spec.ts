@@ -51,7 +51,7 @@ test.describe("legal pages", () => {
       ).toBeVisible();
 
       // A draft policy is not something a crawler should surface as settled law.
-      expect(await page.locator('meta[name="robots"][content*="noindex"]').count()).toBeGreaterThan(0);
+      await expect(page.locator('meta[name="robots"][content*="noindex"]')).not.toHaveCount(0);
     });
   }
 

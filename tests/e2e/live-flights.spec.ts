@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { isOutbound, settled, watchOutbound } from "./helpers/net";
+import { settled } from "./helpers/dom";
+import { isOutbound, watchOutbound } from "./helpers/net";
 
 /**
  * `/live/flights` — ADR 0011, ADR 0014, ADR 0016 §1.

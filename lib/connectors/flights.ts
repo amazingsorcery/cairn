@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import type { Connector } from "@/db/schema";
-import { UpstreamStatusError } from "./runtime";
+import { parseRetryAfter, UpstreamStatusError } from "./runtime";
 import type { ConnectorDriver } from "./types";
 
 /**
@@ -257,7 +257,21 @@ export const flightsDriver: ConnectorDriver<FlightParams, FlightsPayload> = {
       },
     });
 
-    if (!response.ok) throw new UpstreamStatusError(response.status);
+    if (!response.ok) {
+      /**
+       * `Retry-After` is read on EVERY non-2xx, not only on 429: a 503 may carry one too, and
+       * a header we were given is always better than a constant we chose.
+       *
+       * Measured against adsb.lol on 2026-08-31: it sends no `Retry-After` on either a 200 or
+       * a 429, so in practice this resolves to null here and `runtime.ts` falls back to
+       * `DEFAULT_COOLDOWN_SECONDS`. The parsing exists because the day they start sending one
+       * is the day we should obey it, not the day we notice.
+       */
+      throw new UpstreamStatusError(
+        response.status,
+        parseRetryAfter(response.headers.get("retry-after")),
+      );
+    }
 
     const body: unknown = await response.json();
     const parsed = responseSchema.safeParse(body);
@@ -302,32 +316,66 @@ export const FLIGHTS_CONNECTOR_SEED = {
     "and is rendered next to the data. adsb.lol's feeder-facing privacy page separately " +
     "describes contributors waiving rights under CC0; where the two differ we apply the " +
     "stricter ODbL terms. No robots.txt is published for api.adsb.lol (404 on 2026-08-31), " +
-    "so no crawl directive is being circumvented; we call one documented JSON endpoint at a " +
-    "rate bounded by the columns on this row. The data is ADS-B telemetry broadcast in the " +
-    "clear by the aircraft; we add no identity resolution and retain nothing. NOT A LEGAL " +
-    "OPINION — see docs/content/legal-review.md.",
+    "so no crawl directive is being circumvented. The data is ADS-B telemetry broadcast in " +
+    "the clear by the aircraft; we add no identity resolution and retain nothing. " +
+    "RATE: the upstream publishes no limit ('rate limits are dynamic based on the " +
+    "environment load') and sends no Retry-After or X-RateLimit headers, so THEIR LIMITER IS " +
+    "THE AUTHORITY AND NOT THESE COLUMNS. A 429 or 420 opens a per-connector cooldown and we " +
+    "stop calling until it expires; the surface degrades to a stale or unavailable state that " +
+    "says so, and the client stops polling. The columns on this row are a ceiling set below " +
+    "the lowest rate at which refusals were observed (2026-08-31: a 25-request burst was " +
+    "refused from the 3rd request, and 10 requests/minute spaced 6s apart drew 2 refusals in " +
+    "8), not a rate we assert is permitted. Corrected after QA finding Q-02, which recorded " +
+    "57 HTTP 429s and one 420 against an earlier envelope of 20/user/min and 60/min global " +
+    "whose stated basis was factually wrong. NOT A LEGAL OPINION — see " +
+    "docs/content/legal-review.md.",
   baseUrl: "https://api.adsb.lol",
   requiresApiKey: false,
   apiKeyEnvVar: null,
   /**
-   * Quotas. The upstream publishes no number ("rate limits are dynamic based on the
-   * environment load") and asks production users to make contact, so these are set
-   * conservatively rather than guessed generously. Because the payload is shared across all
-   * viewers (ADR 0014 §4), the ceiling bounds our TOTAL upstream traffic, not our traffic
-   * per reader.
+   * Quotas, TIGHTENED after QA finding Q-02. The previous envelope (20/user/min, 60/min
+   * global) drew 57 HTTP 429s and one 420 — 29% of all outbound calls refused.
+   *
+   * WHAT THESE NUMBERS ARE BASED ON, measured 2026-08-31:
+   *   - A 25-request burst was refused from the **3rd** request onward. Our old per-user
+   *     quota did not bite until the 19th.
+   *   - 10 requests/minute, spaced 6 seconds apart with distinct viewports, still drew 2
+   *     refusals in 8 — so even a smooth 10/min is above what the bucket tolerates when it
+   *     is already partly drained.
+   *   - After ~20 seconds idle, two back-to-back requests both succeeded, so the limiter is
+   *     a refilling token bucket rather than a fixed window.
+   *
+   * So the ceiling is 6/min — one call per 10 seconds sustained, comfortably under the
+   * lowest rate at which refusals were seen. It is a CEILING BELOW THE OBSERVED FLOOR, not a
+   * rate anyone told us was permitted, and `legalBasis` says exactly that. The real
+   * protection is the cooldown in `runtime.ts`: their limiter is the authority.
+   *
+   * Because the payload is shared across all viewers (ADR 0014 §4), the ceiling bounds our
+   * TOTAL upstream traffic, not our traffic per reader.
    */
-  perUserQuota: 20,
-  globalCeiling: 60,
+  perUserQuota: 3,
+  globalCeiling: 6,
   windowSeconds: 60,
   timeoutMs: 5000,
-  /** ADR 0014 §2 starting values for flights, to be tuned against real behaviour. */
-  cacheTtlSeconds: 15,
-  staleWhileRevalidateSeconds: 60,
+  /**
+   * TTL raised 15s -> 60s, the single biggest reduction in upstream load available: one
+   * viewport now costs at most 1 call/minute instead of 4. ADR 0014 §2 set 15 as "a starting
+   * value, to be tuned against real upstream behaviour rather than guessed at twice" — this
+   * is that tuning, and the audit log is the measurement.
+   *
+   * The stale window is raised 60s -> 600s to match: while we are backed off we would rather
+   * show ten-minute-old positions clearly labelled with their age than an empty page. ADR
+   * 0014 §3's horizon still applies — past ttl+swr the surface goes `unavailable` rather than
+   * serving something older with a growing label.
+   */
+  cacheTtlSeconds: 60,
+  staleWhileRevalidateSeconds: 600,
   enabled: false,
   status: "draft" as const,
   notes:
     "Endpoint and licence confirmed 2026-08-31 against the service's own OpenAPI document " +
-    "and one live request. Seeded disabled and draft per ADR 0012 §1: an operator must " +
-    "review the recorded legal basis and turn it on. Set `enabled = true` and " +
-    "`status = 'published'` to bring /live/flights up.",
+    "and one live request. Quota envelope tightened and backoff added after QA finding Q-02 " +
+    "(57 logged 429s under the previous settings). Seeded disabled and draft per ADR 0012 " +
+    "§1: an operator must review the recorded legal basis and turn it on. Set `enabled = " +
+    "true` and `status = 'published'` to bring /live/flights up.",
 };

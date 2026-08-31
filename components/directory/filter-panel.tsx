@@ -5,7 +5,7 @@ import { methodologyAnchorHref } from "@/components/layout/methodology-anchor";
 import type { ConfidenceLevel } from "@/db/schema";
 import { cn } from "@/lib/utils";
 
-import { FacetCheckbox, FacetRadio, FilterForm } from "./filter-controls";
+import { FacetCheckbox, FacetDisclosure, FacetRadio, FilterForm } from "./filter-controls";
 
 /**
  * The facet panel. One Server Component, rendered twice: as the `md:` sidebar and inside the
@@ -45,6 +45,14 @@ export interface FacetGroup {
   note?: string;
   /** Long vocabularies (tags, input types) scroll inside the group. */
   scroll?: boolean;
+  /**
+   * Render behind a `<details>` disclosure, collapsed unless something in it is selected.
+   *
+   * Set on the long vocabularies. A collapsed group contributes ONE tab stop instead of one
+   * per value, which is what keeps the catalogue reachable from the keyboard (audit Q-21).
+   * Its inputs stay in the form, so a checked value inside a collapsed group still submits.
+   */
+  collapsible?: boolean;
 }
 
 export function FilterPanel({
@@ -72,39 +80,40 @@ export function FilterPanel({
       ))}
 
       {countsNote ? (
-        <p className="mb-4 rounded-md border border-border bg-muted px-3 py-2 text-xs text-muted-foreground">
+        <p className="border-border bg-muted text-muted-foreground mb-4 rounded-md border px-3 py-2 text-xs">
           {countsNote}
         </p>
       ) : null}
 
       <div className="min-h-0 flex-1 space-y-6 overflow-y-auto">
-        {groups.map((group) => (
-          <fieldset key={group.id}>
-            <legend className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              {group.legend}
-            </legend>
+        {groups.map((group) => {
+          const selectedCount = group.options.filter(
+            (option) => option.checked && option.value !== "",
+          ).length;
 
-            {group.note ? (
-              <p className="mb-1.5 text-xs leading-relaxed text-muted-foreground">{group.note}</p>
-            ) : null}
+          const body = (
+            <>
+              {group.note ? (
+                <p className="text-muted-foreground mb-1.5 text-xs leading-relaxed">{group.note}</p>
+              ) : null}
 
-            {group.id === "confidence" ? (
-              <p className="mb-1.5 text-xs text-muted-foreground">
-                <Link
-                  href={methodologyAnchorHref("verified")}
-                  className="underline underline-offset-4 hover:text-foreground"
-                >
-                  What each level means
-                </Link>
-              </p>
-            ) : null}
+              {group.id === "confidence" ? (
+                <p className="text-muted-foreground mb-1.5 text-xs">
+                  <Link
+                    href={methodologyAnchorHref("verified")}
+                    className="hover:text-foreground underline underline-offset-4"
+                  >
+                    What each level means
+                  </Link>
+                </p>
+              ) : null}
 
-            <div className={cn(group.scroll && "max-h-64 overflow-y-auto pr-1")}>
-              {group.options.map((option) => {
-                const id = `${idPrefix}-${group.id}-${option.value || "any"}`;
-                const label = (
-                  <span className="flex items-center gap-2">
-                    {/*
+              <div className={cn(group.scroll && "max-h-64 overflow-y-auto pr-1")}>
+                {group.options.map((option) => {
+                  const id = `${idPrefix}-${group.id}-${option.value || "any"}`;
+                  const label = (
+                    <span className="flex items-center gap-2">
+                      {/*
                       `aria-hidden` on the chip, deliberately. `ConfidenceChip` carries its own
                       screen-reader text — "Our confidence in this entry: Verified. Checked
                       against the primary source…" — which is right on a card and wrong here:
@@ -112,42 +121,72 @@ export function FilterPanel({
                       sentence about an entry that does not exist followed by the actual label.
                       The visible chip is the shape cue; the text beside it is the name.
                     */}
-                    {option.confidence ? (
-                      <span aria-hidden="true" className="inline-flex">
-                        <ConfidenceChip level={option.confidence} showMeter={false} />
-                      </span>
-                    ) : null}
-                    <span className="truncate">{option.label}</span>
-                  </span>
-                );
+                      {option.confidence ? (
+                        <span aria-hidden="true" className="inline-flex">
+                          <ConfidenceChip level={option.confidence} showMeter={false} />
+                        </span>
+                      ) : null}
+                      <span className="truncate">{option.label}</span>
+                    </span>
+                  );
 
-                return group.kind === "radio" ? (
-                  <FacetRadio
-                    key={option.value || "any"}
-                    id={id}
-                    name={group.name}
-                    value={option.value}
-                    checked={option.checked}
-                    count={option.count}
+                  return group.kind === "radio" ? (
+                    <FacetRadio
+                      key={option.value || "any"}
+                      id={id}
+                      name={group.name}
+                      value={option.value}
+                      checked={option.checked}
+                      count={option.count}
+                    >
+                      {label}
+                    </FacetRadio>
+                  ) : (
+                    <FacetCheckbox
+                      key={option.value}
+                      id={id}
+                      name={group.name}
+                      value={option.value}
+                      checked={option.checked}
+                      count={option.count}
+                    >
+                      {label}
+                    </FacetCheckbox>
+                  );
+                })}
+              </div>
+            </>
+          );
+
+          /**
+           * A collapsible group is wrapped in `<details>`; a short one keeps its visible
+           * `<legend>`. Either way the group is a labelled `<fieldset>`, so a screen reader
+           * announces "cost model, group" on entry rather than a run of loose checkboxes.
+           */
+          return (
+            <fieldset key={group.id}>
+              {group.collapsible ? (
+                <>
+                  <legend className="sr-only">{group.legend}</legend>
+                  <FacetDisclosure
+                    legend={group.legend}
+                    selectedCount={selectedCount}
+                    defaultOpen={selectedCount > 0}
                   >
-                    {label}
-                  </FacetRadio>
-                ) : (
-                  <FacetCheckbox
-                    key={option.value}
-                    id={id}
-                    name={group.name}
-                    value={option.value}
-                    checked={option.checked}
-                    count={option.count}
-                  >
-                    {label}
-                  </FacetCheckbox>
-                );
-              })}
-            </div>
-          </fieldset>
-        ))}
+                    {body}
+                  </FacetDisclosure>
+                </>
+              ) : (
+                <>
+                  <legend className="text-muted-foreground mb-1 text-xs font-semibold tracking-wide uppercase">
+                    {group.legend}
+                  </legend>
+                  {body}
+                </>
+              )}
+            </fieldset>
+          );
+        })}
       </div>
 
       {/*
@@ -158,7 +197,7 @@ export function FilterPanel({
       */}
       <button
         type="submit"
-        className="sr-only focus:not-sr-only focus:mt-4 focus:inline-flex focus:h-11 focus:items-center focus:rounded-md focus:bg-primary focus:px-4 focus:text-sm focus:font-medium focus:text-primary-foreground"
+        className="focus:bg-primary focus:text-primary-foreground sr-only focus:not-sr-only focus:mt-4 focus:inline-flex focus:h-11 focus:items-center focus:rounded-md focus:px-4 focus:text-sm focus:font-medium"
       >
         apply filters
       </button>

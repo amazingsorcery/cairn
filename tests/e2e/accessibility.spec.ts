@@ -179,6 +179,18 @@ test.describe("keyboard-only traversal of the vertical slice", () => {
     await page.goto("/directory");
     await expect(page.getByRole("heading", { level: 1, name: "Directory" })).toBeVisible();
 
+    /*
+     * Precondition, not an assertion. `readTaxonomy()` degrades gracefully: if `listTags()`
+     * fails the tag group is simply not rendered (`states.md` §2.5), and the page then has
+     * ~120 focusable elements instead of 416. That is a different page from the one this
+     * claim is about, so measuring it would report a pass that means nothing.
+     */
+    const tagGroup = page.getByRole("group", { name: "tag" });
+    test.skip(
+      (await tagGroup.count()) === 0,
+      "the taxonomy read degraded, so the tag facet group is absent — nothing to measure",
+    );
+
     const stops = await page.evaluate(() => {
       const selector =
         'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
