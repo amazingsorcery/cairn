@@ -88,17 +88,24 @@ export async function renderedIdentity(page: Page): Promise<{ title: string; mai
 /**
  * Assert a page carries the not-found body and the `noindex` meta tag.
  *
- * **Deliberately not a status assertion.** Integration finding **I-15**: `notFound()` returns
- * HTTP **200** with the correct not-found body on every route shape in this Next version
- * (15.5.24), reproduced against a production build with a real database. It is not our bug,
- * the fix that would close it (`dynamicParams = false`) is worse than the defect for a
- * content product with an editorial workflow, and the SEO harm is already neutralised by the
- * `noindex, nofollow` meta tag that the not-found pages emit. Asserting `404` here would
- * fail on a correctly-behaving build, which is worse than no assertion — so the suite asserts
- * the two things a reader and a crawler actually receive.
+ * **This asserts the body, not the status**, and the status is asserted separately by the
+ * caller where it has the response to hand. That split is the residue of integration finding
+ * **I-15**, and it is worth knowing about:
  *
- * Revisit on a Next.js upgrade: when `notFound()` starts returning 404 again, add the status
- * assertion back and delete this note.
+ * I-15 recorded that `notFound()` returned HTTP **200** with the correct not-found body on
+ * every route shape, reproduced against a production build. The suite was therefore written
+ * to assert what a reader and a crawler actually receive — the rendered body and
+ * `<meta name="robots" content="noindex, nofollow">` — because asserting `404` would have
+ * failed on a build that was behaving as designed, and would have invited the "fix"
+ * (`dynamicParams = false`) that makes an entry published through the admin UI 404 until the
+ * next redeploy.
+ *
+ * **I-15 is now closed** (`d3d86f2`, `753cf1a`): the cause was a parent `loading.tsx` whose
+ * Suspense boundary wrapped the child segment *above* its existence guard, so the shell —
+ * and the 200 — was committed before the guard ran. Every route shape returns a real 404
+ * again, so the callers assert the status too. The body-and-`noindex` assertions stay: they
+ * are the thing the reader receives, they held throughout the period when the status did
+ * not, and they are what would still be true if this regressed.
  */
 export async function expectNotFoundBody(
   page: Page,

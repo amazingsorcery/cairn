@@ -5,23 +5,23 @@ import { expectNotFoundBody } from "./helpers/dom";
 /**
  * The not-found surface — architecture HANDOFF §11 assertion 3, `states.md` §1.2.
  *
- * **THE STATUS CODE IS NOT ASSERTED, AND THAT IS DELIBERATE.** Integration finding **I-15**:
- * in this Next version (15.5.24) `notFound()` returns **HTTP 200** with the correct not-found
- * body, on every route shape — SSG with `dynamicParams`, plain SSG, and `force-dynamic` alike
- * — reproduced against a production build with a real seeded database. A genuinely unmatched
- * path still returns a true 404.
+ * **ON THE STATUS CODE — read this before changing these assertions.** Integration finding
+ * **I-15** recorded that `notFound()` returned **HTTP 200** with the correct not-found body
+ * on every route shape, reproduced against a production build with a real seeded database.
+ * This file was written to assert only the body and the `noindex` tag, because a `404`
+ * assertion would have failed on a build that was behaving as designed, and because the
+ * obvious lever (`dynamicParams = false`) makes an entry published through the admin UI 404
+ * until the next redeploy — a worse defect than the one it fixes.
  *
- * It was investigated and downgraded rather than fixed: the obvious lever
- * (`dynamicParams = false`) would make an entry published through the admin UI 404 until the
- * next redeploy, which for a content product with an editorial workflow is a worse defect
- * than the one it fixes. The SEO harm is already neutralised, because the not-found pages
- * emit `<meta name="robots" content="noindex, nofollow">`; what remains is monitoring
- * fidelity, which is operational.
+ * **I-15 is now closed** (`d3d86f2`, `753cf1a`). The cause was a parent `loading.tsx` whose
+ * Suspense boundary wrapped the child segment *above* its existence guard, so the response
+ * shell — and the 200 — was committed before the guard ran. Every shape below now returns a
+ * real 404, verified against this build, so the status **is** asserted again.
  *
- * So this file asserts **what a reader and a crawler actually receive**: the not-found body,
- * and the `noindex` tag. Asserting `404` would fail on a correctly-behaving build, which is
- * worse than no assertion — it invites someone to "fix" it with the change that breaks
- * publishing. Add the status assertion back on a Next.js upgrade and delete this note.
+ * The body and `noindex` assertions stay alongside it. They are what a reader and a crawler
+ * actually receive, they held throughout the period when the status did not, and if this
+ * regresses they are what will still be true — which is exactly the distinction the next
+ * person will need.
  */
 
 const MISSES: { path: string; heading: RegExp }[] = [
@@ -41,8 +41,12 @@ test.describe("not found", () => {
      * or removed entry the 404 is the same page. It must not distinguish 'never existed' from
      * 'not published' — that would confirm the existence of unpublished rows."
      */
-    test(`${path} renders the not-found body and is noindex`, async ({ page }) => {
-      await page.goto(path);
+    test(`${path} returns 404, renders the not-found body and is noindex`, async ({ page }) => {
+      const response = await page.goto(path);
+      // A 200 here is I-15 regressing: uptime monitoring and log analysis can no longer tell
+      // a miss from a hit, and a crawler is told the page is real content.
+      expect(response?.status(), `${path} must be a real 404`).toBe(404);
+
       await expectNotFoundBody(page, heading);
 
       const body = await page.locator("main").innerText();

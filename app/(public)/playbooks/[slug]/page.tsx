@@ -131,15 +131,14 @@ export default async function PlaybookDetailPage({
             second wording on this page is a second thing to drift.
             `components/layout/methodology-anchor.tsx` already makes the same argument for
             the anchor map.
-            What this page adds is the FRAMING, and only the framing. `confidenceMeaning()`
-            is written as a statement about our record — the chip's own `sr-only` text
-            supplies "Our confidence in this entry:" before it — but a sighted reader never
-            hears that prefix, so the sentence below carries it visibly. Without it the
-            `needsReview` wording in particular reads as a verdict on the METHOD, which is
-            what `reliability` is for and exactly the confusion ADR 0007 exists to prevent.
+            Rendered with NO prefix of our own. Every `confidenceMeaning()` string now opens
+            by naming our record ("Our record of this entry is..."), so a sighted reader gets
+            the framing that the chip's `sr-only` "Our confidence in this entry:" gives a
+            screen-reader user. Adding a second "Our record of this method:" in front of it
+            stuttered. If those strings are ever reworded to drop the framing, this paragraph
+            is where it has to come back.
           */}
           <p className="mt-2 max-w-[68ch] text-sm text-muted-foreground">
-            <span className="text-foreground-secondary">Our record of this method:</span>{" "}
             {confidenceMeaning(playbook.confidence)} Every step below is readable without an
             account.
           </p>

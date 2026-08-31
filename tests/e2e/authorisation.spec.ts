@@ -12,9 +12,9 @@ import { signIn } from "./helpers/session";
  * workspace is real and belongs to someone else", which is an enumeration oracle, and a
  * `<title>Connectors · Cairn</title>` above a 404 body discloses exactly what the 404 was for.
  *
- * On the status code, see `expectNotFoundBody` and integration finding **I-15**: `notFound()`
- * returns HTTP 200 in this Next version, so these specs assert the body and the `noindex` tag
- * instead.
+ * On the status code: integration finding **I-15** (now closed, `d3d86f2`/`753cf1a`) meant
+ * `notFound()` returned 200 with the right body. It returns a real 404 again, so the denial
+ * paths assert the status **and** the body — see `expectNotFoundBody` for why both.
  */
 
 const OWNER_WORKSPACE_PATH_ENV = "E2E_OWNER_WORKSPACE_ID";
@@ -159,6 +159,7 @@ test.describe("a signed-in non-owner", () => {
     const notThere = await page.request.get(`/workspaces/${unknownId}`);
 
     expect(notYours.status(), "no 403 — a 403 confirms the row exists").toBe(notThere.status());
+    expect(notYours.status(), "and both are a real 404 (I-15 is closed)").toBe(404);
 
     const notYoursHtml = await notYours.text();
     const notThereHtml = await notThere.text();
@@ -249,7 +250,8 @@ test.describe("a plain user under /admin", () => {
       await signIn(context, "owner", baseURL!); // role `user`
       const page = await context.newPage();
 
-      await page.goto(path);
+      const response = await page.goto(path);
+      expect(response?.status(), "a role denial is a 404, never a 403").toBe(404);
       await expectNotFoundBody(page);
 
       const title = await page.title();
@@ -277,7 +279,8 @@ test.describe("a plain user under /admin", () => {
     await page.goto("/admin/queue");
     await expect(page.getByRole("heading", { level: 1 })).not.toHaveText(/not found/i);
 
-    await page.goto("/admin/connectors");
+    const denied = await page.goto("/admin/connectors");
+    expect(denied?.status(), "an editor is refused connectors with a 404, not a 403").toBe(404);
     await expectNotFoundBody(page);
     expect(await page.title()).toMatch(/^Not found/);
 
