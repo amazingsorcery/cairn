@@ -2,6 +2,7 @@ import { asc, desc, eq, gte, sql } from "drizzle-orm";
 
 import {
   cameras,
+  CONNECTOR_REQUEST_OUTCOMES,
   connectorRequests,
   connectors,
   playbooks,
@@ -215,6 +216,21 @@ export type ConnectorHealth = {
  *
  * Served by `connector_requests_connector_time_idx`.
  */
+/**
+ * A zeroed count for every outcome, DERIVED from the vocabulary rather than typed out.
+ *
+ * The hand-written literal this replaces silently lost a member when `rateLimited` was added
+ * (migration 0005): the board would have shown a connector being refused by its upstream and
+ * counted it nowhere. Deriving means a seventh outcome appears on the board with a zero
+ * rather than being dropped.
+ */
+function zeroedOutcomes(): Record<ConnectorRequestOutcome, number> {
+  return Object.fromEntries(CONNECTOR_REQUEST_OUTCOMES.map((outcome) => [outcome, 0])) as Record<
+    ConnectorRequestOutcome,
+    number
+  >;
+}
+
 export async function getConnectorHealth(windowHours = 24): Promise<ConnectorHealth[]> {
   const since = new Date(Date.now() - windowHours * 3_600_000);
 
@@ -253,13 +269,7 @@ export async function getConnectorHealth(windowHours = 24): Promise<ConnectorHea
       enabled: row.enabled,
       windowHours,
       total: 0,
-      byOutcome: {
-        ok: 0,
-        upstreamError: 0,
-        quotaDenied: 0,
-        disabled: 0,
-        timeout: 0,
-      },
+      byOutcome: zeroedOutcomes(),
       p95DurationMs: null,
     };
 

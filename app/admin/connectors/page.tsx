@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { publishConnector, recheckConnector } from "@/lib/actions/connectors";
 import { getAuditLogSize, getConnectorHealth, listConnectorsForAdmin } from "@/lib/queries/admin";
 import { AUDIT_RETENTION_DAYS } from "@/lib/connectors/audit";
-import { formatDate, formatTimestamp } from "@/lib/utils";
+import { cn, formatDate, formatTimestamp } from "@/lib/utils";
 import type { ConnectorKind } from "@/db/schema";
 
 /**
@@ -94,6 +94,14 @@ export default async function AdminConnectorsPage() {
           const total = stats?.total ?? 0;
           const errors = (stats?.byOutcome.upstreamError ?? 0) + (stats?.byOutcome.timeout ?? 0);
           const denied = stats?.byOutcome.quotaDenied ?? 0;
+          /**
+           * Shown SEPARATELY from quota denials, and it is not a presentation nicety. A quota
+           * denial is our ceiling refusing the caller; a rate limit is the upstream refusing
+           * us. They point at opposite fixes — lower our ceiling versus back off from theirs —
+           * and an operator reading this board at 3am must not have to reconstruct which is
+           * which from `upstream_status`. QA finding Q-02.
+           */
+          const rateLimited = stats?.byOutcome.rateLimited ?? 0;
 
           return (
             <Card key={connector.id}>
@@ -122,6 +130,11 @@ export default async function AdminConnectorsPage() {
                   <Stat label={`requests (24 h)`} value={String(total)} />
                   <Stat label="error rate" value={percent(errors, total)} />
                   <Stat label="quota denials" value={`${denied} · ${percent(denied, total)}`} />
+                  <Stat
+                    label="rate limited by source"
+                    value={`${rateLimited} · ${percent(rateLimited, total)}`}
+                    tone={rateLimited > 0 ? "warning" : undefined}
+                  />
                   <Stat
                     label="p95 latency"
                     value={stats?.p95DurationMs === null || stats === undefined ? "—" : `${stats.p95DurationMs} ms`}
@@ -253,11 +266,24 @@ export default async function AdminConnectorsPage() {
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+/**
+ * `tone="warning"` is used only where a non-zero value is itself the finding — a source
+ * refusing us is not a number to read past. It is never used for a value that is merely
+ * large, because everything coloured is a claim that something needs attention.
+ */
+function Stat({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: "warning";
+}) {
   return (
     <div>
       <dt className="text-xs uppercase tracking-wide text-muted-foreground">{label}</dt>
-      <dd className="tabular font-medium">{value}</dd>
+      <dd className={cn("tabular font-medium", tone === "warning" && "text-warning")}>{value}</dd>
     </div>
   );
 }

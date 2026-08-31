@@ -93,10 +93,11 @@ test.describe("keyboard-only traversal of the vertical slice", () => {
     let toolLink: string | null = null;
     let stopsToFirstEntry = -1;
 
-    // Bounded. The whole header, the toolbar and every facet control sit between the top of
-    // the document and the first result — 416 focusable elements on this route, of which 297
-    // are tag checkboxes. 500 terminates and is not a claim that 500 is acceptable; see the
-    // test below, which is where that claim is made.
+    // Bounded, and generously. Since `fbc6e43` put the results first in DOM order this
+    // reaches an entry in ~14 presses; before that it took 362. The bound stays high so that
+    // a regression reports the number it actually took rather than dying at the limit — the
+    // annotation below is the measurement, and the test after this one is where the claim
+    // about an acceptable number is made.
     for (let step = 0; step < 500; step += 1) {
       await page.keyboard.press("Tab");
       const indicator = await focusIndicator(page);
@@ -157,23 +158,32 @@ test.describe("keyboard-only traversal of the vertical slice", () => {
   });
 
   /**
-   * DEFECT THIS CATCHES — and currently *does* catch: no way to bypass the facet panel.
+   * DEFECT THIS CATCHES: no way to bypass the facet panel — WCAG 2.4.1, Bypass Blocks.
    *
-   * WCAG 2.4.1 (Bypass Blocks) asks for a mechanism to skip a repeated block of content.
-   * `/directory` has one skip link and it targets `<main>`, which begins **above** the
-   * filters — so a keyboard reader arrives at the top of the page, presses Tab **362 times**
-   * through the header, the toolbar and 297 tag checkboxes, and only then reaches the first
-   * catalogue entry. Every one of those stops has a correct focus ring, which is why no
-   * focus-indicator test finds this.
+   * THIS TEST FOUND A REAL DEFECT AND IS NOW A REGRESSION GUARD. When it was written,
+   * `/directory` put **362** focusable elements before the first catalogue entry: the header,
+   * the toolbar, and a facet sidebar whose tag group alone held 297 checkboxes. The one skip
+   * link targeted `<main>`, and `<main>` *contains* the panel, so there was no escape. Every
+   * one of those stops had a correct focus ring, which is exactly why no focus-indicator test
+   * finds this class of defect. Filed independently by the auditor as Q-21 (HIGH) and fixed
+   * in `fbc6e43`: results first in DOM order with explicit grid placement so the visual
+   * layout is unchanged, a second "skip to filters" link, and the three long vocabularies
+   * collapsed behind `<details>`.
    *
-   * The threshold below is a judgement, and it is a generous one: 60 stops is already a long
-   * traverse. It is not arbitrary in the direction that matters — 362 is not a number any
-   * reader is going to sit through, and the reader most affected is the one this product's
-   * audience includes.
+   * WHAT THIS MEASURES IS A PROXY, AND IT OVER-COUNTS. It walks `querySelectorAll` in
+   * document order, which is not the tab order: it does not know that a `<details>` is
+   * collapsed, so inputs that a keyboard reader never reaches are still counted. It reports
+   * ~20 where the real traverse is 14. That is deliberate — the proxy is cheap and stable,
+   * and it errs towards reporting *more* work than a reader actually does, so it can only
+   * fail conservatively.
    *
-   * The fix is small (a "skip to results" link inside `<main>`, or moving the sidebar after
-   * the results in DOM order with `order` doing the visual placement), but it is a change to
-   * `app/(public)/directory/page.tsx`, which QA does not own. **Left failing deliberately.**
+   * It also means **collapsing alone will not satisfy this test** at the levels that matter.
+   * If you are here because the number crept up, the fix is DOM order or a skip target, not
+   * another `<details>`. The sibling test above walks the real tab order and is the one to
+   * trust for an exact count.
+   *
+   * The threshold is a judgement: 60 stops is already a long traverse, and the measured value
+   * before the fix was 362.
    */
   test("the catalogue is reachable without tabbing through every facet", async ({ page }) => {
     await page.goto("/directory");

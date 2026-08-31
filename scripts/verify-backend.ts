@@ -305,6 +305,68 @@ async function phaseA(): Promise<void> {
     );
   });
 
+  await section("2c. A cooldown refusal audits as rateLimited, not quotaDenied (Q-02)", async () => {
+    /**
+     * `quotaDenied` and `rateLimited` are different operational facts: one is OUR ceiling
+     * refusing the caller, the other is THEIRS refusing us. They point at opposite fixes, and
+     * an operator reading the health board at 3am must not have to tell them apart from
+     * `upstream_status`. Migration 0005 added the outcome; this proves the database accepts
+     * it, that the old value is still valid, and that nonsense is still rejected.
+     */
+    const connectorId = async (client: Client) => {
+      const r = await client.query<{ id: string }>("select id from connectors limit 1");
+      const id = r.rows[0]?.id;
+      if (!id) throw new Error("no connectors — run `pnpm db:seed`");
+      return id;
+    };
+    const actor = "0".repeat(64);
+
+    const insert = (outcome: string, status: number | null) =>
+      probe(
+        connectorId,
+        (client, id) =>
+          client.query(
+            `insert into connector_requests (connector_id, outcome, duration_ms, upstream_status, actor_key, expires_at)
+             values ($1, $2, 0, $3, $4, now() + interval '30 days')`,
+            [id, outcome, status, actor],
+          ),
+        (client) => client.query("delete from connector_requests where actor_key = $1", [actor]),
+      );
+
+    const cooldown = await insert("rateLimited", null);
+    check(
+      "a cooldown refusal (rateLimited, no upstream status) is accepted",
+      cooldown.accepted,
+      cooldown.accepted ? "" : `${cooldown.code} ${cooldown.constraint}`,
+    );
+
+    const refusal = await insert("rateLimited", 429);
+    check(
+      "the 429 that opened it is accepted, carrying its real status",
+      refusal.accepted,
+      refusal.accepted ? "" : `${refusal.code} ${refusal.constraint}`,
+    );
+
+    const quota = await insert("quotaDenied", null);
+    check("quotaDenied is still a valid, separate outcome", quota.accepted);
+
+    const bogus = await insert("rateLimit", null);
+    check(
+      "a value outside the vocabulary is still rejected",
+      !bogus.accepted && bogus.constraint === "connector_requests_outcome_check",
+      bogus.accepted ? "ACCEPTED — the CHECK is missing" : `${bogus.code} ${bogus.constraint}`,
+    );
+
+    // The health board must count the new outcome rather than dropping it.
+    const { getConnectorHealth } = await import("@/lib/queries/admin");
+    const board = await getConnectorHealth(24);
+    check(
+      "the health board reports rateLimited as its own column",
+      board.length > 0 && board.every((row) => "rateLimited" in row.byOutcome),
+      `${board.length} connectors on the board`,
+    );
+  });
+
   await section("3. Deferred, not disabled (HANDOFF §6, §11.8)", async () => {
     /**
      * One UPDATE that duplicates an existing `order_index`, with no compensating update.

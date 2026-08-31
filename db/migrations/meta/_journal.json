@@ -36,6 +36,13 @@
       "when": 1788140591288,
       "tag": "0004_flights_connector_backoff",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788140591290,
+      "tag": "0005_connector_rate_limited_outcome",
+      "breakpoints": true
     }
   ]
 }

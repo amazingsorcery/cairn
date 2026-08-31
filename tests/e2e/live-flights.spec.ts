@@ -6,16 +6,39 @@ import { isOutbound, watchOutbound } from "./helpers/net";
 /**
  * `/live/flights` — ADR 0011, ADR 0014, ADR 0016 §1.
  *
- * THE UPSTREAM IS NOT PART OF THE SYSTEM UNDER TEST. `api.adsb.lol` is real, reachable, and
- * queried **by our server**, so Playwright cannot intercept it. Every assertion here is
- * therefore written to hold in whichever state the page is in — fresh, stale or unavailable —
- * except the two that are meaningless without aircraft data, which skip with a stated reason
- * rather than flaking. `docs/qa/e2e.md` records that as a known limit of this suite.
+ * THE UPSTREAM IS NOT PART OF THE SYSTEM UNDER TEST, AND CANNOT BE INTERCEPTED FROM HERE.
+ * `api.adsb.lol` is queried **by our server** — that is the whole point of ADR 0011 §1, and
+ * `lib/connectors/runtime.ts` throws at module load if it is ever bundled for a browser. A
+ * Playwright route handler sees browser traffic only, so there is no interception point.
+ *
+ * What the suite does instead:
+ *   · it never *causes* upstream traffic — every spec here blocks all cross-origin requests;
+ *   · every assertion is written to hold in whichever state the page came back in — `fresh`,
+ *     `stale`, or any of the `unavailable` reasons (`upstream-down`, `quota-exhausted`,
+ *     `rate-limited`, `disabled`);
+ *   · the two assertions that are meaningless without aircraft rows skip with the observed
+ *     state named, rather than flaking.
+ *
+ * The per-user quota is now 3/minute against a 6/minute global ceiling, so a full suite run
+ * will legitimately drive this route into `quota-exhausted` or `rate-limited` and those two
+ * will skip. That is the honest outcome; `docs/qa/e2e.md` §3 records what it costs and what
+ * would fix it.
  */
 
-/** True when the server-rendered page came back with an aircraft table. */
-async function tableRendered(page: Page): Promise<boolean> {
-  return (await page.getByRole("table").count()) > 0;
+/** Whatever the page is showing: the table, or the degraded block's title. */
+async function observedState(page: Page): Promise<{ hasTable: boolean; note: string }> {
+  if ((await page.getByRole("table").count()) > 0) return { hasTable: true, note: "table" };
+  for (const title of [
+    "Aircraft positions unavailable",
+    "Aircraft positions paused",
+    "Flight tracking is switched off",
+    "No aircraft in this area",
+  ]) {
+    if ((await page.getByText(title, { exact: true }).count()) > 0) {
+      return { hasTable: false, note: title };
+    }
+  }
+  return { hasTable: false, note: "no table and no recognised degraded state" };
 }
 
 test.describe("live flights", () => {
@@ -53,9 +76,10 @@ test.describe("live flights", () => {
    */
   test("the map is opt-in and names the tile server in the control itself", async ({ page }) => {
     await page.goto("/live/flights");
+    const state = await observedState(page);
     test.skip(
-      !(await tableRendered(page)),
-      "upstream returned no data; the map control only exists in a live state",
+      !state.hasTable,
+      `no aircraft rows (${state.note}); the map control only exists in a live state`,
     );
 
     await expect(
@@ -78,10 +102,8 @@ test.describe("live flights", () => {
    */
   test("the table survives the map chunk failing to load", async ({ page, baseURL }) => {
     await page.goto("/live/flights");
-    test.skip(
-      !(await tableRendered(page)),
-      "upstream returned no data; there is no table to keep usable",
-    );
+    const state = await observedState(page);
+    test.skip(!state.hasTable, `no aircraft rows (${state.note}); no table to keep usable`);
 
     const rowsBefore = await page.getByRole("row").count();
     expect(rowsBefore).toBeGreaterThan(1);

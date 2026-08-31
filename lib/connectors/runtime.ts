@@ -292,16 +292,18 @@ export async function runConnector<Params, Result>(
   const cooling = cooldownRemaining(connector.slug, now);
   if (cooling > 0) {
     /**
-     * Audited as `quotaDenied`: it is a refusal we made, nothing left the building, and
-     * `duration_ms = 0` (ADR 0013 §4 — refusals are exactly what an operator needs to see).
-     * `CONNECTOR_REQUEST_OUTCOMES` has no `rateLimited` member and adding one means editing
-     * `db/schema.ts` plus a CHECK migration; the 429 that OPENED this cooldown is already in
-     * the log with its real `upstream_status`, so the pair is reconstructible. Flagged in
-     * docs/backend/HANDOFF.md as a schema change worth making if the architect agrees.
+     * `rateLimited`, NOT `quotaDenied` — the distinction is the whole point of the outcome
+     * (migration 0005). `quotaDenied` means we refused the caller against a ceiling we chose;
+     * this is us standing down because THEY refused us. An operator who reads `quotaDenied`
+     * here goes and tunes our quota, which would do nothing.
+     *
+     * `duration_ms = 0` and a null `upstream_status`: nothing left the building this time.
+     * The 429 that opened the cooldown is a separate row, also `rateLimited`, carrying the
+     * real status — so the board shows both the refusal and the standing-down it caused.
      */
     await recordConnectorRequest({
       connectorId: connector.id,
-      outcome: "quotaDenied",
+      outcome: "rateLimited",
       durationMs: 0,
       upstreamStatus: null,
       subject: actor.subject,
@@ -442,9 +444,18 @@ export async function runConnector<Params, Result>(
     const durationMs = Date.now() - started;
     const aborted = controller.signal.aborted;
 
+    /**
+     * A 429 or 420 is `rateLimited`, not `upstreamError`. `upstreamError` should mean the
+     * source is broken; being told to slow down is the source working exactly as designed and
+     * us being at fault. Keeping the real `upstream_status` on the row means the board can
+     * still show which code it was.
+     */
+    const refused =
+      !aborted && error instanceof UpstreamStatusError && isRateLimitStatus(error.status);
+
     await recordConnectorRequest({
       connectorId: connector.id,
-      outcome: aborted ? "timeout" : "upstreamError",
+      outcome: aborted ? "timeout" : refused ? "rateLimited" : "upstreamError",
       durationMs,
       // Null on a timeout: no status was received. On an upstream error the driver throws
       // an UpstreamStatusError carrying one.
@@ -465,7 +476,7 @@ export async function runConnector<Params, Result>(
      * return a reason the client knows to stop polling on. Honouring `Retry-After` when it is
      * sent is the difference between backing off and guessing.
      */
-    if (!aborted && error instanceof UpstreamStatusError && isRateLimitStatus(error.status)) {
+    if (refused && error instanceof UpstreamStatusError) {
       const seconds = error.retryAfterSeconds ?? DEFAULT_COOLDOWN_SECONDS;
       const until = openCooldown(connector.slug, seconds);
       logger.warn(

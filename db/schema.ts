@@ -142,15 +142,27 @@ export const CONNECTOR_KINDS = ['flights', 'cameras'] as const
 export type ConnectorKind = (typeof CONNECTOR_KINDS)[number]
 
 /**
- * Outcome of one outbound call. `quotaDenied` and `disabled` are recorded even though no
- * request left the building — a refusal is exactly the event an operator needs to see.
- * Stored camelCase, like every other vocabulary here (product-brief §6.2: one spelling,
+ * Outcome of one outbound call. `quotaDenied`, `rateLimited` and `disabled` are recorded even
+ * though no request left the building — a refusal is exactly the event an operator needs to
+ * see. Stored camelCase, like every other vocabulary here (product-brief §6.2: one spelling,
  * no translation layer).
+ *
+ * `quotaDenied` AND `rateLimited` ARE DIFFERENT OPERATIONAL FACTS AND MUST NOT BE MERGED.
+ * `quotaDenied` is *we* refused the caller, against a ceiling we chose. `rateLimited` is
+ * *they* refused us — an HTTP 429 or 420, or our own cooldown standing down afterwards. An
+ * operator reading the health board at 3am who sees `quotaDenied` will tune OUR quota; the
+ * fix for `rateLimited` is to back off from THEIRS. Collapsing them sends the reader to the
+ * wrong knob, which is the same conflation this codebase rejects everywhere else: confidence
+ * versus reliability, our record versus the tool, intentionally published versus merely
+ * reachable. QA finding Q-02.
+ *
+ * `rateLimited` was added in migration 0005, which replaces the CHECK constraint.
  */
 export const CONNECTOR_REQUEST_OUTCOMES = [
   'ok',
   'upstreamError',
   'quotaDenied',
+  'rateLimited',
   'disabled',
   'timeout',
 ] as const

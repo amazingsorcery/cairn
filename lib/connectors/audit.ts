@@ -34,7 +34,7 @@ export const AUDIT_RETENTION_DAYS = 30;
 export type AuditEntry = {
   connectorId: string;
   outcome: ConnectorRequestOutcome;
-  /** Wall-clock cost of the attempt. 0 for `quotaDenied` and `disabled`. */
+  /** Wall-clock cost of the attempt. 0 for `quotaDenied`, `disabled` and a cooldown. */
   durationMs: number;
   /** Upstream HTTP status. Null when no request was made, or when it timed out. */
   upstreamStatus: number | null;
