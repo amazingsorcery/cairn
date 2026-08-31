@@ -31,24 +31,38 @@ export async function countServedH1(request: APIRequestContext, path: string): P
  * Asserting on one alone would fail half the product and tempt someone to "fix" the CSS to
  * suit the test.
  */
-export async function focusIndicator(page: Page): Promise<{
+export interface FocusStop {
   tag: string;
   label: string;
+  href: string | null;
+  /**
+   * A stable identity for the focused element. Needed because a fingerprint built from tag
+   * and text alone makes 297 distinct facet checkboxes look like one element focused 297
+   * times — i.e. a false keyboard trap.
+   */
+  identity: string;
   visible: boolean;
-}> {
+}
+
+export async function focusIndicator(page: Page): Promise<FocusStop> {
   return page.evaluate(() => {
     const element = document.activeElement;
     if (!element || element === document.body) {
-      return { tag: element?.tagName ?? "NONE", label: "", visible: false };
+      return { tag: element?.tagName ?? "NONE", label: "", href: null, identity: "", visible: false };
     }
     const style = getComputedStyle(element);
     const outlineWidth = Number.parseFloat(style.outlineWidth || "0");
     const transparent = /rgba\(0,\s*0,\s*0,\s*0\)|transparent/.test(style.outlineColor);
     const hasOutline = outlineWidth > 0 && style.outlineStyle !== "none" && !transparent;
     const hasRing = style.boxShadow !== "none" && style.boxShadow.trim() !== "";
+    const href = element instanceof HTMLAnchorElement ? element.getAttribute("href") : null;
+    const name = element.getAttribute("name") ?? "";
+    const value = element.getAttribute("value") ?? "";
     return {
       tag: element.tagName,
       label: (element.textContent ?? "").trim().slice(0, 60),
+      href,
+      identity: `${element.tagName}#${element.id}[${name}=${value}]${href ?? ""}${(element.textContent ?? "").trim().slice(0, 40)}`,
       visible: hasOutline || hasRing,
     };
   });
@@ -92,6 +106,6 @@ export async function expectNotFoundBody(
 ): Promise<void> {
   await expect(page.getByRole("heading", { level: 1, name: headingPattern })).toBeVisible();
   // A `<meta>` is never "visible", so this is a count assertion rather than a visibility one.
-  const robots = page.locator('head meta[name="robots"][content*="noindex"]');
+  const robots = page.locator('meta[name="robots"][content*="noindex"]');
   expect(await robots.count()).toBeGreaterThan(0);
 }

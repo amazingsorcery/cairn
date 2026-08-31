@@ -1,4 +1,7 @@
+import { Suspense } from "react";
+
 import { ActiveFilterChips } from "@/components/directory/active-filters";
+import { DirectoryBodySkeleton } from "@/components/directory/directory-skeleton";
 import { DirectoryToolbar } from "@/components/directory/directory-toolbar";
 import {
   CONFIDENCE_OPTIONS,
@@ -46,10 +49,16 @@ import { parseDirectoryFilters, type DirectoryFilters as Filters } from "@/lib/v
  * sort select and the name field (`components/directory/filter-controls.tsx`), plus the sheet
  * that holds the facets at 375px. The result list never crosses the client boundary.
  *
+ * **There is deliberately no `loading.tsx` in this segment.** A route-level `loading.tsx`
+ * wraps child segments too, and a Suspense fallback that streams commits the HTTP status
+ * line — which made `notFound()` in `/directory/[category]` return `200 OK` instead of 404
+ * (finding I-15). The skeleton lives in an in-page `<Suspense>` below instead, where it wraps
+ * only this page's own body. Do not reintroduce `app/(public)/directory/loading.tsx`.
+ *
  * STATES BUILT HERE — `docs/design/states.md` §2:
  *   §2.1 zero results, naming the computed widest single removal
  *   §2.2 delegated to `/directory/[category]` and `/tags/[slug]`
- *   §2.3 `loading.tsx`
+ *   §2.3 the skeleton, as an in-page `<Suspense>` fallback — see the shell below
  *   §2.4 the list query failed — in-region, filter bar still live
  *   §2.5 facet counts unavailable — checkboxes render without them
  *   §2.6 success
@@ -93,9 +102,40 @@ async function readTaxonomy() {
   };
 }
 
+/**
+ * The page shell. It touches no database, so it paints immediately and the Suspense boundary
+ * below is the only thing that waits — which is what keeps the skeleton out of the segment
+ * boundary that was breaking `/directory/[category]`'s 404 (finding I-15).
+ *
+ * The `<Suspense>` is deliberately UNKEYED. Keying it on the filter tuple would remount the
+ * subtree on every filter change, which would tear down the client leaves inside it: the open
+ * mobile filter sheet would slam shut on each checkbox tick. Unkeyed, React reconciles the
+ * client components by position and they keep their state, while the in-flight styling comes
+ * from the `useTransition` pending state in `DirectoryFilters` — which is the behaviour
+ * `states.md` §2.3 and shell handoff §10.1 describe anyway: announce the new count, do not
+ * move the reader.
+ */
 export default async function DirectoryPage({ searchParams }: DirectoryPageProps) {
   const filters = parseDirectoryFilters(await searchParams);
 
+  return (
+    <div className="mx-auto w-full max-w-[80rem] px-4 py-10 md:px-6 md:py-14">
+      <h1 className="text-2xl font-semibold tracking-tight md:text-3xl">Directory</h1>
+      <p className="text-foreground-secondary mt-3 max-w-[68ch] text-lg">
+        Open-source intelligence tools and data sources. Every entry states what it takes in, what
+        it gives back, what it costs, whose jurisdiction the data sits in, and the date a human last
+        checked our record of it.
+      </p>
+
+      <Suspense fallback={<DirectoryBodySkeleton />}>
+        <DirectoryBody filters={filters} />
+      </Suspense>
+    </div>
+  );
+}
+
+/** Everything that needs the database. Suspends; the shell above does not. */
+async function DirectoryBody({ filters }: { filters: Filters }) {
   const [page, taxonomy] = await Promise.all([readTools(filters), readTaxonomy()]);
 
   const categories = taxonomy.categories ?? [];
@@ -170,106 +210,97 @@ export default async function DirectoryPage({ searchParams }: DirectoryPageProps
     : undefined;
 
   return (
-    <div className="mx-auto w-full max-w-[80rem] px-4 py-10 md:px-6 md:py-14">
-      <h1 className="text-2xl font-semibold tracking-tight md:text-3xl">Directory</h1>
-      <p className="mt-3 max-w-[68ch] text-lg text-foreground-secondary">
-        Open-source intelligence tools and data sources. Every entry states what it takes in,
-        what it gives back, what it costs, whose jurisdiction the data sits in, and the date a
-        human last checked our record of it.
-      </p>
-
-      <DirectoryFilters>
-        <div className="mt-8 grid gap-8 md:grid-cols-[16rem_minmax(0,1fr)]">
-          {/* Desktop: a sticky sidebar. 375px: the same panel inside the sheet below. */}
-          <aside
-            aria-labelledby="directory-filters-heading"
-            className="hidden md:sticky md:top-20 md:block md:self-start"
+    <DirectoryFilters>
+      <div className="mt-8 grid gap-8 md:grid-cols-[16rem_minmax(0,1fr)]">
+        {/* Desktop: a sticky sidebar. 375px: the same panel inside the sheet below. */}
+        <aside
+          aria-labelledby="directory-filters-heading"
+          className="hidden md:sticky md:top-20 md:block md:self-start"
+        >
+          <h2
+            id="directory-filters-heading"
+            className="text-muted-foreground mb-4 text-xs font-semibold tracking-wide uppercase"
           >
-            <h2
-              id="directory-filters-heading"
-              className="mb-4 text-xs font-semibold uppercase tracking-wide text-muted-foreground"
-            >
-              filters
-            </h2>
-            <FilterPanel
-              action={BASE}
-              idPrefix="sidebar"
-              groups={groups}
-              hidden={facetHidden}
-              className="max-h-[calc(100dvh-8rem)]"
-              {...(countsNote ? { countsNote } : {})}
-            />
-          </aside>
+            filters
+          </h2>
+          <FilterPanel
+            action={BASE}
+            idPrefix="sidebar"
+            groups={groups}
+            hidden={facetHidden}
+            className="max-h-[calc(100dvh-8rem)]"
+            {...(countsNote ? { countsNote } : {})}
+          />
+        </aside>
 
-          <div className="min-w-0">
-            <DirectoryToolbar
-              action={BASE}
-              q={filters.q}
-              sort={filters.sort}
-              hidden={toolbarHidden}
-              sheet={
-                <FilterSheet activeCount={chips.length} total={total} clearHref={clearHref}>
-                  <FilterPanel
-                    action={BASE}
-                    idPrefix="sheet"
-                    groups={groups}
-                    hidden={facetHidden}
-                    className="h-full"
-                    {...(countsNote ? { countsNote } : {})}
+        <div className="min-w-0">
+          <DirectoryToolbar
+            action={BASE}
+            q={filters.q}
+            sort={filters.sort}
+            hidden={toolbarHidden}
+            sheet={
+              <FilterSheet activeCount={chips.length} total={total} clearHref={clearHref}>
+                <FilterPanel
+                  action={BASE}
+                  idPrefix="sheet"
+                  groups={groups}
+                  hidden={facetHidden}
+                  className="h-full"
+                  {...(countsNote ? { countsNote } : {})}
+                />
+              </FilterSheet>
+            }
+          />
+
+          <ActiveFilterChips
+            filters={chips}
+            hrefFor={(chip) => filtersHref(BASE, chip.without)}
+            clearHref={clearHref}
+            className="mt-4"
+          />
+
+          <p className="tabular text-muted-foreground mt-4 text-xs">
+            {page === null
+              ? " "
+              : `${total === 1 ? "1 tool" : `${total} tools`} · sorted by ${sortLabel(filters.sort)}`}
+          </p>
+
+          <ResultsRegion
+            announcement={announcement}
+            loadingAnnouncement="Loading directory entries…"
+          >
+            <div className="mt-4">
+              {page === null ? (
+                <RegionError
+                  title="Couldn't load these results"
+                  description="The query failed. Retry, or clear the filters and start again."
+                  secondary={{ label: "clear all filters", href: clearHref }}
+                />
+              ) : page.total === 0 ? (
+                <EmptyResults activeCount={chips.length} widest={widest} clearHref={clearHref} />
+              ) : (
+                <>
+                  <ToolGrid>
+                    {page.items.map((tool) => (
+                      <li key={tool.id} className="h-full">
+                        <ToolCard tool={tool} />
+                      </li>
+                    ))}
+                  </ToolGrid>
+                  <Pagination
+                    page={page.page}
+                    pageCount={page.pageCount}
+                    hrefForPage={(next) => filtersHref(BASE, withPage(filters, next))}
+                    className="mt-8"
                   />
-                </FilterSheet>
-              }
-            />
-
-            <ActiveFilterChips
-              filters={chips}
-              hrefFor={(chip) => filtersHref(BASE, chip.without)}
-              clearHref={clearHref}
-              className="mt-4"
-            />
-
-            <p className="tabular mt-4 text-xs text-muted-foreground">
-              {page === null
-                ? " "
-                : `${total === 1 ? "1 tool" : `${total} tools`} · sorted by ${sortLabel(filters.sort)}`}
-            </p>
-
-            <ResultsRegion
-              announcement={announcement}
-              loadingAnnouncement="Loading directory entries…"
-            >
-              <div className="mt-4">
-                {page === null ? (
-                  <RegionError
-                    title="Couldn't load these results"
-                    description="The query failed. Retry, or clear the filters and start again."
-                    secondary={{ label: "clear all filters", href: clearHref }}
-                  />
-                ) : page.total === 0 ? (
-                  <EmptyResults activeCount={chips.length} widest={widest} clearHref={clearHref} />
-                ) : (
-                  <>
-                    <ToolGrid>
-                      {page.items.map((tool) => (
-                        <li key={tool.id} className="h-full">
-                          <ToolCard tool={tool} />
-                        </li>
-                      ))}
-                    </ToolGrid>
-                    <Pagination
-                      page={page.page}
-                      pageCount={page.pageCount}
-                      hrefForPage={(next) => filtersHref(BASE, withPage(filters, next))}
-                      className="mt-8"
-                    />
-                  </>
-                )}
-              </div>
-            </ResultsRegion>
-          </div>
+                </>
+              )}
+            </div>
+          </ResultsRegion>
         </div>
-      </DirectoryFilters>
-    </div>
+      </div>
+    </DirectoryFilters>
   );
 }
 

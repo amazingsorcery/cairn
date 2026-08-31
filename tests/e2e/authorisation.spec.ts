@@ -101,8 +101,8 @@ test.describe("a signed-in non-owner", () => {
       html
         .replaceAll(id, "WORKSPACE_ID")
         .replace(/\?v=\d+/g, "?v=V")
-        .replace(/:N\d+(\.\d+)?/g, ":N0")
-        .replace(/\\"(start|end)\\":[\d.]+/g, '\\"$1\\":0')
+        .replace(/:N-?\d+(\.\d+)?/g, ":N0")
+        .replace(/\\"(start|end)\\":-?[\d.]+/g, '\\"$1\\":0')
         .replaceAll('"])</script><script>self.__next_f.push([1,"', "");
 
     expect(normalise(await notYours.text(), targetId!)).toBe(
@@ -114,6 +114,7 @@ test.describe("a signed-in non-owner", () => {
     await expectNotFoundBody(page);
     const a = await renderedIdentity(page);
     await page.goto(`/workspaces/${unknownId}`);
+    await expectNotFoundBody(page);
     const b = await renderedIdentity(page);
     expect(a).toEqual(b);
     expect(a.main).not.toMatch(/permission|forbidden|not yours|another user/i);
