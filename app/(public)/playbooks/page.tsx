@@ -2,6 +2,10 @@ import Link from "next/link";
 
 import { PlaybookIndex } from "@/components/playbooks/playbook-index";
 import { Button } from "@/components/ui/button";
+import {
+  LAST_VERIFIED_ANCHOR,
+  methodologyAnchorHref,
+} from "@/components/layout/methodology-anchor";
 import { listPlaybooks } from "@/lib/queries/playbooks";
 import { pageMetadata } from "@/lib/metadata";
 
@@ -42,6 +46,25 @@ export default async function PlaybooksPage() {
       <p className="mt-3 max-w-[68ch] text-lg text-foreground-secondary">
         Step-by-step methods that use the tools in the directory. Each step says what to do
         and how you know it&rsquo;s done.
+      </p>
+      {/*
+        The confidence chip on a playbook is the most misreadable element on this page. It
+        describes OUR RECORD of the method — whether we have re-checked that its steps and
+        its tool references still hold — and not whether the method is sound. Those are
+        different claims, and the product's credibility rests on not letting a reader
+        collapse them. Said once here rather than on every card, where it would become
+        wallpaper.
+      */}
+      <p className="mt-2 max-w-[68ch] text-sm text-muted-foreground">
+        The confidence chip on each card describes how current our record of that method is,
+        not whether the method works.{" "}
+        <Link
+          href={methodologyAnchorHref(LAST_VERIFIED_ANCHOR)}
+          className="text-primary underline underline-offset-4"
+        >
+          What the dates and levels promise
+        </Link>
+        .
       </p>
 
       {playbooks.length === 0 ? (

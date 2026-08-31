@@ -272,9 +272,7 @@ export function FlightsSurface({
 
           {mapState === "loading" ? (
             <div>
-              <p aria-hidden="true">
-                <Skeleton className="h-[60vh] min-h-[20rem] w-full" />
-              </p>
+              <Skeleton className="h-[60vh] min-h-[20rem] w-full" />
               <p className="mt-2 text-sm text-foreground-secondary">Loading the map…</p>
             </div>
           ) : null}

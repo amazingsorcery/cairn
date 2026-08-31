@@ -226,6 +226,49 @@ describe("filter normalisation", () => {
     );
   });
 
+  /**
+   * REGRESSION. An earlier version lowercased every incoming value before validating it,
+   * which silently destroyed the two camelCase members of the closed vocabularies:
+   * `needsReview` became `needsreview`, failed `z.enum`, and was dropped. Because
+   * sitemap.md §1 requires a bad filter to be DROPPED rather than rejected, there was no
+   * error anywhere — the chip appeared selected in the URL and filtered nothing.
+   *
+   * Found by `components/directory/filter-url.test.ts`, which round-trips the serialiser
+   * against this parser. Fixed by folding case only for the comparison and returning the
+   * vocabulary's own spelling.
+   */
+  it("keeps every closed-vocabulary value, camelCase included", () => {
+    for (const level of CONFIDENCE_LEVELS) {
+      expect(parseDirectoryFilters({ confidence: level }).confidence).toEqual([level]);
+    }
+    for (const model of COST_MODELS) {
+      expect(parseDirectoryFilters({ cost: model }).cost).toEqual([model]);
+    }
+  });
+
+  it("matches a vocabulary value case-insensitively and returns the canonical spelling", () => {
+    // `?confidence=NEEDSREVIEW` and `?confidence=needsreview` must both canonicalise to the
+    // value the database stores, so they are one filter and one cache key.
+    expect(parseDirectoryFilters({ confidence: "NEEDSREVIEW" }).confidence).toEqual([
+      "needsReview",
+    ]);
+    expect(parseDirectoryFilters({ confidence: "needsreview" }).confidence).toEqual([
+      "needsReview",
+    ]);
+    expect(parseDirectoryFilters({ cost: " FreeWithRegistration " }).cost).toEqual([
+      "freeWithRegistration",
+    ]);
+    expect(
+      directoryCacheKey(parseDirectoryFilters({ confidence: "NEEDSREVIEW" })),
+    ).toBe(directoryCacheKey(parseDirectoryFilters({ confidence: "needsReview" })));
+  });
+
+  it("still admits nothing outside the vocabulary", () => {
+    expect(parseDirectoryFilters({ confidence: "gold-plated" }).confidence).toEqual([]);
+    expect(parseDirectoryFilters({ cost: "priceless" }).cost).toEqual([]);
+    expect(parseDirectoryFilters({ cost: "needsReview" }).cost).toEqual([]);
+  });
+
   it("defaults sort to relevance only when there is a query", () => {
     expect(parseDirectoryFilters({ q: "shodan" }).sort).toBe("relevance");
     expect(parseDirectoryFilters({}).sort).toBe("name");

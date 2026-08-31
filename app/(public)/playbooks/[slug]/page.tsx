@@ -12,6 +12,7 @@ import { VerificationDate } from "@/components/verification-date";
 import { Markdown } from "@/components/content/markdown";
 import { pageMetadata } from "@/lib/metadata";
 import { getPlaybookBySlug, listPublishedPlaybookSlugs } from "@/lib/queries/playbooks";
+import { staticParamsOrEmpty } from "@/lib/static-params";
 
 /**
  * `/playbooks/[slug]` — one method, every step, readable with no account
@@ -30,11 +31,18 @@ import { getPlaybookBySlug, listPublishedPlaybookSlugs } from "@/lib/queries/pla
  * (`docs/design/flows.md` ⚠ W0). See `docs/frontend/HANDOFF-workspaces.md` §3.
  */
 
+/** A Markdown body's own leading title, which the route already renders as its `h1`. */
+const LEADING_HEADING = /^\s*#\s+.*?
++/;
+
 export const revalidate = 3600;
 
 export async function generateStaticParams() {
-  const slugs = await listPublishedPlaybookSlugs();
-  return slugs.map(({ slug }) => ({ slug }));
+  // Tolerates a build with no database — see ADR 0018.
+  return staticParamsOrEmpty("/playbooks/[slug]", async () => {
+    const slugs = await listPublishedPlaybookSlugs();
+    return slugs.map(({ slug }) => ({ slug }));
+  });
 }
 
 export async function generateMetadata({
@@ -76,6 +84,11 @@ export default async function PlaybookDetailPage({
     title: step.title,
   }));
 
+  // The authored overview opens with its own `# Title`, and `components/content/markdown.tsx`
+  // demotes a Markdown `#` to `<h2>` — which would restate the `h1` immediately below it.
+  // Same treatment as `/legal/[slug]`: the route renders the title, so the body does not.
+  const overview = playbook.overview?.replace(LEADING_HEADING, "") ?? null;
+
   return (
     <div className="mx-auto w-full max-w-[80rem] px-4 py-10 md:px-6 md:py-14">
       <Breadcrumb
@@ -112,6 +125,17 @@ export default async function PlaybookDetailPage({
             <ConfidenceChipLink level={playbook.confidence} />
             <VerificationDate lastVerifiedAt={playbook.lastVerifiedAt} />
           </div>
+          {/*
+            Said explicitly, next to the chip, because this is the one place a reader is
+            most likely to misread it. The chip is a claim about OUR RECORD of the method —
+            whether we have re-checked that its steps and tool references still hold — not a
+            claim that the method itself is unsound. Collapsing those two is exactly the
+            confusion the product cannot afford (ADR 0007, `docs/design/states.md` 0).
+          */}
+          <p className="mt-2 max-w-[68ch] text-sm text-muted-foreground">
+            That level describes how current our record of this method is, not whether the
+            method works. Every step below is readable without an account.
+          </p>
 
           <Button asChild size="lg" className="mt-6 w-full sm:w-auto">
             <Link href={`/workspaces/new?playbook=${encodeURIComponent(playbook.slug)}`}>
@@ -119,9 +143,9 @@ export default async function PlaybookDetailPage({
             </Link>
           </Button>
 
-          {playbook.overview ? (
+          {overview ? (
             <div className="mt-8 max-w-[68ch] border-t border-border pt-8">
-              <Markdown className="text-base">{playbook.overview}</Markdown>
+              <Markdown className="text-base">{overview}</Markdown>
             </div>
           ) : null}
         </header>

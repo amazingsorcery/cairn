@@ -97,3 +97,23 @@ export function formatPosition(lat: number, lon: number): string {
 export function aircraftLabel(aircraft: Aircraft): string {
   return aircraft.callsign ?? aircraft.registration ?? aircraft.hex.toUpperCase();
 }
+
+/**
+ * `2026-08-19` for a `<time dateTime>` attribute, from either a `Date` or an ISO string.
+ *
+ * BOTH ARE REAL AT RUNTIME, and the type says only `Date`. Anything read through
+ * `unstable_cache` (`lib/queries/cache.ts`) is serialised to JSON on the way in and parsed on
+ * the way out, so a `Date` column comes back as a STRING on a cache hit and as a `Date` on a
+ * miss — from the same function, with the same TypeScript type. Calling `.toISOString()`
+ * directly therefore works on the first render after a deploy and throws on the second, which
+ * is about the worst failure schedule available.
+ *
+ * `components/verification-date.tsx` already accepts `Date | string` for this reason. This is
+ * the same tolerance for the raw attribute.
+ */
+export function isoDay(value: Date | string | null): string | undefined {
+  if (value === null) return undefined;
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return undefined;
+  return date.toISOString().slice(0, 10);
+}

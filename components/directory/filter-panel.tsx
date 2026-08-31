@@ -104,8 +104,18 @@ export function FilterPanel({
                 const id = `${idPrefix}-${group.id}-${option.value || "any"}`;
                 const label = (
                   <span className="flex items-center gap-2">
+                    {/*
+                      `aria-hidden` on the chip, deliberately. `ConfidenceChip` carries its own
+                      screen-reader text — "Our confidence in this entry: Verified. Checked
+                      against the primary source…" — which is right on a card and wrong here:
+                      this is a filter option, not an entry, and without this a reader hears a
+                      sentence about an entry that does not exist followed by the actual label.
+                      The visible chip is the shape cue; the text beside it is the name.
+                    */}
                     {option.confidence ? (
-                      <ConfidenceChip level={option.confidence} showMeter={false} />
+                      <span aria-hidden="true" className="inline-flex">
+                        <ConfidenceChip level={option.confidence} showMeter={false} />
+                      </span>
                     ) : null}
                     <span className="truncate">{option.label}</span>
                   </span>

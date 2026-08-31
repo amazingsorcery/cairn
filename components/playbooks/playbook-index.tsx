@@ -77,9 +77,15 @@ export function PlaybookIndex({ playbooks, categories }: PlaybookIndexProps) {
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={queryId}>filter by title</Label>
           <div className="relative">
+            {/*
+              `type="text"`, not `type="search"`. A search input renders the browser's own
+              clear affordance, which has no accessible name and is not reliably reachable
+              by keyboard — so the page would show two X buttons, one of them unusable.
+              The one below is labelled and is a 44x44 target.
+            */}
             <Input
               id={queryId}
-              type="search"
+              type="text"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="filter by title"

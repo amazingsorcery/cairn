@@ -1,4 +1,4 @@
-import { parseEnv, type ServerEnv } from "./env.schema";
+import { parseEnv, type EnvPhase, type ServerEnv } from "./env.schema";
 
 /**
  * Eagerly validated environment.
@@ -8,8 +8,20 @@ import { parseEnv, type ServerEnv } from "./env.schema";
  * lives in `env.schema.ts` so it can be unit-tested without a real environment.
  *
  * Server-only. Never import this from a Client Component.
+ *
+ * The phase distinction exists because `docker build` deliberately carries no secrets
+ * (an ARG is visible in `docker history`) while Next imports every route module — and so
+ * this one — to collect page data. Without it, `docker build` cannot succeed. Next sets
+ * `NEXT_PHASE` to `phase-production-build` only during `next build`, never during
+ * `next start`, so the strict path is the one that actually serves traffic. See ADR 0018.
  */
-export const env: ServerEnv = parseEnv(process.env);
+const phase: EnvPhase =
+  process.env.NEXT_PHASE === "phase-production-build" ? "build" : "runtime";
+
+export const env: ServerEnv = parseEnv(process.env, phase);
+
+/** True while compiling. Used by `generateStaticParams` to tolerate an absent database. */
+export const isBuildPhase = phase === "build";
 
 export type { ServerEnv };
 

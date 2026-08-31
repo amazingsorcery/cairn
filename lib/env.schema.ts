@@ -121,9 +121,53 @@ const serverSchema = z
 
 export type ServerEnv = z.infer<typeof serverSchema>;
 
+/**
+ * Which phase we are validating for. See ADR 0018.
+ *
+ * `runtime` is strict and throwing: a misconfigured container must fail at `docker compose
+ * up`, not serve 500s at 3am.
+ *
+ * `build` exists because `docker build` deliberately carries no secrets — an ARG is visible
+ * in `docker history` — while Next imports every route module (and therefore this one) to
+ * collect page data. The shape rules below still apply to anything that IS present; what is
+ * relaxed is the requirement that secrets exist at all, and the cross-field production
+ * checks, which ask "can a user log into this deployment?" — a question about a running
+ * server, not about a compiled artefact.
+ */
+export type EnvPhase = "runtime" | "build";
+
+/**
+ * Placeholders used only while compiling. They are never reachable at runtime: the strict
+ * path is selected unless `NEXT_PHASE` says a production build is in progress, and Next
+ * never sets that during `next start`. They are deliberately self-describing so that if one
+ * ever DID surface in a log or an error, it would be unmistakable rather than plausible.
+ */
+const BUILD_PLACEHOLDERS: Readonly<Record<string, string>> = {
+  APP_URL: "http://build.invalid",
+  AUTH_SECRET: "build-phase-placeholder-not-a-secret-0000",
+  RATE_LIMIT_SECRET: "build-phase-placeholder-not-a-secret-1111",
+  DATABASE_URL: "postgresql://build:build@build.invalid:5432/build",
+};
+
 /** Exported for unit tests so the validation rules can be exercised without a real env. */
-export function parseEnv(source: NodeJS.ProcessEnv): ServerEnv {
-  const parsed = serverSchema.safeParse(source);
+export function parseEnv(source: NodeJS.ProcessEnv, phase: EnvPhase = "runtime"): ServerEnv {
+  const candidate: NodeJS.ProcessEnv =
+    phase === "build"
+      ? {
+          ...source,
+          // Only fill what is ABSENT. A real value supplied at build time is still validated
+          // and still used, so a build with a database prerenders exactly as intended.
+          ...Object.fromEntries(
+            Object.entries(BUILD_PLACEHOLDERS).filter(([key]) => !source[key]),
+          ),
+          // The cross-field check "production needs a sign-in method" is about a running
+          // server. Presenting the build as non-production skips it without weakening
+          // anything that runs.
+          NODE_ENV: "development",
+        }
+      : source;
+
+  const parsed = serverSchema.safeParse(candidate);
 
   if (!parsed.success) {
     const problems = parsed.error.issues

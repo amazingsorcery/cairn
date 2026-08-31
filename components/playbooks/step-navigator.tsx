@@ -64,7 +64,11 @@ export function StepNavigator({ steps }: StepNavigatorProps) {
       // The band starts below the sticky header and ends most of the way down the
       // viewport, so "in view" means "the reader is looking at it", not "it grazed the
       // bottom edge".
-      { rootMargin: "-5rem 0px -60% 0px", threshold: 0 },
+      //
+      // `rootMargin` MUST be px or %. A rem value throws a SyntaxError at construction
+      // time, which the error boundary then catches as a whole-page failure — 80px is the
+      // `scroll-padding-top: 5rem` from `app/globals.css` at the default root font size.
+      { rootMargin: "-80px 0px -60% 0px", threshold: 0 },
     );
 
     for (const { element } of headings) observer.observe(element);

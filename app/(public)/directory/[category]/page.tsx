@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { DIRECTORY_PAGE_SIZE, listTools } from "@/lib/queries/tools";
 import { getCategoryBySlug, listCategorySlugs } from "@/lib/queries/taxonomy";
 import { pageMetadata } from "@/lib/metadata";
+import { staticParamsOrEmpty } from "@/lib/static-params";
 
 /**
  * `/directory/[category]` — one category, prerendered.
@@ -30,9 +31,12 @@ interface CategoryPageProps {
   params: Promise<{ category: string }>;
 }
 
-export async function generateStaticParams(): Promise<{ category: string }[]> {
-  const slugs = await listCategorySlugs();
-  return slugs.map((category) => ({ category }));
+export async function generateStaticParams() {
+  // Tolerates a build with no database — see ADR 0018.
+  return staticParamsOrEmpty("/directory/[category]", async () => {
+    const slugs = await listCategorySlugs();
+    return slugs.map((category) => ({ category }));
+  });
 }
 
 export async function generateMetadata({ params }: CategoryPageProps) {

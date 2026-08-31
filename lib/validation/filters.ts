@@ -2,12 +2,12 @@ import { z } from "zod";
 
 import { pageSchema, searchQuerySchema, slugSchema, toArray } from "./common";
 import {
-  cameraViewKindSchema,
-  confidenceSchema,
-  costModelSchema,
-  inputTypesFilterSchema,
-  outputTypesFilterSchema,
-} from "./vocabulary";
+  CAMERA_VIEW_KINDS,
+  CONFIDENCE_LEVELS,
+  COST_MODELS,
+  type CameraViewKind,
+} from "@/db/schema";
+import { inputTypesFilterSchema, outputTypesFilterSchema } from "./vocabulary";
 import { toolSortSchema } from "./tools";
 
 /**
@@ -29,7 +29,57 @@ import { toolSortSchema } from "./tools";
 /** How Next.js hands a route its query string. */
 export type RawSearchParams = Record<string, string | string[] | undefined>;
 
-/** Coerce a single value through a schema, falling back to `undefined` on anything invalid. */
+/**
+ * Resolve one raw query-string value to its CANONICAL spelling in a closed vocabulary,
+ * case-insensitively, or `undefined` if it is not a member.
+ *
+ * The case-insensitive match and the canonical result are both load-bearing, and getting
+ * this wrong is how the bug this function was written to fix happened. The closed
+ * vocabularies in `db/schema.ts` are camelCase — `needsReview`, `freeWithRegistration` —
+ * because they are CHECK-constrained values that code branches on. An earlier version of
+ * this file lowercased every incoming value before validating it, on the reasonable-sounding
+ * grounds that a canonical cache key wants a canonical case. That silently destroyed exactly
+ * those two values: `needsReview` became `needsreview`, failed `z.enum`, and was dropped. The
+ * chip appeared selected in the URL and filtered nothing, with no error anywhere.
+ *
+ * So: fold case only for the COMPARISON, and return the vocabulary's own spelling. That
+ * canonicalises `?confidence=NEEDSREVIEW` and `?confidence=needsreview` to the same filter
+ * and the same cache key, while preserving the value the database actually stores.
+ */
+function canonical<T extends string>(vocabulary: readonly T[], raw: string): T | undefined {
+  const needle = raw.trim().toLowerCase();
+  if (needle === "") return undefined;
+  return vocabulary.find((member) => member.toLowerCase() === needle);
+}
+
+/** One value from a closed vocabulary, or `undefined`. */
+function optionalOf<T extends string>(
+  vocabulary: readonly T[],
+  value: string | string[] | undefined,
+): T | undefined {
+  const first = Array.isArray(value) ? value[0] : value;
+  if (first === undefined) return undefined;
+  return canonical(vocabulary, first);
+}
+
+/** Repeated values from a closed vocabulary: de-duplicated, sorted, non-members dropped. */
+function manyOf<T extends string>(
+  vocabulary: readonly T[],
+  value: string | string[] | undefined,
+): T[] {
+  const out = new Set<T>();
+  for (const raw of toArray(value)) {
+    const member = canonical(vocabulary, raw);
+    if (member) out.add(member);
+  }
+  return [...out].sort();
+}
+
+/**
+ * Coerce a single value through a Zod schema. Used only for the OPEN vocabularies whose
+ * values are lowercase by definition — slugs, and the jurisdiction pattern — where
+ * lowercasing the input is the correct normalisation rather than a destructive one.
+ */
 function optional<T>(schema: z.ZodType<T>, value: string | string[] | undefined): T | undefined {
   const first = Array.isArray(value) ? value[0] : value;
   if (first === undefined || first.trim() === "") return undefined;
@@ -37,7 +87,7 @@ function optional<T>(schema: z.ZodType<T>, value: string | string[] | undefined)
   return parsed.success ? parsed.data : undefined;
 }
 
-/** Coerce a repeated value through a schema, dropping members that do not validate. */
+/** As `optional`, repeated. Slugs only, for the same reason. */
 function many<T>(schema: z.ZodType<T>, value: string | string[] | undefined): T[] {
   const out = new Set<T>();
   for (const raw of toArray(value)) {
@@ -68,10 +118,10 @@ export function parseDirectoryFilters(params: RawSearchParams): DirectoryFilters
     q,
     category: optional(slugSchema, params.category),
     tags: many(slugSchema, params.tag),
-    cost: many(costModelSchema, params.cost),
+    cost: manyOf(COST_MODELS, params.cost),
     input: inputTypesFilterSchema.parse(toArray(params.input)),
     output: outputTypesFilterSchema.parse(toArray(params.output)),
-    confidence: many(confidenceSchema, params.confidence),
+    confidence: manyOf(CONFIDENCE_LEVELS, params.confidence),
     /**
      * Relevance ordering is meaningless with no query, so it degrades to `name` rather than
      * producing an arbitrary order that differs between pages of the same result set.
@@ -123,7 +173,7 @@ export function searchCacheKey(filters: SearchFilters): string {
 export type CameraFilters = {
   q: string;
   jurisdiction: string | undefined;
-  view: z.infer<typeof cameraViewKindSchema> | undefined;
+  view: CameraViewKind | undefined;
 };
 
 export function parseCameraFilters(params: RawSearchParams): CameraFilters {
@@ -143,7 +193,7 @@ export function parseCameraFilters(params: RawSearchParams): CameraFilters {
         .regex(/^[a-z0-9 -]+$/, "Unknown jurisdiction"),
       params.jurisdiction,
     ),
-    view: optional(cameraViewKindSchema, params.view),
+    view: optionalOf(CAMERA_VIEW_KINDS, params.view),
   };
 }
 

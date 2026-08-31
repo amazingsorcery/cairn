@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { DIRECTORY_PAGE_SIZE, listToolsByTag } from "@/lib/queries/tools";
 import { getTagBySlug, listTagSlugs } from "@/lib/queries/taxonomy";
 import { pageMetadata } from "@/lib/metadata";
+import { staticParamsOrEmpty } from "@/lib/static-params";
 
 /**
  * `/tags/[slug]` — every published entry carrying one tag.
@@ -28,9 +29,12 @@ interface TagPageProps {
   params: Promise<{ slug: string }>;
 }
 
-export async function generateStaticParams(): Promise<{ slug: string }[]> {
-  const slugs = await listTagSlugs();
-  return slugs.map((slug) => ({ slug }));
+export async function generateStaticParams() {
+  // Tolerates a build with no database — see ADR 0018.
+  return staticParamsOrEmpty("/tags/[slug]", async () => {
+    const slugs = await listTagSlugs();
+    return slugs.map((slug) => ({ slug }));
+  });
 }
 
 export async function generateMetadata({ params }: TagPageProps) {
