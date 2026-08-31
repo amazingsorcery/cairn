@@ -113,6 +113,45 @@ function stop(): void {
   console.log("stopped");
 }
 
+/**
+ * Destroy and recreate the cluster.
+ *
+ * Wrapped in try/finally because the naive version has a sharp edge that bit us: `stop()`
+ * runs first, so ANY failure between stopping and starting leaves the cluster **stopped**
+ * rather than rolled back. On a machine where several agents share this database that is a
+ * foot-gun — it presents to everyone else as an unrelated mystery outage, and the person who
+ * hits it first has no reason to suspect a reset they did not run.
+ *
+ * The `finally` cannot un-delete the data directory, so it does not pretend to. What it
+ * guarantees is that the process never *leaves* the cluster down: whatever happened, it ends
+ * with a running server, and it says loudly if it had to recover.
+ */
+function reset(): void {
+  let recreated = false;
+  try {
+    stop();
+    rmSync(DATA_DIR, { recursive: true, force: true });
+    console.log(`removed ${DATA_DIR}`);
+    start();
+    recreated = true;
+  } finally {
+    if (!recreated) {
+      console.error("");
+      console.error("reset did not complete. Attempting to leave a RUNNING cluster behind,");
+      console.error("because a half-finished reset that stops the server looks to everyone");
+      console.error("else like an unexplained outage.");
+      try {
+        start();
+        console.error("Recovered: the cluster is running. Data may or may not have survived");
+        console.error("— check with `pnpm dev:db:counts` before trusting it.");
+      } catch (error) {
+        console.error("Recovery FAILED. Run `pnpm dev:db start` by hand.");
+        console.error(error instanceof Error ? error.message : String(error));
+      }
+    }
+  }
+}
+
 const command = process.argv[2] ?? "start";
 
 switch (command) {
@@ -126,10 +165,7 @@ switch (command) {
     console.log(isRunning() ? `running on 127.0.0.1:${PORT}` : "not running");
     break;
   case "reset":
-    stop();
-    rmSync(DATA_DIR, { recursive: true, force: true });
-    console.log(`removed ${DATA_DIR}`);
-    start();
+    reset();
     break;
   default:
     console.error(`Unknown command "${command}". Use start, stop, status or reset.`);
