@@ -77,6 +77,37 @@ This is a product commitment, not a current-state description that might quietly
 behavioural analytics would require a change to this notice with 14 days' notice under section 9,
 and it is contrary to a standing constraint in the product's own design documents.
 
+### 2.5 The Live surfaces — what we do and do not record
+
+The Live section (`/live/flights` and `/live/cameras`) is the only part of the service that makes
+outbound requests. It changes nothing about what we collect **about you**, and it is worth being
+precise about why.
+
+**We keep no viewing records.** We do not log which aircraft, which map area or which camera any
+user looked at. Our outbound request log records that a connector was called and whether it
+succeeded; it does not record you, your query, a bounding box, a camera identifier, or any
+response body. We retain no imagery.
+
+**Flights** are fetched server-side and cached. Your browser talks to us, we talk to the
+aggregator, and the aggregator therefore does not see your address or your interest.
+
+**Cameras are the opposite, deliberately.** We do not proxy or re-host camera imagery, because
+doing so would make us a redistributor of a third party's images and, where people are in frame,
+a controller of their image data. Instead, camera feeds are **click-to-load**:
+
+- Nothing loads from any operator until you click. Camera pages render from our own database and
+  open no connection.
+- **When you click, your browser connects directly to the operator**, which will see your IP
+  address and, because the URL identifies one camera, which location you chose. We disclose this
+  on the page, naming the operator, before you click.
+- We set `no-referrer` on these requests, so the operator does not learn which of our pages you
+  came from.
+- **That request never touches our servers, so we do not and cannot know which cameras you
+  viewed.** There is no viewing history for us to lose, disclose or be compelled to produce.
+
+This is a genuine trade and we would rather you understood it than trusted it. Section 4.2 of the
+[Acceptable Use Policy](/legal/acceptable-use) covers the same ground from the other direction.
+
 ## 3. Cookies
 
 We set only cookies that are strictly necessary to operate the service: a session cookie to keep

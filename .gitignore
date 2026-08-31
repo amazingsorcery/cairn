@@ -42,3 +42,4 @@ Thumbs.db
 backups/
 caddy_data/
 caddy_config/
+.dev-db/

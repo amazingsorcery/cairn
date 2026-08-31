@@ -1,27 +1,31 @@
-import { cn } from "@/lib/utils";
-import { formatDate, verificationAge } from "@/lib/utils";
+import { cn, formatDate, verificationAge } from "@/lib/utils";
 
 /**
  * When a human last confirmed an entry is accurate.
  *
  * Architecture HANDOFF section 9.1 requires this everywhere an entry appears, showing an
  * absolute date *and* a relative age. Both, because they answer different questions: the
- * date is what you cite in a write-up, the age is what tells you whether to trust it.
+ * date is what you cite in a write-up, the age is whether to trust it.
  *
- * The staleness thresholds live in `verificationAge` (lib/utils.ts) and are deliberately
- * unforgiving. A directory whose only real claim is "somebody checked this" has to be
- * conspicuously honest about how long ago that was — quietly ageing entries would let the
- * catalogue rot while still looking authoritative, which is the failure mode that would
- * cost us the audience.
+ * Two deliberate choices, both from ADR 0016:
  *
- * This describes the freshness of OUR RECORD, not the quality of the tool. The wording is
- * chosen so a stale entry never reads as a warning about the tool itself.
+ * 1. Ageing and stale records use `--warning`, never `--destructive`. Destructive is the
+ *    delete/revoke red, and on a directory row it reads as a judgement about the TOOL —
+ *    the exact confusion this product cannot afford. `lastVerifiedAt` describes the
+ *    freshness of OUR RECORD. A tool can be excellent and our note about it a year old.
+ *    Escalation is carried by weight and by wording, which can say precisely what is and
+ *    is not being claimed. Colour cannot.
+ *
+ * 2. The visible text is human-readable ("14 Aug 2026", unambiguous across US and UK
+ *    reading order in a way a numeric format is not) and the `<time dateTime>` attribute
+ *    carries full ISO 8601 for machines. Exports use ISO throughout, because those are
+ *    evidence artefacts that get quoted, sorted and diffed.
  */
 
 const STATUS_CLASS = {
   fresh: "text-muted-foreground",
   ageing: "text-warning",
-  stale: "text-destructive",
+  stale: "text-warning font-medium",
 } as const;
 
 function relativeAge(days: number): string {
@@ -34,6 +38,13 @@ function relativeAge(days: number): string {
   return `${Math.round(days / 365.25)} years ago`;
 }
 
+/** ISO 8601 calendar date for the `dateTime` attribute. */
+function isoDate(value: Date | string): string | undefined {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return undefined;
+  return date.toISOString().slice(0, 10);
+}
+
 export interface VerificationDateProps {
   lastVerifiedAt: Date | string | null;
   className?: string;
@@ -42,8 +53,8 @@ export interface VerificationDateProps {
 export function VerificationDate({ lastVerifiedAt, className }: VerificationDateProps) {
   if (lastVerifiedAt === null) {
     return (
-      <span className={cn("text-sm text-destructive", className)}>
-        Never verified — treat every detail here as unconfirmed
+      <span className={cn("text-sm font-medium text-warning", className)}>
+        Not yet verified — treat every detail here as unconfirmed
       </span>
     );
   }
@@ -55,12 +66,14 @@ export function VerificationDate({ lastVerifiedAt, className }: VerificationDate
   return (
     <span className={cn("text-sm", STATUS_CLASS[status], className)}>
       <span className="sr-only">Our record was last confirmed accurate on </span>
-      Last verified {absolute}
+      Last verified{" "}
+      <time dateTime={isoDate(lastVerifiedAt)}>{absolute}</time>
       <span aria-hidden="true"> · {relative}</span>
       {status === "stale" ? (
-        <span className="sr-only">
-          . This is over a year old, so details may have changed since.
-        </span>
+        <>
+          {" "}
+          <span className="font-normal">— details may have changed since</span>
+        </>
       ) : null}
     </span>
   );

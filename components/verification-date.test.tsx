@@ -40,12 +40,36 @@ describe("VerificationDate", () => {
     expect(ageing.firstElementChild?.className).toContain("text-warning");
 
     const { container: stale } = render(<VerificationDate lastVerifiedAt="2024-01-01" />);
-    expect(stale.firstElementChild?.className).toContain("text-destructive");
+    expect(stale.firstElementChild?.className).toContain("font-medium");
+  });
+
+  it("never uses the destructive colour for a stale record (ADR 0016)", () => {
+    // Destructive is the delete/revoke red. On a directory row it reads as a judgement
+    // about the TOOL, when the claim is only that OUR RECORD is old. This is the single
+    // distinction the catalogue's credibility rests on, so it is pinned by a test.
+    for (const date of ["2026-08-01", "2026-01-01", "2024-01-01"]) {
+      const { container } = render(<VerificationDate lastVerifiedAt={date} />);
+      expect(container.firstElementChild?.className).not.toContain("destructive");
+    }
+    const { container } = render(<VerificationDate lastVerifiedAt={null} />);
+    expect(container.firstElementChild?.className).not.toContain("destructive");
+  });
+
+  it("carries the escalation in words as well as weight", () => {
+    const { container } = render(<VerificationDate lastVerifiedAt="2024-01-01" />);
+    expect(container.textContent).toContain("details may have changed since");
+  });
+
+  it("emits a machine-readable ISO date alongside the human-readable one", () => {
+    const { container } = render(<VerificationDate lastVerifiedAt="2026-08-01T12:00:00.000Z" />);
+    const time = container.querySelector("time");
+    expect(time?.getAttribute("dateTime")).toBe("2026-08-01");
+    expect(time?.textContent).toBe("1 Aug 2026");
   });
 
   it("states plainly when an entry has never been verified", () => {
     render(<VerificationDate lastVerifiedAt={null} />);
-    expect(screen.getByText(/Never verified/)).toBeInTheDocument();
+    expect(screen.getByText(/Not yet verified/)).toBeInTheDocument();
   });
 
   it("frames the claim as being about our record, not about the tool", () => {
@@ -54,8 +78,8 @@ describe("VerificationDate", () => {
     expect(container.textContent).toContain("Our record was last confirmed accurate on");
   });
 
-  it("warns screen-reader users when the record is over a year old", () => {
+  it("shows the relative age to sighted users without duplicating it for screen readers", () => {
     const { container } = render(<VerificationDate lastVerifiedAt="2024-01-01" />);
-    expect(container.textContent).toContain("over a year old");
+    expect(container.textContent).toContain("years ago");
   });
 });
