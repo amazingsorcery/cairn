@@ -1,20 +1,25 @@
 /**
  * Theme state. Shared by the inline boot script in `app/layout.tsx` and by the toggle.
  *
- * The product is dark-first (`docs/product-brief.md` §1). `app/tokens.css` defines the
- * dark palette on bare `:root` and the light palette on `[data-theme="light"]`, so the
- * *absence* of the attribute is dark. `docs/design/states.md` §1.5 defines the toggle as
- * `dark` (default) → `light` and says nothing about following the operating system, and
- * `tokens.css` contains no `prefers-color-scheme` block at all. So this implementation
- * reads a stored choice and nothing else: a first-time visitor gets dark regardless of
- * their OS setting. That is a product decision, not an oversight — see
- * `docs/frontend/HANDOFF-shell.md` §8 for the one-line change if it should follow the OS.
+ * RESOLUTION ORDER — ADR 0016 §4
+ * ------------------------------
+ *   1. an explicit stored choice, from a previous use of the toggle
+ *   2. the operating system's `prefers-color-scheme`
+ *   3. dark
+ *
+ * The product is dark-first (`docs/product-brief.md` §1) and `app/tokens.css` defines the
+ * dark palette on bare `:root`, with the light palette on `[data-theme="light"]`. But
+ * "dark-first" describes which theme is designed and tested against first; it is not a
+ * licence to override a preference the reader has already expressed at OS level. A light
+ * preference is frequently set for astigmatism, low vision, or a bright room. Dark stays
+ * the default where no signal exists at all.
  */
 
 export type Theme = "dark" | "light";
 
 export const THEME_STORAGE_KEY = "theme";
 
+/** Used when there is no stored choice and no OS preference to read. */
 export const DEFAULT_THEME: Theme = "dark";
 
 export function isTheme(value: unknown): value is Theme {
@@ -26,22 +31,25 @@ export function isTheme(value: unknown): value is Theme {
  *
  * WHY THIS IS AN INLINE SCRIPT AND NOT A COMPONENT
  * ------------------------------------------------
- * `localStorage` is only readable on the client, and any React-rendered solution runs
- * after first paint — the reader sees a dark page flash to light. The only way to set
- * `data-theme` before the browser paints is a synchronous, render-blocking script in the
- * document itself. It is deliberately tiny, has no dependencies, and does one thing.
+ * `localStorage` and `matchMedia` are only readable on the client, and anything React
+ * renders runs after first paint — the reader would see one frame of the wrong theme. The
+ * only way to set `data-theme` before the browser paints is a synchronous, render-blocking
+ * script in the document itself. ADR 0016 §5 records why the alternatives (accept the
+ * flash; serve it from `public/theme.js`) were rejected.
  *
  * It is wrapped in `try/catch` because reading `localStorage` throws outright in a Safari
- * private window and wherever site data is blocked. A reader with storage disabled gets
- * the default theme, which is the correct failure.
+ * private window and wherever site data is blocked. A reader with storage disabled falls
+ * through to the OS preference, and then to dark, which is the correct failure.
  *
- * Rendered as `<script>{THEME_INIT_SCRIPT}</script>`. React writes the children of a
- * `<script>` element as raw text (it escapes only a literal closing-script sequence), so
- * this needs no `dangerouslySetInnerHTML` — which is lint-banned in this repo anyway.
+ * The content is a string literal built from two other literals in this file. **Nothing
+ * user-controlled is interpolated into it and nothing ever may be** — ADR 0016 §5 makes
+ * that a condition of the exception it grants.
  */
 export const THEME_INIT_SCRIPT = `(function(){try{var t=localStorage.getItem(${JSON.stringify(
   THEME_STORAGE_KEY,
-)});if(t==="light"||t==="dark"){document.documentElement.setAttribute("data-theme",t)}}catch(e){}})()`;
+)});if(t!=="light"&&t!=="dark"){t=window.matchMedia("(prefers-color-scheme: light)").matches?"light":${JSON.stringify(
+  DEFAULT_THEME,
+)}}document.documentElement.setAttribute("data-theme",t)}catch(e){}})()`;
 
 /** Apply a theme to the document and remember it. Client only. */
 export function applyTheme(theme: Theme): void {
@@ -51,11 +59,17 @@ export function applyTheme(theme: Theme): void {
   } catch {
     // Storage blocked. The theme still applies for this page view; it just will not
     // survive a reload. Silently degrading is right here — there is nothing to tell the
-    // user and nothing they can do about it from this button.
+    // reader and nothing they could do about it from this button.
   }
 }
 
-/** What the document is actually set to right now. Client only. */
+/**
+ * What the document is actually set to right now. Client only.
+ *
+ * The boot script always writes the attribute, so this reads a real value rather than
+ * guessing. If the script did not run — JavaScript disabled, or it threw — the page is
+ * rendering the `:root` dark palette, and `DEFAULT_THEME` is the honest answer.
+ */
 export function readTheme(): Theme {
   const attribute = document.documentElement.getAttribute("data-theme");
   return isTheme(attribute) ? attribute : DEFAULT_THEME;

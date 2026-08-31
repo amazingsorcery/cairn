@@ -39,7 +39,15 @@ export function SiteHeader() {
         <div className="ml-auto flex items-center gap-1 md:gap-2">
           <HeaderSearch />
           <HeaderSearchLink />
-          <ThemeToggle className="hidden md:inline-flex" />
+          {/*
+            The theme toggle stays in the header at every width — `01-home.txt` draws it in
+            the 375px bar, and it is the one control a reader may want before they have read
+            anything, which is a poor reason to make them open a menu first.
+
+            Sign-in does not: at 375px it lives in the sheet, which is where the wireframe
+            puts it and where there is room for a real 44px target beside a label.
+          */}
+          <ThemeToggle />
           <div className="hidden md:block">
             <AccountMenu />
           </div>

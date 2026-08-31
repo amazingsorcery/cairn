@@ -167,11 +167,11 @@ async function listToolsUncached(filters: DirectoryFilters): Promise<ToolListPag
     where t.status = ${"published"}
       and (q.query is null or t.search_vector @@ q.query)
       and (${category}::text is null or c.slug = ${category}::text)
-      and (${costList}::text[] is null or t.cost_model = any(${costList}::text[]))
-      and (${confidenceList}::text[] is null or t.confidence = any(${confidenceList}::text[]))
-      and (${inputList}::text[] is null or t.input_types @> ${inputList}::text[])
-      and (${outputList}::text[] is null or t.output_types @> ${outputList}::text[])
-      and (${tagList}::text[] is null or tg.tag_slugs @> ${tagList}::text[])
+      and (${sql.param(costList)}::text[] is null or t.cost_model = any(${sql.param(costList)}::text[]))
+      and (${sql.param(confidenceList)}::text[] is null or t.confidence = any(${sql.param(confidenceList)}::text[]))
+      and (${sql.param(inputList)}::text[] is null or t.input_types @> ${sql.param(inputList)}::text[])
+      and (${sql.param(outputList)}::text[] is null or t.output_types @> ${sql.param(outputList)}::text[])
+      and (${sql.param(tagList)}::text[] is null or tg.tag_slugs @> ${sql.param(tagList)}::text[])
     order by
       -- Relevance first when a query is present. ts_rank_cd(..., 32) is cover-density
       -- ranking normalised to (0,1) - search.md 6.1. Every branch ends in name asc, so

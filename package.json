@@ -24,7 +24,9 @@
     "db:studio": "drizzle-kit studio",
     "content:check": "tsx scripts/validate-content.ts",
     "dev:db": "tsx scripts/dev-db.ts",
-    "dev:db:verify": "tsx scripts/verify-db.ts"
+    "dev:db:verify": "tsx scripts/verify-db.ts",
+    "csp:generate": "tsx scripts/generate-csp.ts",
+    "csp:check": "tsx scripts/generate-csp.ts --check"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.7.4",

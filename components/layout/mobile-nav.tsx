@@ -8,7 +8,6 @@ import { Separator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { AccountMenu } from "./account-menu";
 import { SiteNavStacked } from "./site-nav";
-import { ThemeToggle } from "./theme-toggle";
 
 /**
  * The 375px navigation. At `md` and above the links sit in the header itself and this is
@@ -40,10 +39,8 @@ export function MobileNav() {
         <SheetTitle>menu</SheetTitle>
         <SiteNavStacked onNavigate={() => setOpen(false)} />
         <Separator className="my-4" />
-        <div className="flex items-center justify-between gap-2">
-          <AccountMenu />
-          <ThemeToggle />
-        </div>
+        {/* The theme toggle is not repeated here; it is in the header bar at every width. */}
+        <AccountMenu />
       </SheetContent>
     </Sheet>
   );

@@ -97,8 +97,12 @@ async function main(): Promise<void> {
 
 main()
   .then(async () => {
+    // Close the pool and let the process exit naturally. NOT `process.exit(0)`: an explicit
+    // exit can cut the socket before the connection's terminate packet is flushed, which
+    // leaves a single-connection server (the local PGlite harness) holding a dead handler
+    // and refusing the next client. `pool.end()` already waits for every connection to
+    // close, so there is nothing left to hurry.
     await closeDb();
-    process.exit(0);
   })
   .catch(async (error: unknown) => {
     logger.error({ scope: "migrate", err: error }, "Migration failed");

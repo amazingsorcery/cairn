@@ -41,6 +41,9 @@
 	}
 }
 
+# Snippet definitions. csp.caddy is generated — see ADR 0017 and `pnpm csp:generate`.
+import csp.caddy
+
 {$DOMAIN} {
 	# --- Compression ------------------------------------------------------------------
 	# zstd first (better ratio, cheaper to decompress), gzip for everything older.
@@ -233,8 +236,17 @@
 		#   require-trusted-types-for 'script': would break React's DOM writes and Radix.
 		#     Not viable without upstream support.
 		# ==============================================================================
-		?Content-Security-Policy "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; frame-src 'none'; form-action 'self' https://github.com; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; manifest-src 'self'; upgrade-insecure-requests"
+		# The Content-Security-Policy itself is NOT written here. Its img-src allowlist
+		# depends on which camera providers we are permitted to embed (ADR 0011, ADR 0015),
+		# which is content and therefore changes. It is generated into csp.caddy by
+		# `pnpm csp:generate` and imported below. See ADR 0017.
 	}
+
+	# --- Content-Security-Policy ----------------------------------------------------
+	# Generated. Run `pnpm csp:generate` after changing content/cameras/ or config/live.ts;
+	# CI runs `pnpm csp:check` and fails if this file and that content disagree, so a
+	# content change cannot ship without the CSP change it requires.
+	import cairn_csp
 
 	# --- Access log -------------------------------------------------------------------
 	# The Docker healthcheck probes the container directly and never reaches Caddy, but an

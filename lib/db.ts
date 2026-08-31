@@ -19,13 +19,17 @@ import { env } from "./env";
  * Postgres default of 100 minus what the operator's own psql sessions and the backup job
  * need.
  *
- * - `max: 10`. Each Postgres backend costs roughly 5–10 MB of private memory plus its share
+ * - `max: 10` (`DATABASE_POOL_MAX`). Each Postgres backend costs roughly 5–10 MB of memory
+ *   plus its share
  *   of `work_mem`, so ten idle backends is a cost we can afford and a hundred is not. Ten
  *   also comfortably exceeds this workload's real concurrency: every public page is served
  *   from the Next.js Data Cache or the Full Route Cache and reaches the database only on a
  *   cache miss, and the signed-in surface is a handful of users. A bigger pool would not
  *   make the site faster; it would let a traffic spike convert into a Postgres memory
  *   spike, which on a 2 GB box is an OOM kill of the database rather than a slow page.
+ *   `DATABASE_POOL_MAX` overrides it. The only reason it exists is that the local PGlite
+ *   harness (`scripts/dev-db.ts`) is single-connection and needs `DATABASE_POOL_MAX=1`;
+ *   production and CI leave it unset and get the default.
  * - `min: 0` (pg's default). Connections are cheap to re-establish over the Compose bridge
  *   network and an idle web container should not hold backends open overnight.
  * - `idleTimeoutMillis: 30_000`. Return capacity to Postgres between traffic bursts.
@@ -43,7 +47,7 @@ import { env } from "./env";
  */
 const poolConfig: PoolConfig = {
   connectionString: env.DATABASE_URL,
-  max: 10,
+  max: env.DATABASE_POOL_MAX,
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 5_000,
   // `options` is passed through to the server as startup parameters, so these are enforced

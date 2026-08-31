@@ -52,6 +52,13 @@ const serverSchema = z
         "DATABASE_URL must use the postgres:// or postgresql:// scheme",
       ),
 
+    /**
+     * Maximum pooled database connections. Optional, with a default sized for the target
+     * deployment (see lib/db.ts). It exists as a knob because the local PGlite harness is
+     * single-connection and needs `DATABASE_POOL_MAX=1`; production is left alone.
+     */
+    DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
+
     /** GitHub OAuth. Both or neither — a half-configured provider is a broken button. */
     AUTH_GITHUB_ID: z.string().optional(),
     AUTH_GITHUB_SECRET: z.string().optional(),

@@ -340,7 +340,7 @@ export async function reorderWorkspaceItems(
         update ${workspaceItems} i
         set order_index = v.pos - 1
         from (select id, ordinality as pos
-              from unnest(${itemIds}::uuid[]) with ordinality as t(id, ordinality)) v
+              from unnest(${sql.param(itemIds)}::uuid[]) with ordinality as t(id, ordinality)) v
         where i.id = v.id and i.user_id = ${user.id} and i.workspace_id = ${workspaceId}
       `);
 

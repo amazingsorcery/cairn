@@ -55,7 +55,7 @@ export async function recomputeToolSearchKeywords(
         array_to_string(t.output_types, ' ')
     ))
     from ${categories} c
-    where c.id = t.category_id and t.id = any(${[...toolIds]}::uuid[])
+    where c.id = t.category_id and t.id = any(${sql.param(toolIds)}::uuid[])
   `);
 }
 
@@ -76,7 +76,7 @@ export async function recomputePlaybookSearchKeywords(
                   from ${playbookSteps} s where s.playbook_id = p.id), '')
     ))
     from ${categories} c
-    where c.id = p.category_id and p.id = any(${[...playbookIds]}::uuid[])
+    where c.id = p.category_id and p.id = any(${sql.param(playbookIds)}::uuid[])
   `);
 }
 
@@ -88,7 +88,7 @@ export async function recomputePlaybookSearchKeywords(
 export async function toolIdsForTags(client: Db, tagIds: readonly string[]): Promise<string[]> {
   if (tagIds.length === 0) return [];
   const rows = await client.execute<{ tool_id: string }>(sql`
-    select distinct tool_id from ${toolTags} where tag_id = any(${[...tagIds]}::uuid[])
+    select distinct tool_id from ${toolTags} where tag_id = any(${sql.param(tagIds)}::uuid[])
   `);
   return rows.rows.map((r) => r.tool_id);
 }
@@ -100,7 +100,7 @@ export async function toolIdsForCategories(
 ): Promise<string[]> {
   if (categoryIds.length === 0) return [];
   const rows = await client.execute<{ id: string }>(sql`
-    select id from ${tools} where category_id = any(${[...categoryIds]}::uuid[])
+    select id from ${tools} where category_id = any(${sql.param(categoryIds)}::uuid[])
   `);
   return rows.rows.map((r) => r.id);
 }
@@ -112,7 +112,7 @@ export async function playbookIdsForCategories(
 ): Promise<string[]> {
   if (categoryIds.length === 0) return [];
   const rows = await client.execute<{ id: string }>(sql`
-    select id from ${playbooks} where category_id = any(${[...categoryIds]}::uuid[])
+    select id from ${playbooks} where category_id = any(${sql.param(categoryIds)}::uuid[])
   `);
   return rows.rows.map((r) => r.id);
 }
@@ -134,7 +134,7 @@ export async function playbookSlugsCitingTools(
     from playbook_step_tools pst
     join ${playbookSteps} s on s.id = pst.step_id
     join ${playbooks} p on p.id = s.playbook_id
-    where pst.tool_id = any(${[...toolIds]}::uuid[])
+    where pst.tool_id = any(${sql.param(toolIds)}::uuid[])
   `);
   return rows.rows.map((r) => r.slug);
 }

@@ -140,6 +140,14 @@ jobs:
       - name: Validate seed content
         run: pnpm content:check
 
+      # The CSP img-src allowlist is generated from content/cameras/ and config/live.ts
+      # (ADR 0017). If they disagree, either a camera provider was added without widening
+      # the policy — every embed silently blocked in production — or the policy was widened
+      # without content justifying it. Both are defects; neither is visible in development,
+      # where there is no CSP at all.
+      - name: Check the generated CSP matches the content
+        run: pnpm csp:check
+
       # Migrations before build: any page that reads the database during static generation
       # needs the schema to exist. Running them here also means the migration script itself
       # is exercised on every commit, against a real Postgres 16 — which is the only way a
