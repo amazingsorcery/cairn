@@ -9,7 +9,10 @@ import { authConfig } from "@/lib/auth";
  * error the first time `maxAge` in `lib/auth.ts` changed, and this product may not make
  * factual errors about its own behaviour (`docs/product-brief.md` §6).
  *
- * NOTE FOR WHOEVER OWNS `lib/auth.ts`: the shipped `maxAge` is 24 hours, not the 15 minutes
+ * RESOLVED: `maxAge` is now 15 minutes, matching what `states.md` was drafted against.
+ * Auth.js defaults to 24 hours, which is a long time for a bearer credential sitting in an
+ * inbox belonging to someone whose email is worth compromising. The note below is kept
+ * because the mechanism still matters: the shipped `maxAge` used to be 24 hours, not the
  * the design copy was drafted against, so the rendered sentence reads "expires in 24 hours".
  * That is the honest rendering of what actually ships. If 15 minutes was the intent, change
  * `maxAge` and this text follows automatically. See `docs/frontend/HANDOFF-workspaces.md` §7.

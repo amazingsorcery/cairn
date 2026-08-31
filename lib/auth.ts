@@ -83,7 +83,12 @@ function buildProviders(): Provider[] {
         },
         from: env.SMTP_FROM,
         /** 24 hours. Long enough to survive a delayed mail queue, short enough to expire. */
-        maxAge: 24 * 60 * 60,
+        // 15 minutes. Auth.js defaults to 24 hours, which is a long time for a bearer
+        // credential sitting in an inbox — and this product's audience is specifically
+        // people whose email is worth compromising (product-brief §4). `states.md`
+        // §6.4/§6.5 was drafted against 15 minutes; the sign-in copy reads this value at
+        // runtime rather than restating it, so the page follows automatically.
+        maxAge: 15 * 60,
         async sendVerificationRequest({ identifier, url, provider }) {
           const { host } = new URL(url);
           const { subject, text, html } = magicLinkEmail({ url, host });
@@ -97,7 +102,15 @@ function buildProviders(): Provider[] {
             html,
           });
 
-          const rejected = result.rejected.concat(result.pending).filter(Boolean);
+          // `result.rejected` only. nodemailer 9's SMTP transport builds its response as
+          // `{ accepted, rejected }` (plus `ehlo` / `rejectedErrors`) and has no `pending`
+          // field at all — that is a sendmail/stream-transport concept and was always a
+          // no-op here. The old line read `result.rejected.concat(result.pending)`, which
+          // survived only because `[].concat(undefined)` yields `[undefined]` and
+          // `.filter(Boolean)` stripped it: a check that looked like it did something and
+          // did not. The compiler could not see it because `@types/nodemailer@8` still
+          // declares `pending` against a `nodemailer@9` runtime.
+          const rejected = result.rejected.filter(Boolean);
           if (rejected.length > 0) {
             // The address is masked even in the throw: this message reaches the Auth.js
             // error page and the logs.
