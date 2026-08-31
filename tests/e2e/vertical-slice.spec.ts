@@ -73,6 +73,7 @@ test.describe("the vertical slice", () => {
    * is the requirement.
    */
   test("save a tool to a case, and see it there", async ({ browser, baseURL }) => {
+    test.slow();
     const context = await browser.newContext({ baseURL });
     await signIn(context, "owner", baseURL!);
     const page = await context.newPage();
@@ -116,6 +117,7 @@ test.describe("the vertical slice", () => {
    * checked against each other rather than drifting.
    */
   test("a new case is ready to receive a saved tool", async ({ browser, baseURL }) => {
+    test.slow();
     const context = await browser.newContext({ baseURL });
     await signIn(context, "owner", baseURL!);
     const page = await context.newPage();

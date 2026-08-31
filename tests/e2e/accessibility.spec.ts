@@ -83,6 +83,9 @@ test.describe("keyboard-only traversal of the vertical slice", () => {
   test("tab to a tool and open it, with a visible focus indicator at every stop", async ({
     page,
   }) => {
+    // Up to 500 Tab presses, each with a round trip to read the focused element.
+    test.slow();
+
     await page.goto("/directory");
     await expect(page.getByRole("heading", { level: 1, name: "Directory" })).toBeVisible();
 

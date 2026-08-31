@@ -68,24 +68,35 @@ test.describe("a signed-in non-owner", () => {
    * where a leak would actually surface. Under `next start` the last two do not appear at all.
    */
   test("gets a response byte-identical to a non-existent id", async ({ browser, baseURL }) => {
-    const ownerWorkspaceId = process.env[OWNER_WORKSPACE_PATH_ENV] ?? null;
+    // Two contexts, two page loads and a workspace creation against `next dev`, which
+    // compiles routes on first request. Comfortably inside the budget on `next start`; this
+    // keeps it inside it locally too.
+    test.slow();
 
     const context = await browser.newContext({ baseURL });
     await signIn(context, "other", baseURL!);
     const page = await context.newPage();
 
-    // A workspace that certainly exists and certainly is not this account's. Created by the
-    // owner account in the vertical-slice spec, or supplied through the environment.
+    // A workspace that certainly exists and certainly is not this account's: an existing one
+    // belonging to the owner account, or a new one if that account has none yet.
     const ownerContext = await browser.newContext({ baseURL });
     await signIn(ownerContext, "owner", baseURL!);
     const ownerPage = await ownerContext.newPage();
-    let targetId = ownerWorkspaceId;
+    let targetId = process.env[OWNER_WORKSPACE_PATH_ENV] ?? null;
     if (!targetId) {
-      await ownerPage.goto("/workspaces/new");
-      await ownerPage.getByLabel("name this case").fill("Ownership boundary probe");
-      await ownerPage.getByRole("button", { name: "start the case" }).click();
-      await ownerPage.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/);
-      targetId = new URL(ownerPage.url()).pathname.split("/").pop() ?? null;
+      await ownerPage.goto("/workspaces");
+      const existing = ownerPage.locator('a[href^="/workspaces/"]').first();
+      const href = (await existing.count()) > 0 ? await existing.getAttribute("href") : null;
+      const match = href?.match(/^\/workspaces\/([0-9a-f-]{36})$/) ?? null;
+      if (match) {
+        targetId = match[1] ?? null;
+      } else {
+        await ownerPage.goto("/workspaces/new");
+        await ownerPage.getByLabel("name this case").fill("Ownership boundary probe");
+        await ownerPage.getByRole("button", { name: "start the case" }).click();
+        await ownerPage.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/);
+        targetId = new URL(ownerPage.url()).pathname.split("/").pop() ?? null;
+      }
     }
     expect(targetId, "a real workspace id is needed to make this assertion mean anything").not.toBe(
       null,
@@ -130,6 +141,7 @@ test.describe("a signed-in non-owner", () => {
    * SQL, *then* bytes — because a leaked case file cannot be un-leaked.
    */
   test("cannot export another account's case", async ({ browser, baseURL }) => {
+    test.slow();
     const context = await browser.newContext({ baseURL });
     await signIn(context, "owner", baseURL!);
     const ownerPage = await context.newPage();
