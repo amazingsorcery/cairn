@@ -23,6 +23,15 @@ const nextConfig: NextConfig = {
     remotePatterns: [],
     formats: ["image/avif", "image/webp"],
   },
+  /**
+   * pdfkit is CommonJS and resolves its AFM font metrics from disk at require time. Bundling
+   * it makes those files unreachable and the PDF export throws `ENOENT Helvetica.afm` at
+   * runtime — after a green build, in production only. `app/workspaces/[id]/export/pdf.ts`
+   * already imports the standalone build (which embeds the metrics), and this keeps webpack
+   * from touching it at all. Belt and braces on the one route that produces an evidence
+   * artefact people rely on.
+   */
+  serverExternalPackages: ["pdfkit"],
   experimental: {
     optimizePackageImports: ["lucide-react"],
   },
