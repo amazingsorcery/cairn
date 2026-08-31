@@ -1,0 +1,16 @@
+# Normalise to LF in the repository. Shell scripts and Dockerfiles run inside Linux
+# containers — a CRLF line ending there produces "bad interpreter: no such file or
+# directory", which is a confusing failure to debug on a live server.
+* text=auto eol=lf
+
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+Caddyfile   text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
