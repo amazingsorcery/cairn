@@ -8,13 +8,15 @@ const base = {
   DATABASE_URL: "postgresql://user:pass@db:5432/app",
 } satisfies NodeJS.ProcessEnv;
 
-const smtp = {
+// A fragment, not a whole environment — Next augments ProcessEnv to require NODE_ENV,
+// so this is typed as the plain record it is and spread onto `base` at the call site.
+const smtp: Record<string, string> = {
   SMTP_HOST: "smtp.example.test",
   SMTP_PORT: "587",
   SMTP_USER: "mailer",
   SMTP_PASSWORD: "hunter2hunter2",
   SMTP_FROM: "no-reply@example.test",
-} satisfies NodeJS.ProcessEnv;
+};
 
 describe("parseEnv", () => {
   it("accepts a minimal valid environment and applies defaults", () => {

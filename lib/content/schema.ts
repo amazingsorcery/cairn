@@ -14,7 +14,8 @@ export const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export const slugSchema = z
   .string()
-  .min(2)
+  // One character is legitimate: "x" is the platform's actual name.
+  .min(1)
   .max(96)
   .regex(SLUG, "Slugs are lowercase words joined by single hyphens");
 
@@ -30,13 +31,24 @@ export const inputTypes = [
   "address", "bssid", "free-text", "none",
 ] as const;
 
+/**
+ * `none` is a real value, not a gap. Tradecraft and OPSEC entries — Tor Browser, Tails,
+ * VeraCrypt, a password manager — produce no investigative output at all. They protect the
+ * investigator rather than yielding evidence, and forcing a false output type on them
+ * would misdescribe what they are for.
+ */
 export const outputTypes = [
   "records", "imagery", "timeline", "graph", "raw-dataset", "document", "map",
-  "metadata", "archive", "report", "alerts",
+  "metadata", "archive", "report", "alerts", "none",
 ] as const;
 
+/**
+ * Mirrors `COST_MODELS` in `db/schema.ts`. `free-with-registration` is a distinct and
+ * operationally important tier: it means the operator learns who you are before you get a
+ * result, which for this audience is a threat-model fact, not a pricing detail.
+ */
 export const costModels = [
-  "free", "freemium", "paid", "subscription", "enterprise", "free-with-registration",
+  "free", "free-with-registration", "freemium", "paid", "subscription", "enterprise",
 ] as const;
 
 export const confidenceLevels = ["verified", "high", "medium", "needsReview"] as const;
@@ -46,11 +58,26 @@ export type OutputType = (typeof outputTypes)[number];
 export type CostModel = (typeof costModels)[number];
 export type ConfidenceLevel = (typeof confidenceLevels)[number];
 
+/** True when a catalogue link is plain HTTP, so the UI can warn about the transport. */
+export function isInsecureUrl(url: string): boolean {
+  return url.startsWith("http://");
+}
+
 export const toolSchema = z
   .object({
     slug: slugSchema,
     name: z.string().min(1).max(120),
-    url: z.string().url().startsWith("https://", "Catalogue links must be HTTPS"),
+    // HTTPS is not required. Some long-standing, genuinely useful tools are still served
+    // over plain HTTP, and silently dropping them would make the catalogue less honest,
+    // not safer. The UI surfaces the insecure transport instead — which is real
+    // operational information: never send investigation material over plaintext.
+    url: z
+      .string()
+      .url()
+      .refine(
+        (v) => v.startsWith("https://") || v.startsWith("http://"),
+        "Catalogue links must be http(s)",
+      ),
     summary: z.string().min(10).max(200),
     description: z.string().min(40),
     inputTypes: z.array(z.enum(inputTypes)).min(1),

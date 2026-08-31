@@ -87,10 +87,14 @@ log "compose: $(docker compose version --short)"
 [ -f "${ENV_FILE}" ] || die "Missing ${ENV_FILE}. Copy .env.example to .env and fill it in."
 
 # .env must be shell-sourceable, because we source it below. Command substitution in a
-# value would execute as this user during deploy, so refuse it outright rather than
+# VALUE would execute as this user during deploy, so refuse it outright rather than
 # discover it the interesting way.
-if grep -Eq '(\$\(|`)' "${ENV_FILE}"; then
-	die ".env contains command substitution (\$( or backtick). Remove it — .env must be literal values only."
+#
+# Comment lines are stripped first. .env.example documents several commands in prose and
+# uses backticks for inline code, so scanning the raw file would reject a perfectly good
+# .env for its own documentation.
+if grep -vE '^[[:space:]]*(#|$)' "${ENV_FILE}" | grep -Eq '(\$\(|`)'; then
+	die ".env has command substitution (\$( or a backtick) in a value. Remove it — .env must be literal values only."
 fi
 
 # Permissions. .env holds AUTH_SECRET, the database password and SMTP credentials.
