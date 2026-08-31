@@ -18,6 +18,7 @@ import { VerificationDate } from "@/components/verification-date";
 import { removeWorkspaceItem } from "@/lib/actions/workspaces";
 import type { WorkspaceItemView } from "@/lib/queries/workspaces";
 import { formatDate } from "@/lib/utils";
+import { isoDate } from "./dates";
 import type { ToolFacts } from "./tool-facts-types";
 
 /**
@@ -120,7 +121,7 @@ export function SavedTools({ items, facts }: SavedToolsProps) {
     <ul>
       {items.map((item) => {
         const fact = item.toolSlug ? facts[item.toolSlug] : undefined;
-        const savedIso = item.createdAt.toISOString().slice(0, 10);
+        const savedIso = isoDate(item.createdAt);
 
         return (
           <li key={item.id} className="border-b border-border px-4 py-3 last:border-b-0">

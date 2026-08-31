@@ -17,6 +17,7 @@ import { Textarea } from "@/components/ui/input";
 import { deleteNote, updateNote } from "@/lib/actions/workspaces";
 import type { NoteView } from "@/lib/queries/workspaces";
 import { formatTimestamp } from "@/lib/utils";
+import { isoTimestamp } from "./dates";
 import { SaveIndicator, type SaveState } from "./save-indicator";
 import { useUnsavedGuard } from "./use-unsaved-guard";
 
@@ -123,7 +124,7 @@ export function NoteCard({ note, anchorLabel }: NoteCardProps) {
     router.refresh();
   }
 
-  const iso = note.createdAt.toISOString();
+  const iso = isoTimestamp(note.createdAt);
 
   return (
     <article className="rounded-md border border-border bg-background p-3">

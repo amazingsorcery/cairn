@@ -25,6 +25,7 @@ import { Label } from "@/components/ui/label";
 import { deleteWorkspace, updateWorkspace } from "@/lib/actions/workspaces";
 import type { WorkspaceStatus } from "@/db/schema";
 import { formatDate } from "@/lib/utils";
+import { isoDate } from "./dates";
 import { ExportDialog } from "./export-dialog";
 import { SaveIndicator, type SaveState } from "./save-indicator";
 import { useUnsavedGuard } from "./use-unsaved-guard";
@@ -52,7 +53,7 @@ export interface WorkspaceHeaderProps {
   workspaceId: string;
   title: string;
   status: WorkspaceStatus;
-  createdAt: Date;
+  createdAt: Date | string;
   playbook: { slug: string; title: string } | null;
   counts: { notes: number; tools: number; steps: number };
 }
@@ -139,7 +140,7 @@ export function WorkspaceHeader({
     router.replace("/workspaces");
   }
 
-  const createdIso = createdAt.toISOString().slice(0, 10);
+  const createdIso = isoDate(createdAt);
   const canDelete = confirmText.trim() === saved.trim() && confirmText.trim() !== "";
 
   return (

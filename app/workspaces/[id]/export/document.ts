@@ -2,6 +2,7 @@ import type { ToolFacts } from "@/components/workspaces/tool-facts-types";
 import { confidenceLabel } from "@/components/confidence-chip";
 import { brand } from "@/config/brand";
 import type { WorkspaceDetail } from "@/lib/queries/workspaces";
+import { asDate, isoDate, isoTimestamp } from "@/components/workspaces/dates";
 import { slugify } from "@/lib/utils";
 
 /**
@@ -61,14 +62,6 @@ export interface CaseDocument {
   producedBy: string;
 }
 
-function isoTimestamp(value: Date): string {
-  return value.toISOString().replace(/\.\d{3}Z$/, "Z");
-}
-
-function isoDate(value: Date): string {
-  return value.toISOString().slice(0, 10);
-}
-
 export function buildCaseDocument(
   workspace: WorkspaceDetail,
   facts: Readonly<Record<string, ToolFacts>>,
@@ -79,7 +72,7 @@ export function buildCaseDocument(
 
   // Newest-first is right on screen; an exported record reads forwards in time.
   const ordered = [...workspace.notes].sort(
-    (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
+    (a, b) => asDate(a.createdAt).getTime() - asDate(b.createdAt).getTime(),
   );
 
   for (const note of ordered) {

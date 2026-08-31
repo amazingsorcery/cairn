@@ -14,6 +14,7 @@
 export * from "./cache";
 export * from "./taxonomy";
 export * from "./tools";
+export * from "./facets";
 export * from "./playbooks";
 export * from "./search";
 export * from "./workspaces";

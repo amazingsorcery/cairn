@@ -1,10 +1,13 @@
-import PDFDocument from "pdfkit";
+import PDFDocument from "pdfkit/js/pdfkit.standalone.js";
 
 import type { CaseDocument } from "./document";
 import { provenanceNote } from "./document";
 
 /**
  * The PDF export.
+ *
+ * THE IMPORT IS THE STANDALONE BUILD, deliberately — `pdfkit-standalone.d.ts` next to this
+ * file explains why the ordinary entry point throws at run time under webpack.
  *
  * PDFKIT, NOT A HEADLESS BROWSER. This runs on a 2 GB VPS alongside Postgres and the app
  * (`docs/product-brief.md` 5). Chromium would roughly double the memory floor and add a

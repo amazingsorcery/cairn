@@ -364,6 +364,37 @@ fi
 # =======================================================================================
 # 10. Tidy up
 # =======================================================================================
+# 9. Warm the ISR cache
+# =======================================================================================
+# The image is built with NO database, by design (ADR 0018) — a build that needs a live
+# production database is not reproducible and cannot run on a clean CI runner. The
+# consequence is that ISR pages are prerendered EMPTY at build time.
+#
+# Next serves the stale prerendered page on the first request and regenerates in the
+# background, so without this step the first real visitor after every deploy sees an empty
+# directory or an empty Live section, and only the second visitor sees the site. Requesting
+# each page twice here means that visitor is us, not them.
+#
+# Deliberately non-fatal: a page that fails to warm is a cosmetic problem for one request,
+# and failing a deploy that already passed its health check would be a worse trade.
+step "Warming the ISR cache"
+WARM_PATHS="/ /directory /playbooks /live /methodology /about"
+for path in ${WARM_PATHS}; do
+	# Requested from INSIDE the web container, the same way the health check is, because
+	# `web` publishes no host port — only Caddy is exposed. Going through Caddy would work
+	# too but would depend on DNS and a valid certificate, neither of which has anything to
+	# do with warming a cache.
+	#
+	# Twice: the first request returns the stale empty page and triggers regeneration, the
+	# second returns the regenerated one. The body is not parsed — the point is to make the
+	# regeneration happen before a user arrives, not to assert on content.
+	for _ in 1 2; do
+		"${COMPOSE[@]}" exec -T web node -e 			"fetch('http://127.0.0.1:3000${path}').then(()=>process.exit(0)).catch(()=>process.exit(0))" 			>/dev/null 2>&1 || true
+	done
+	log "  warmed ${path}"
+done
+
+# =======================================================================================
 step "Cleaning up"
 # Only dangling (untagged, unreferenced) layers from this build. NOT `prune -a`, which
 # would delete ${IMAGE_NAME}:previous and destroy the rollback path.

@@ -6,6 +6,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import type { WorkspaceStatus } from "@/db/schema";
 import type { WorkspaceSummary } from "@/lib/queries/workspaces";
 import { formatDate } from "@/lib/utils";
+import { isoDate } from "./dates";
 
 /**
  * One case on `/workspaces`.
@@ -23,10 +24,6 @@ const STATUS_LABEL: Record<WorkspaceStatus, string> = {
   completed: "completed",
   archived: "archived",
 };
-
-function isoDate(value: Date): string {
-  return value.toISOString().slice(0, 10);
-}
 
 export function CaseCard({ workspace }: { workspace: WorkspaceSummary }) {
   return (

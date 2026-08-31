@@ -263,8 +263,17 @@ export function FlightsSurface({
                 are looking at. Aircraft positions themselves come from our server either way,
                 so nothing loads until you choose it.
               </p>
-              <Button className="mt-4 h-11" onClick={() => void openMap()}>
-                <MapIcon className="size-4" aria-hidden="true" />
+              {/*
+                `whitespace-normal` and `h-auto`: the label carries the consequence, so it is
+                long, and at 375px a nowrap button would push the whole page into a horizontal
+                scroll. The label is not shortened to fit — the consequence being IN the label
+                is the point (ADR 0015 §2 applied to the tile provider).
+              */}
+              <Button
+                className="mt-4 h-auto min-h-11 max-w-full whitespace-normal py-2 text-left"
+                onClick={() => void openMap()}
+              >
+                <MapIcon className="size-4 shrink-0" aria-hidden="true" />
                 load the map — connects you to {new URL(mapTiles.origin).host}
               </Button>
             </div>

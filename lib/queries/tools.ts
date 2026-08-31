@@ -242,15 +242,28 @@ export type ToolDetail = {
 };
 
 /**
- * `/tools/[slug]`. Returns null for a draft or a missing slug — the route turns that into a
- * 404 (HANDOFF §7, §11 assertion 3).
+ * A playbook citation: "this method uses this tool, at this step".
  *
- * TWO round trips: the tool with its category and tags, then the playbooks citing it.
- * They are deliberately not merged: the second is a three-table join whose result is a
- * different cardinality, and folding it into the first as another LATERAL aggregate would
- * cost more to read than the round trip saves on a page that is cached for an hour.
+ * Split out of `ToolDetail` deliberately — see `getToolPlaybookCitations`.
  */
-async function getToolBySlugUncached(slug: string): Promise<ToolDetail | null> {
+export type PlaybookCitation = {
+  slug: string;
+  title: string;
+  stepTitle: string;
+  note: string | null;
+};
+
+/** The entry itself: everything on `/tools/[slug]` except the "used in" region. */
+export type ToolRecord = Omit<ToolDetail, "usedInPlaybooks">;
+
+/**
+ * The tool, its category and its tags. ONE round trip — the relational API compiles the
+ * nested `with` into a single statement.
+ *
+ * Returns null for a draft or a missing slug; the route turns that into `notFound()`
+ * (HANDOFF §7, §11.3).
+ */
+async function getToolRecordUncached(slug: string): Promise<ToolRecord | null> {
   const row = await db.query.tools.findFirst({
     where: and(eq(tools.slug, slug), eq(tools.status, "published")),
     with: {
@@ -260,20 +273,6 @@ async function getToolBySlugUncached(slug: string): Promise<ToolDetail | null> {
   });
 
   if (!row) return null;
-
-  const citations = await db
-    .select({
-      slug: playbooks.slug,
-      title: playbooks.title,
-      stepTitle: playbookSteps.title,
-      note: playbookStepTools.note,
-      orderIndex: playbookSteps.orderIndex,
-    })
-    .from(playbookStepTools)
-    .innerJoin(playbookSteps, eq(playbookSteps.id, playbookStepTools.stepId))
-    .innerJoin(playbooks, eq(playbooks.id, playbookSteps.playbookId))
-    .where(and(eq(playbookStepTools.toolId, row.id), eq(playbooks.status, "published")))
-    .orderBy(asc(playbooks.title), asc(playbookSteps.orderIndex));
 
   return {
     id: row.id,
@@ -295,21 +294,81 @@ async function getToolBySlugUncached(slug: string): Promise<ToolDetail | null> {
     outputTypes: row.outputTypes,
     category: row.category,
     tags: row.toolTags.map((tt) => tt.tag).sort((a, b) => a.name.localeCompare(b.name)),
-    usedInPlaybooks: citations.map(({ slug: s, title, stepTitle, note }) => ({
-      slug: s,
-      title,
-      stepTitle,
-      note,
-    })),
   };
 }
 
-export const getToolBySlug = cachedByKey(
-  getToolBySlugUncached,
-  ["tool-by-slug"],
+/**
+ * The entry itself, without its citations. `/tools/[slug]` §3.7 — if THIS fails the page
+ * has nothing to render and must show the error state.
+ */
+export const getToolRecord = cachedByKey(
+  getToolRecordUncached,
+  ["tool-record-by-slug"],
   (slug) => [TAG.tools, TAG.tool(slug)],
   TTL.hour,
 );
+
+/**
+ * The published playbooks citing this tool, and the step that cites each.
+ *
+ * SEPARATE FROM THE ENTRY ON PURPOSE. `docs/design/states.md` §3.6 specifies a *partial*
+ * state — "the entry loaded, the 'used in' query failed" — which renders the tool and puts
+ * "Couldn't load the playbooks that use this tool. Retry." in that region alone. That state
+ * is unreachable if one function awaits both queries in sequence, because a rejection in
+ * the second takes down the first with it.
+ *
+ * So the two halves are exported separately and a caller composes them with
+ * `Promise.allSettled`. This is the same principle as `buildSafe` in `lib/static-params.ts`:
+ * degrade where degradation is truthful, fail where it is not. A missing citation list is a
+ * region that says so; a missing entry is a 404 or an error page.
+ *
+ * ONE round trip. Cached under the TOOL's tags rather than its own, because the citation
+ * list changes when a playbook that cites it is published or deleted — `deleteTool` and the
+ * playbook actions already purge `tools` and `playbook:<slug>` (caching.md §5).
+ */
+async function getToolPlaybookCitationsUncached(toolId: string): Promise<PlaybookCitation[]> {
+  const rows = await db
+    .select({
+      slug: playbooks.slug,
+      title: playbooks.title,
+      stepTitle: playbookSteps.title,
+      note: playbookStepTools.note,
+    })
+    .from(playbookStepTools)
+    .innerJoin(playbookSteps, eq(playbookSteps.id, playbookStepTools.stepId))
+    .innerJoin(playbooks, eq(playbooks.id, playbookSteps.playbookId))
+    .where(and(eq(playbookStepTools.toolId, toolId), eq(playbooks.status, "published")))
+    .orderBy(asc(playbooks.title), asc(playbookSteps.orderIndex));
+
+  return rows;
+}
+
+export const getToolPlaybookCitations = cachedByKey(
+  getToolPlaybookCitationsUncached,
+  ["tool-playbook-citations"],
+  // Keyed by tool id, but tagged with the collection tags: a playbook mutation purges
+  // `playbooks`, and a tool mutation purges `tools`, so both reach this entry.
+  () => [TAG.tools, TAG.playbooks],
+  TTL.hour,
+);
+
+/**
+ * Both halves, for a caller that does not need the partial state.
+ *
+ * It COMPOSES the two split reads rather than duplicating their SQL, so there is exactly one
+ * definition of each query. It is still two round trips, now issued concurrently instead of
+ * in sequence — so this is also slightly faster than the version it replaces.
+ *
+ * A page that wants `states.md` §3.6 should call `getToolRecord` and
+ * `getToolPlaybookCitations` itself with `Promise.allSettled`. This function fails whole.
+ */
+export async function getToolBySlug(slug: string): Promise<ToolDetail | null> {
+  const record = await getToolRecord(slug);
+  if (!record) return null;
+
+  const usedInPlaybooks = await getToolPlaybookCitations(record.id);
+  return { ...record, usedInPlaybooks };
+}
 
 /* ------------------------------------------------------------------ *
  * Listings that are not the directory

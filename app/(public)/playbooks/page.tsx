@@ -8,6 +8,7 @@ import {
 } from "@/components/layout/methodology-anchor";
 import { listPlaybooks } from "@/lib/queries/playbooks";
 import { pageMetadata } from "@/lib/metadata";
+import { buildSafe } from "@/lib/static-params";
 
 /**
  * `/playbooks` — the full published listing.
@@ -30,7 +31,11 @@ export const metadata = pageMetadata({
 });
 
 export default async function PlaybooksPage() {
-  const playbooks = await listPlaybooks();
+  // Prerendered (revalidate 1800) and reads the database, so it must survive a build with
+  // no DATABASE_URL — see ADR 0018. buildSafe substitutes the empty list DURING THE BUILD
+  // ONLY and rethrows at runtime, so a real outage still reaches error.tsx rather than
+  // quietly claiming there are no playbooks.
+  const playbooks = await buildSafe("playbooks-index", () => listPlaybooks(), []);
 
   // Distinct categories, in the order the listing presents them, so the filter offers only
   // values that can actually match something.

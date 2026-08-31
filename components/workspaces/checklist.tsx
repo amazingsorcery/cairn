@@ -81,20 +81,32 @@ function ChecklistRow({
     router.refresh();
   }
 
-  const checkboxId = `checklist-${item.id}`;
+  const labelId = `checklist-label-${item.id}`;
 
   return (
     <li className="border-b border-border px-4 py-3 last:border-b-0">
       <div className="flex items-start gap-3">
+        {/*
+          `aria-labelledby`, NOT a `<label htmlFor>`. Radix renders the checkbox as a
+          `button[role="checkbox"]`, and a `<label for>` gives an accessible name only to a
+          labelable element — so the pairing that looks right leaves the control announced
+          as an unnamed checkbox. Caught in the accessibility tree, not by reading the code.
+        */}
         <Checkbox
-          id={checkboxId}
           checked={checked}
           onCheckedChange={(value) => void apply(value === true)}
+          aria-labelledby={labelId}
           className="mt-1"
         />
         <div className="min-w-0 flex-1">
-          <label
-            htmlFor={checkboxId}
+          {/*
+            A span with a pointer handler, not a label: it is a redundant affordance for
+            mouse users, and the checkbox above is the keyboard path. `aria-hidden` is not
+            set because this element IS the checkbox's accessible name.
+          */}
+          <span
+            id={labelId}
+            onClick={() => void apply(!checked)}
             className={cn(
               "flex cursor-pointer gap-2 text-sm leading-relaxed",
               checked ? "text-foreground-secondary" : "text-foreground",
@@ -102,7 +114,7 @@ function ChecklistRow({
           >
             <span className="tabular shrink-0 text-muted-foreground">{position}</span>
             <span className="min-w-0">{item.title}</span>
-          </label>
+          </span>
 
           {stepHref ? (
             <Link

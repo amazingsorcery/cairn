@@ -195,42 +195,84 @@ async function fuzzyToolsUncached(query: string): Promise<FuzzyHit[]> {
  * ROUND TRIPS: 2 in the ordinary case, run concurrently; 3 when both groups are empty and
  * the fuzzy fallback fires. Zero when the query is empty.
  */
-async function searchUncached(filters: SearchFilters): Promise<SearchResults> {
-  const offset = (filters.page - 1) * SEARCH_PAGE_SIZE;
+/**
+ * One ranked GROUP of results, with its own total. `/search` renders two of these.
+ *
+ * Split out so `docs/design/states.md` §8.3 — "Partial: one group failed", which renders the
+ * group that worked and says "Playbook results are unavailable right now. Tool results are
+ * below." — is reachable. It is not reachable if one function awaits both queries, because a
+ * rejection in either takes down both.
+ *
+ * A caller wanting that state composes `searchTools` and `searchPlaybooks` with
+ * `Promise.allSettled`. `search()` below composes them for callers that do not.
+ */
+export type SearchGroup<Hit> = {
+  hits: Hit[];
+  total: number;
+  page: number;
+  pageSize: number;
+};
 
-  const empty: SearchResults = {
-    query: filters.q,
-    tools: [],
-    playbooks: [],
-    didYouMean: [],
-    toolTotal: 0,
-    playbookTotal: 0,
-    page: filters.page,
-    pageSize: SEARCH_PAGE_SIZE,
-  };
-
+/**
+ * The tools group alone. search.md §6.1.
+ *
+ * `revalidate: 60` and the `search` tag, exactly as the combined function had — the two
+ * groups are cached independently, so a failure in one does not evict the other's entry.
+ */
+export async function searchTools(filters: SearchFilters): Promise<SearchGroup<ToolHit>> {
+  const empty = { hits: [], total: 0, page: filters.page, pageSize: SEARCH_PAGE_SIZE };
   if (!filters.q) return empty;
 
-  const [toolResults, playbookResults] = await Promise.all([
-    searchToolsUncached(filters.q, SEARCH_PAGE_SIZE, offset),
-    searchPlaybooksUncached(filters.q, SEARCH_PAGE_SIZE, offset),
-  ]);
+  const offset = (filters.page - 1) * SEARCH_PAGE_SIZE;
+  const key = `tools:${searchCacheKey(filters)}`;
 
-  const didYouMean =
-    toolResults.total === 0 && playbookResults.total === 0
-      ? await fuzzyToolsUncached(filters.q)
-      : [];
+  return cached(
+    async (_key: string) => {
+      const { hits, total } = await searchToolsUncached(filters.q, SEARCH_PAGE_SIZE, offset);
+      return { hits, total, page: filters.page, pageSize: SEARCH_PAGE_SIZE };
+    },
+    ["search-tools"],
+    { tags: [TAG.search, TAG.tools], revalidate: TTL.minute },
+  )(key);
+}
 
-  return {
-    query: filters.q,
-    tools: toolResults.hits,
-    playbooks: playbookResults.hits,
-    didYouMean,
-    toolTotal: toolResults.total,
-    playbookTotal: playbookResults.total,
-    page: filters.page,
-    pageSize: SEARCH_PAGE_SIZE,
-  };
+/** The playbooks group alone. search.md §6.2. */
+export async function searchPlaybooks(
+  filters: SearchFilters,
+): Promise<SearchGroup<PlaybookHit>> {
+  const empty = { hits: [], total: 0, page: filters.page, pageSize: SEARCH_PAGE_SIZE };
+  if (!filters.q) return empty;
+
+  const offset = (filters.page - 1) * SEARCH_PAGE_SIZE;
+  const key = `playbooks:${searchCacheKey(filters)}`;
+
+  return cached(
+    async (_key: string) => {
+      const { hits, total } = await searchPlaybooksUncached(filters.q, SEARCH_PAGE_SIZE, offset);
+      return { hits, total, page: filters.page, pageSize: SEARCH_PAGE_SIZE };
+    },
+    ["search-playbooks"],
+    { tags: [TAG.search, TAG.playbooks], revalidate: TTL.minute },
+  )(key);
+}
+
+/**
+ * The trigram fallback. search.md §5 and §6.4.
+ *
+ * Exported so a caller composing the two groups itself can still reach it — the rule is that
+ * it fires ONLY when both ranked groups returned zero rows, and a caller doing its own
+ * `Promise.allSettled` has to apply that rule itself.
+ *
+ * A group that FAILED is not a group that returned zero rows. Do not run the fallback when
+ * one side rejected: "no exact matches, did you mean…" would be a claim we cannot support,
+ * and §8.3 already has honest copy for that case.
+ */
+export async function didYouMean(query: string): Promise<FuzzyHit[]> {
+  if (!query) return [];
+  return cached(async (_key: string) => fuzzyToolsUncached(query), ["search-did-you-mean"], {
+    tags: [TAG.search, TAG.tools],
+    revalidate: TTL.minute,
+  })(query);
 }
 
 /**
@@ -238,11 +280,35 @@ async function searchUncached(filters: SearchFilters): Promise<SearchResults> {
  * staleness is noticeable and a minute is not (caching.md §6).
  */
 export async function search(filters: SearchFilters): Promise<SearchResults> {
-  const key = searchCacheKey(filters);
-  return cached(async (_key: string) => searchUncached(filters), ["search"], {
-    tags: [TAG.search, TAG.tools, TAG.playbooks],
-    revalidate: TTL.minute,
-  })(key);
+  const base = {
+    query: filters.q,
+    page: filters.page,
+    pageSize: SEARCH_PAGE_SIZE,
+  };
+
+  if (!filters.q) {
+    return { ...base, tools: [], playbooks: [], didYouMean: [], toolTotal: 0, playbookTotal: 0 };
+  }
+
+  // COMPOSES the split reads rather than duplicating their SQL, so there is exactly one
+  // definition of each query. Concurrent, as before.
+  const [toolGroup, playbookGroup] = await Promise.all([
+    searchTools(filters),
+    searchPlaybooks(filters),
+  ]);
+
+  // Only when BOTH ranked groups are genuinely empty (search.md §5).
+  const fallback =
+    toolGroup.total === 0 && playbookGroup.total === 0 ? await didYouMean(filters.q) : [];
+
+  return {
+    ...base,
+    tools: toolGroup.hits,
+    playbooks: playbookGroup.hits,
+    didYouMean: fallback,
+    toolTotal: toolGroup.total,
+    playbookTotal: playbookGroup.total,
+  };
 }
 
 /**
