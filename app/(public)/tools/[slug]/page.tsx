@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Scale } from "lucide-react";
+import { FolderPlus, Scale } from "lucide-react";
 
 import {
   ExternalToolLink,
@@ -76,7 +76,12 @@ export async function generateMetadata({ params }: ToolPageProps) {
   const { slug } = await params;
   const tool = await getToolBySlug(slug);
   if (!tool) {
-    return pageMetadata({ title: "Not found", description: "", path: `/tools/${slug}`, index: false });
+    return pageMetadata({
+      title: "Not found",
+      description: "",
+      path: `/tools/${slug}`,
+      index: false,
+    });
   }
   return pageMetadata({
     title: tool.name,
@@ -101,7 +106,7 @@ function Section({
     <section aria-labelledby={`${id}-heading`} className={className}>
       <h2
         id={`${id}-heading`}
-        className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+        className="text-muted-foreground text-xs font-semibold tracking-wide uppercase"
       >
         {title}
       </h2>
@@ -120,8 +125,8 @@ function Section({
 function Row({ term, children }: { term: string; children: React.ReactNode }) {
   return (
     <div className="grid grid-cols-[7rem_minmax(0,1fr)] gap-x-3 gap-y-1 py-2 xl:grid-cols-1">
-      <dt className="text-sm text-muted-foreground">{term}</dt>
-      <dd className="min-w-0 text-sm text-foreground">{children}</dd>
+      <dt className="text-muted-foreground text-sm">{term}</dt>
+      <dd className="text-foreground min-w-0 text-sm">{children}</dd>
     </div>
   );
 }
@@ -157,7 +162,7 @@ function Reliability({ value }: { value: number | null }) {
       {value}/5{" "}
       <Link
         href={methodologyAnchorHref(RELIABILITY_ANCHOR)}
-        className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
+        className="text-muted-foreground hover:text-foreground text-xs underline underline-offset-4"
       >
         (editorial rating)
       </Link>
@@ -189,6 +194,7 @@ export default async function ToolPage({ params }: ToolPageProps) {
   if (!tool) notFound();
 
   const stale = isStaleRecord(tool.lastVerifiedAt);
+  const toolHref = `/tools/${tool.slug}`;
   const playbooks = groupCitations(tool.usedInPlaybooks);
 
   return (
@@ -208,7 +214,7 @@ export default async function ToolPage({ params }: ToolPageProps) {
           <ExternalToolLink url={tool.url}>{displayHost(tool.url)}</ExternalToolLink>
         </p>
 
-        <p className="mt-3 text-base leading-relaxed text-foreground-secondary md:text-lg">
+        <p className="text-foreground-secondary mt-3 text-base leading-relaxed md:text-lg">
           {tool.summary}
         </p>
 
@@ -223,7 +229,7 @@ export default async function ToolPage({ params }: ToolPageProps) {
             href={methodologyAnchorHref(LAST_VERIFIED_ANCHOR)}
             className={cn(
               "rounded-sm underline-offset-4 hover:underline",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              "focus-visible:ring-ring focus-visible:ring-2 focus-visible:outline-none",
             )}
           >
             <VerificationDate lastVerifiedAt={tool.lastVerifiedAt} className="tabular" />
@@ -253,7 +259,29 @@ export default async function ToolPage({ params }: ToolPageProps) {
         */}
         <aside className="space-y-8 xl:sticky xl:top-20 xl:order-2">
           <div className="space-y-3">
-            <Button asChild size="lg" className="w-full">
+            {/*
+              SAVE TO A CASE — the join in the vertical slice (`product-brief.md` §2).
+
+              It renders for EVERYONE, signed in or out. Hiding it from a signed-out reader
+              would hide the product's third pillar from exactly the people most likely to want
+              it, which is the same reasoning `sitemap.md` §2 gives for the equivalent control
+              on `/playbooks/[slug]`.
+
+              A plain GET form, not a client dialog, and that is deliberate: this route is
+              ISR:3600 and `sitemap.md` §10.1 forbids a public route reading the session. The
+              picker lives at `/tools/[slug]/save`, a `force-dynamic` child segment that can
+              read `auth()` without dragging its parent out of static generation. The button
+              therefore costs this page no JavaScript at all and still works with the bundle
+              removed.
+            */}
+            <form method="get" action={`${toolHref}/save`}>
+              <Button type="submit" size="lg" className="w-full">
+                <FolderPlus aria-hidden="true" />
+                save to a case
+              </Button>
+            </form>
+
+            <Button asChild variant="outline" size="lg" className="w-full">
               <a href={tool.url} target="_blank" rel="noopener noreferrer">
                 open {displayHost(tool.url)}
                 <span className="sr-only"> (opens in a new tab)</span>
@@ -264,11 +292,11 @@ export default async function ToolPage({ params }: ToolPageProps) {
           </div>
 
           <Section id="glance" title="at a glance">
-            <dl className="divide-y divide-border rounded-lg border border-border bg-card px-4 py-2">
+            <dl className="divide-border border-border bg-card divide-y rounded-lg border px-4 py-2">
               <Row term="cost">
                 {costLabel(tool.costModel)}
                 {tool.costNotes ? (
-                  <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
+                  <span className="text-muted-foreground mt-1 block text-xs leading-relaxed">
                     {tool.costNotes}
                   </span>
                 ) : null}
@@ -288,7 +316,7 @@ export default async function ToolPage({ params }: ToolPageProps) {
               <Row term="category">
                 <Link
                   href={`/directory/${tool.category.slug}`}
-                  className="underline underline-offset-4 hover:text-primary"
+                  className="hover:text-primary underline underline-offset-4"
                 >
                   {tool.category.name}
                 </Link>
@@ -300,7 +328,7 @@ export default async function ToolPage({ params }: ToolPageProps) {
         <div className="min-w-0 space-y-10 xl:order-1">
           {tool.reliabilityNotes ? (
             <Section id="reliability-notes" title="reliability notes">
-              <p className="max-w-[68ch] text-base leading-relaxed text-foreground-secondary">
+              <p className="text-foreground-secondary max-w-[68ch] text-base leading-relaxed">
                 {tool.reliabilityNotes}
               </p>
             </Section>
@@ -320,23 +348,23 @@ export default async function ToolPage({ params }: ToolPageProps) {
           {tool.legalNotes ? (
             <section
               aria-labelledby="legal-heading"
-              className="rounded-lg border border-warning/40 bg-warning-surface p-5"
+              className="border-warning/40 bg-warning-surface rounded-lg border p-5"
             >
               <h2
                 id="legal-heading"
-                className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-foreground"
+                className="text-foreground flex items-center gap-2 text-xs font-semibold tracking-wide uppercase"
               >
-                <Scale className="size-4 text-warning" aria-hidden="true" />
+                <Scale className="text-warning size-4" aria-hidden="true" />
                 legal notes
               </h2>
-              <div className="mt-3 max-w-[68ch] space-y-3 text-base leading-relaxed text-foreground">
+              <div className="text-foreground mt-3 max-w-[68ch] space-y-3 text-base leading-relaxed">
                 {tool.legalNotes.split(/\n{2,}/).map((paragraph, index) => (
                   <p key={index}>{paragraph}</p>
                 ))}
               </div>
-              <p className="mt-4 max-w-[68ch] text-sm text-foreground-secondary">
-                Listing an entry is not endorsing it. We name what is engaged; we cannot tell
-                you what your legal basis is.
+              <p className="text-foreground-secondary mt-4 max-w-[68ch] text-sm">
+                Listing an entry is not endorsing it. We name what is engaged; we cannot tell you
+                what your legal basis is.
               </p>
             </section>
           ) : null}
@@ -350,7 +378,7 @@ export default async function ToolPage({ params }: ToolPageProps) {
           <Section id="playbooks" title="used in these playbooks">
             {playbooks.length === 0 ? (
               // `states.md` §3.5 — one sentence, no control. Not a failure, not an invitation.
-              <p className="text-sm text-foreground-secondary">
+              <p className="text-foreground-secondary text-sm">
                 No playbook in the catalogue uses this tool yet.
               </p>
             ) : (
@@ -360,14 +388,14 @@ export default async function ToolPage({ params }: ToolPageProps) {
                     <Link
                       href={`/playbooks/${playbook.slug}`}
                       className={cn(
-                        "block rounded-md border border-border bg-card p-3",
+                        "border-border bg-card block rounded-md border p-3",
                         "hover:border-foreground-faint hover:bg-accent",
-                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                        "focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                        "focus-visible:ring-ring focus-visible:ring-2 focus-visible:outline-none",
+                        "focus-visible:ring-offset-background focus-visible:ring-offset-2",
                       )}
                     >
                       <span className="text-sm font-medium">{playbook.title}</span>
-                      <span className="mt-1 block text-xs text-muted-foreground">
+                      <span className="text-muted-foreground mt-1 block text-xs">
                         {playbook.steps.join(" · ")}
                       </span>
                     </Link>
@@ -385,10 +413,10 @@ export default async function ToolPage({ params }: ToolPageProps) {
                     <Link
                       href={`/tags/${tag.slug}`}
                       className={cn(
-                        "inline-flex min-h-11 items-center rounded-full border border-border",
-                        "bg-card px-4 text-sm hover:border-foreground-faint hover:bg-accent",
-                        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                        "focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                        "border-border inline-flex min-h-11 items-center rounded-full border",
+                        "bg-card hover:border-foreground-faint hover:bg-accent px-4 text-sm",
+                        "focus-visible:ring-ring focus-visible:ring-2 focus-visible:outline-none",
+                        "focus-visible:ring-offset-background focus-visible:ring-offset-2",
                       )}
                     >
                       {tag.name}

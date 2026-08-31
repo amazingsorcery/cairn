@@ -9,7 +9,7 @@ import { publishConnector, recheckConnector } from "@/lib/actions/connectors";
 import { getAuditLogSize, getConnectorHealth, listConnectorsForAdmin } from "@/lib/queries/admin";
 import { AUDIT_RETENTION_DAYS } from "@/lib/connectors/audit";
 import { cn, formatDate, formatTimestamp } from "@/lib/utils";
-import type { ConnectorKind } from "@/db/schema";
+import { CONNECTOR_KINDS, type ConnectorKind } from "@/db/schema";
 
 /**
  * `/admin/connectors` — the health board and the kill-switch. **admin only**, not editor
@@ -42,11 +42,26 @@ export function generateMetadata() {
   );
 }
 
-/** Which reader-facing surface each connector kind feeds. Used in the kill-switch dialog. */
-const SURFACE: Record<ConnectorKind, string> = {
+/**
+ * Which reader-facing surface each connector kind feeds. Used in the kill-switch dialog, so
+ * an operator about to disable a source can see what goes dark.
+ *
+ * Explicit entries first, then every remaining kind defaults to the map — which is true, and
+ * is where all the v2 layers render. Derived from `CONNECTOR_KINDS` rather than hand-written
+ * because a hand-written map is exactly what broke when the enum grew: `getConnectorHealth`
+ * had one, adding an outcome silently dropped a row from the board, and a connector being
+ * refused upstream was counted nowhere. A map built from its own vocabulary cannot fall
+ * behind it.
+ */
+const EXPLICIT_SURFACE: Partial<Record<ConnectorKind, string>> = {
   flights: "/live/flights",
   cameras: "/live/cameras",
+  radio: "/toolbench/broadcast-finder",
 };
+
+const SURFACE: Record<ConnectorKind, string> = Object.fromEntries(
+  CONNECTOR_KINDS.map((kind) => [kind, EXPLICIT_SURFACE[kind] ?? "/map"]),
+) as Record<ConnectorKind, string>;
 
 function percent(part: number, total: number): string {
   if (total === 0) return "—";

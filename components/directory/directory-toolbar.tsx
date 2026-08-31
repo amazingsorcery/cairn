@@ -41,7 +41,7 @@ export function DirectoryToolbar({
         </label>
         <Search
           aria-hidden="true"
-          className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+          className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2"
         />
         <FilterTextInput
           id="directory-q"
@@ -51,6 +51,27 @@ export function DirectoryToolbar({
           className="pl-9"
         />
       </div>
+
+      {/*
+        THE FORM NEEDS A SUBMIT BUTTON, and not only for the no-JavaScript path.
+
+        HTML implicit submission — pressing Enter in a text field — only fires when the form
+        has a submit button, or when it has exactly one field that blocks implicit submission.
+        This form has the name field, a `type="button"` sheet trigger and a `<select>`, and
+        Chrome declines to submit it. Without this button, Enter in the name field did nothing
+        at all: the filter looked broken to anyone who did not think to click elsewhere, and
+        there was no keyboard route to submitting it with the bundle removed.
+
+        `sr-only` until focused, because the wireframe draws no visible button beside the field
+        at either width — but a control nobody can reach is the same as no control at all, so
+        it becomes visible the moment it is tabbed to.
+      */}
+      <button
+        type="submit"
+        className="focus:border-input sr-only focus:not-sr-only focus:inline-flex focus:h-11 focus:items-center focus:rounded-md focus:border focus:px-4 focus:text-sm focus:font-medium"
+      >
+        apply the name filter
+      </button>
 
       <div className="flex items-center gap-3">
         {sheet ? <div className="md:hidden">{sheet}</div> : null}

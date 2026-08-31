@@ -75,7 +75,69 @@ describe("workspace item kind/reference pairing", () => {
   // HANDOFF §3: no CHECK constraint exists for this, and adding one would break ADR 0008's
   // ON DELETE SET NULL. Zod is the only enforcement, so it is tested exhaustively.
   it("covers every kind in the vocabulary", () => {
-    expect([...WORKSPACE_ITEM_KINDS]).toEqual(["tool", "checklistStep"]);
+    expect([...WORKSPACE_ITEM_KINDS]).toEqual(["tool", "checklistStep", "mapFeature"]);
+  });
+
+  it("requires a snapshot for kind 'mapFeature', and neither FK", () => {
+    // mapFeature is the kind with nothing to point at: its referent is a position an
+    // upstream published for a moment. By the time the user reopens the case, that aircraft
+    // has moved and that wildfire may be out. A dangling reference to something ephemeral
+    // is worse than a snapshot — it silently becomes wrong rather than visibly becoming old.
+    const feature = {
+      sourceSlug: "usgs-earthquakes",
+      sourceName: "USGS Earthquake Hazards Program",
+      sourceKind: "earthquakes",
+      featureRef: "us7000abcd",
+      latitude: 38.1,
+      longitude: -122.4,
+      observedAt: "2026-08-31T12:00:00.000Z",
+      attribution: "USGS Earthquake Hazards Program",
+      licence: "public domain (US Government)",
+    };
+
+    expect(
+      addWorkspaceItemSchema.safeParse({
+        workspaceId: UUID,
+        kind: "mapFeature",
+        feature,
+      }).success,
+    ).toBe(true);
+
+    // Without the snapshot there is nothing to render later, and no way to recover it.
+    expect(
+      addWorkspaceItemSchema.safeParse({ workspaceId: UUID, kind: "mapFeature" }).success,
+    ).toBe(false);
+
+    // Neither FK may be set: nothing in our database owns a live feature.
+    expect(
+      addWorkspaceItemSchema.safeParse({
+        workspaceId: UUID,
+        kind: "mapFeature",
+        feature,
+        toolId: UUID,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("keeps the attribution on a saved feature, because the obligation outlives the source", () => {
+    // We cannot go back and ask what the licence was once the upstream has forgotten the
+    // feature, so a snapshot without a credit is unshippable at save time, not at render time.
+    const result = addWorkspaceItemSchema.safeParse({
+      workspaceId: UUID,
+      kind: "mapFeature",
+      feature: {
+        sourceSlug: "usgs-earthquakes",
+        sourceName: "USGS",
+        sourceKind: "earthquakes",
+        featureRef: "us7000abcd",
+        latitude: 38.1,
+        longitude: -122.4,
+        observedAt: "2026-08-31T12:00:00.000Z",
+        attribution: "",
+        licence: "public domain (US Government)",
+      },
+    });
+    expect(result.success).toBe(false);
   });
 
   it("requires toolId for kind 'tool'", () => {

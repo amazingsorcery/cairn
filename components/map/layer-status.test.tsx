@@ -1,0 +1,176 @@
+import * as React from "react";
+import { render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+
+import type { SourceFailure } from "@/lib/sources/types";
+import { LayerStatus, failureSentence } from "./layer-status";
+import type { LayerPayloadDto } from "./registry";
+
+/**
+ * The degraded states. Carried over from `/live/flights` (ADR 0011 rule 5, ADR 0014) and
+ * extended to the six failure kinds `SourceAdapter` actually has.
+ *
+ * These are tested rather than trusted because they are the states nobody sees during
+ * development. QA should be able to break one upstream and find a designed screen, not a
+ * blank region — and the specific rules below (no retry after a rate limit, distinct copy per
+ * kind) are the ones a later refactor collapses into one generic error box.
+ */
+
+const SOURCE = {
+  slug: "usgs-earthquakes",
+  name: "USGS Earthquake Hazards Program",
+  homepage: "https://earthquake.usgs.gov/earthquakes/map/",
+  attribution: {
+    text: "U.S. Geological Survey",
+    href: "https://earthquake.usgs.gov/earthquakes/feed/v1.0/geojson.php",
+    licence: "public domain (US Government work)",
+  },
+  ttlSeconds: 60,
+};
+
+const FAILURES: readonly SourceFailure[] = [
+  { kind: "upstreamError", status: 503, message: "Service Unavailable" },
+  { kind: "rateLimited", retryAfterSeconds: 30 },
+  { kind: "schemaChanged", message: "expected number, received string" },
+  { kind: "timeout", afterMs: 8000 },
+  { kind: "notConfigured", missingEnvVar: "USGS_FEED_URL" },
+  { kind: "disabled", reason: "the terms are under review." },
+];
+
+function failed(failure: SourceFailure): LayerPayloadDto {
+  return { layerId: "test", source: SOURCE, ok: false, failure, lastGoodAt: null };
+}
+
+function renderStatus(payload: LayerPayloadDto) {
+  const onRetry = vi.fn();
+  render(
+    <LayerStatus
+      label="Earthquakes"
+      unavailableTitle="Earthquakes unavailable"
+      payload={payload}
+      refreshing={false}
+      initialAgeSeconds={12}
+      onRetry={onRetry}
+    />,
+  );
+  return { onRetry };
+}
+
+describe("failureSentence", () => {
+  it("gives every failure kind its own sentence", () => {
+    // "It broke" is not a state. Four different things going wrong need four different
+    // sentences, and six kinds need six.
+    const sentences = FAILURES.map((failure) => failureSentence(failure, "USGS"));
+    expect(new Set(sentences).size).toBe(FAILURES.length);
+    for (const sentence of sentences) {
+      expect(sentence.length).toBeGreaterThan(40);
+      expect(sentence.toLowerCase()).not.toContain("something went wrong");
+      expect(sentence.toLowerCase()).not.toContain("sorry");
+    }
+  });
+
+  it("blames our parser, not the upstream, when the schema changed", () => {
+    const sentence = failureSentence(
+      { kind: "schemaChanged", message: "bad shape" },
+      "USGS",
+    );
+    expect(sentence).toContain("our parser to fix");
+  });
+
+  it("says no request was made when the layer is not configured", () => {
+    const sentence = failureSentence(
+      { kind: "notConfigured", missingEnvVar: "SOME_KEY" },
+      "USGS",
+    );
+    expect(sentence).toContain("SOME_KEY");
+    expect(sentence).toContain("no request was made");
+  });
+});
+
+describe("LayerStatus", () => {
+  it("shows the age and the source when the layer is fresh", () => {
+    renderStatus({
+      layerId: "test",
+      source: SOURCE,
+      ok: true,
+      features: [],
+      observedAt: new Date(Date.now() - 12_000).toISOString(),
+      stale: false,
+    });
+    expect(screen.getByText("Live")).toBeInTheDocument();
+    expect(screen.getByText(/12s ago/)).toBeInTheDocument();
+    // Attribution at the point of display, from the adapter, never typed into a component.
+    expect(screen.getByText("U.S. Geological Survey")).toBeInTheDocument();
+    expect(screen.getByText(/public domain/)).toBeInTheDocument();
+  });
+
+  it("marks stale data as stale rather than presenting it as current", () => {
+    renderStatus({
+      layerId: "test",
+      source: SOURCE,
+      ok: true,
+      features: [],
+      observedAt: new Date(Date.now() - 400_000).toISOString(),
+      stale: true,
+    });
+    expect(screen.getByText("Stale")).toBeInTheDocument();
+  });
+
+  it("offers a retry when retrying could help", () => {
+    renderStatus(failed({ kind: "upstreamError", status: 503, message: "down" }));
+    expect(screen.getByRole("button", { name: /retry earthquakes/i })).toBeInTheDocument();
+  });
+
+  it("offers NO retry after the upstream asked us to slow down", () => {
+    // Not an honesty question but a conduct one: a retry control is an invitation to keep
+    // calling a service that has just asked us to stop (product-brief §3.2 constraint 5).
+    renderStatus(failed({ kind: "rateLimited", retryAfterSeconds: 30 }));
+    expect(screen.queryByRole("button", { name: /retry/i })).not.toBeInTheDocument();
+  });
+
+  it("offers no retry for a switched-off layer, a missing config or a schema change", () => {
+    for (const failure of FAILURES.filter(
+      (f) => f.kind === "disabled" || f.kind === "notConfigured" || f.kind === "schemaChanged",
+    )) {
+      const { unmount } = render(
+        <LayerStatus
+          label="Earthquakes"
+          unavailableTitle="Earthquakes unavailable"
+          payload={failed(failure)}
+          refreshing={false}
+          initialAgeSeconds={null}
+          onRetry={vi.fn()}
+        />,
+      );
+      expect(
+        screen.queryByRole("button", { name: /retry/i }),
+        `${failure.kind} must not offer a retry`,
+      ).not.toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  it("never shows a spinner while refreshing", () => {
+    render(
+      <LayerStatus
+        label="Earthquakes"
+        unavailableTitle="Earthquakes unavailable"
+        payload={{
+          layerId: "test",
+          source: SOURCE,
+          ok: true,
+          features: [],
+          observedAt: new Date(Date.now() - 400_000).toISOString(),
+          stale: true,
+        }}
+        refreshing
+        initialAgeSeconds={400}
+        onRetry={vi.fn()}
+      />,
+    );
+    // ADR 0014 §8: the word, never an indeterminate animation that keeps asserting fresh
+    // data is arriving after the request has already failed.
+    expect(screen.getByText("refreshing")).toBeInTheDocument();
+    expect(document.querySelector(".animate-spin")).toBeNull();
+  });
+});

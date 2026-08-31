@@ -1,0 +1,135 @@
+{
+  "adsb-lol": {
+    "ageSeconds": 3,
+    "data": {
+      "aircraft": [
+        {
+          "hex": "40660e",
+          "callsign": "TOM19H",
+          "registration": "G-FDZZ",
+          "type": "B738",
+          "lat": 51.416656,
+          "lon": -1.356143,
+          "altitudeFt": 24075,
+          "onGround": false,
+          "groundSpeedKt": 350.2,
+          "trackDeg": 286.93,
+          "squawk": "1045",
+          "emergency": null,
+          "positionAgeSeconds": 0.296
+        },
+        {
+          "hex": "40771a",
+          "callsign": "VIR103M",
+          "registration": "G-VDOT",
+          "type": "A35K",
+          "lat": 51.572662,
+          "lon": -1.346048,
+          "altitudeFt": 13250,
+          "onGround": false,
+          "groundSpeedKt": 351.8,
+          "trackDeg": 302.11,
+          "squawk": "6035",
+          "emergency": null,
+          "positionAgeSeconds": 0.15
+        },
+        {
+          "hex": "401ed5",
+          "callsign": "GBICW",
+          "registration": "G-BICW",
+          "type": "P28A",
+          "lat": 51.252144,
+          "lon": -1.294569,
+          "altitudeFt": 2300,
+          "onGround": false,
+          "groundSpeedKt": 29,
+          "trackDeg": 237,
+          "squawk": "0441",
+          "emergency": null,
+          "positionAgeSeconds": 3.031
+        },
+        {
+          "hex": "40208d",
+          "callsign": "GMKAS",
+          "registration": "G-MKAS",
+          "type": "P28A",
+          "lat": 51.851752,
+          "lon": -1.281848,
+          "altitudeFt": 1600,
+          "onGround": false,
+          "groundSpeedKt": 113,
+          "trackDeg": 344,
+          "squawk": "7010",
+          "emergency": null,
+          "positionAgeSeconds": 1.503
+        },
+        {
+          "hex": "4ca6c4",
+          "callsign": "EIN34J",
+          "registration": "EI-DVI",
+          "type": "A320",
+          "lat": 51.558186,
+          "lon": -1.246948,
+          "altitudeFt": 36025,
+          "onGround": false,
+          "groundSpeedKt": 376.2,
+          "trackDeg": 297.72,
+          "squawk": "3032",
+          "emergency": null,
+          "positionAgeSeconds": 0.1
+        },
+        {
+          "hex": "405204",
+          "callsign": "GRMRV",
+          "registration": "G-RMRV",
+          "type": "RV7",
+          "lat": 51.435699,
+          "lon": -1.130553,
+          "altitudeFt": 2725,
+          "onGround": false,
+          "groundSpeedKt": 113.8,
+          "trackDeg": 251.57,
+          "squawk": "7000",
+          "emergency": null,
+          "positionAgeSeconds": 2.506
+        },
+        {
+          "hex": "4083b5",
+          "callsign": "BRO63",
+          "registration": null,
+          "type": null,
+          "lat": 51.833915,
+          "lon": -1.313763,
+          "altitudeFt": null,
+          "onGround": true,
+          "groundSpeedKt": null,
+          "trackDeg": null,
+          "squawk": "7000",
+          "emergency": null,
+          "positionAgeSeconds": 42.162
+        },
+        {
+          "hex": "42584c",
+          "callsign": null,
+          "registration": "TWR",
+          "type": "TWR",
+          "lat": 51.458471,
+          "lon": -0.448227,
+          "altitudeFt": null,
+          "onGround": true,
+          "groundSpeedKt": 0,
+          "trackDeg": null,
+          "squawk": null,
+          "emergency": null,
+          "positionAgeSeconds": 0.807
+        }
+      ],
+      "reportedTotal": 8,
+      "viewport": {
+        "lat": 51.5,
+        "lon": -0.1,
+        "radius": 50
+      }
+    }
+  }
+}

@@ -19,6 +19,12 @@
  * - The Live subtree (`connectors`, `connector_requests`, `cameras`) implements ADR 0011.
  *   Read the block comment above `connectors` before adding anything to it: what that
  *   subtree must never grow is as much a part of the design as what it contains.
+ * - There is no `cached_features` table and no PostGIS, and both absences are decisions
+ *   rather than gaps. ADR 0022. The live layers live in Redis with per-source TTLs, because
+ *   the product does not claim to keep them; the one thing that is persisted is a feature a
+ *   user deliberately saved (`workspace_feature_snapshots`, ADR 0025). Every coordinate in
+ *   this file is `double precision` with a range CHECK, because nothing in this product
+ *   issues a spatial predicate.
  *
  * Things this file deliberately does NOT contain, because drizzle-kit cannot generate
  * them and they live in a hand-written follow-up migration instead — the exact SQL is in
@@ -40,6 +46,7 @@ import {
   doublePrecision,
   index,
   integer,
+  jsonb,
   pgTable,
   primaryKey,
   text,
@@ -130,16 +137,93 @@ export type DifficultyLevel = (typeof DIFFICULTY_LEVELS)[number]
 export const WORKSPACE_STATUSES = ['active', 'completed', 'archived'] as const
 export type WorkspaceStatus = (typeof WORKSPACE_STATUSES)[number]
 
-/** `tool` = a saved directory entry. `checklistStep` = an entry derived from a playbook step. */
-export const WORKSPACE_ITEM_KINDS = ['tool', 'checklistStep'] as const
+/**
+ * `tool` = a saved directory entry. `checklistStep` = an entry derived from a playbook step.
+ * `mapFeature` = a live feature the user saved off the map (ADR 0025).
+ *
+ * The first two point at a row we own, so the item keeps an FK plus a snapshotted `title`.
+ * `mapFeature` has nothing to point at: the referent is a position an upstream published
+ * once and will not publish again. Its snapshot therefore has to be complete, and it lives
+ * in `workspace_feature_snapshots` rather than in seven nullable columns here.
+ *
+ * `mapFeature` was added in migration 0006, which replaces the CHECK constraint.
+ */
+export const WORKSPACE_ITEM_KINDS = ['tool', 'checklistStep', 'mapFeature'] as const
 export type WorkspaceItemKind = (typeof WORKSPACE_ITEM_KINDS)[number]
 
 export const REVIEW_STATUSES = ['pending', 'approved', 'rejected'] as const
 export type ReviewStatus = (typeof REVIEW_STATUSES)[number]
 
-/** The two Live surfaces of ADR 0011. One connector kind per surface. */
-export const CONNECTOR_KINDS = ['flights', 'cameras'] as const
+/**
+ * What a source's data is *about*. Mirrors `SOURCE_KINDS` in `lib/sources/types.ts`
+ * value-for-value and must keep mirroring it.
+ *
+ * Deliberately duplicated rather than imported, for the same reason `COST_MODELS` is not
+ * imported from `lib/content/schema.ts`: the CHECK constraint rendered from this array is a
+ * database object, and a database object cannot be changed by editing a TypeScript file in
+ * another package. If someone adds a twelfth kind to `lib/sources/types.ts` and not here,
+ * the write is rejected loudly by `connectors_kind_check` at seed time rather than storing a
+ * value the ops board cannot group. `db/schema.test.ts` asserts the two lists are equal, so
+ * the drift is caught before it reaches a database at all.
+ */
+export const SOURCE_KINDS = [
+  'aircraft',
+  'vessels',
+  'cameras',
+  'earthquakes',
+  'wildfires',
+  'weather',
+  'satellites',
+  'disasters',
+  'publicSafety',
+  'radio',
+  'infrastructure',
+] as const
+export type SourceKind = (typeof SOURCE_KINDS)[number]
+
+/**
+ * One registry, not two. ADR 0024.
+ *
+ * `connectors` was designed in v1 for the two Live surfaces (`flights`, `cameras`); v2 adds
+ * a dozen map sources with exactly the same needs — a recorded legal basis, an attribution
+ * string, a TTL, a quota envelope, a kill-switch and a verification date. They are the same
+ * concept and share this table. The alternative — a parallel `sources` table — would have
+ * needed either a second audit log or a polymorphic FK on `connector_requests`, and would
+ * have given an operator two places to look for a kill-switch during an incident.
+ *
+ * `flights` IS DEPRECATED AND MEANS `aircraft`. It is retained only because the v1 value is
+ * live in seeded data and in `lib/connectors/flights.ts`, `db/seed.ts` and
+ * `app/(public)/live/page.tsx`, which this file does not own. Two spellings for one data
+ * kind is exactly the conflation this schema rejects elsewhere, so it is debt, recorded as
+ * such: the coordinated rename is in ADR 0024 §Consequences and belongs in migration 0007.
+ * **Do not write `flights` to a new row.**
+ */
+export const CONNECTOR_KINDS = [...SOURCE_KINDS, 'flights'] as const
 export type ConnectorKind = (typeof CONNECTOR_KINDS)[number]
+
+/**
+ * How a source is polled, which is the difference between an upstream call rate that is
+ * constant and one that scales with the number of people looking. ADR 0021 named the fix and
+ * deferred it; this column is the half of it that is data rather than code.
+ *
+ *   `onDemand` — fetched in the request path, cached per source. The upstream call rate is
+ *                bounded by the TTL but the *shape* of the traffic follows our readers.
+ *   `worker`   — the worker container polls once, globally, on `cacheTtlSeconds`, and every
+ *                viewport is served by filtering that one payload server-side. The upstream
+ *                sees exactly one caller at one fixed rate, whether there is one reader or
+ *                three hundred.
+ *
+ * The quota columns mean different things in the two modes and must not be read as if they
+ * meant the same. Under `onDemand`, `globalCeiling` is the number of calls readers may
+ * collectively cause; under `worker` it is a ceiling on the worker alone, and `perUserQuota`
+ * governs nothing outbound at all — it is only a request-path limit on our own API.
+ *
+ * Defaults to `onDemand`, which is what every source does today. A source is promoted to
+ * `worker` by an operator, deliberately, when the worker is actually running — not by
+ * inheriting a default from a migration.
+ */
+export const POLL_MODES = ['onDemand', 'worker'] as const
+export type PollMode = (typeof POLL_MODES)[number]
 
 /**
  * Outcome of one outbound call. `quotaDenied`, `rateLimited` and `disabled` are recorded even
@@ -671,6 +755,144 @@ export const notes = pgTable(
   ],
 )
 
+/**
+ * A live map feature, as it was when a user saved it into a case file. ADR 0025.
+ *
+ * ## Why this table exists when there is no `cached_features` table
+ *
+ * ADR 0022 refuses to persist the live layers: an aircraft position from six hours ago is
+ * not something this product claims to keep, and a durable table of them is the aircraft
+ * position table the block comment below `reviews` forbids on sight. This table is the one
+ * exception, and it is an exception for a reason that does not generalise: **the user asked
+ * for it.** A feature saved into a workspace is the user's own case material, the same
+ * category as a `note`, and it must survive the upstream forgetting it — which upstreams do,
+ * within seconds. Nothing here is written unless a signed-in person clicked save.
+ *
+ * The distinction is the same one product-brief §3.2 constraint 3 draws: we are not the
+ * controller of a dossier we assembled, we are the host of a case file its owner assembled.
+ * Everything here cascades from `users`, so a deleted account takes it with it.
+ *
+ * ## The snapshot is complete, and it is immutable
+ *
+ * `workspace_items` snapshots a `title` and keeps an FK for the rest (ADR 0008). That is not
+ * available here: there is no local row to point at and never will be, because the referent
+ * is one observation an upstream published once. So every field the export and the feature
+ * panel render is on this row, including the attribution and licence owed at save time — a
+ * saved feature rendered in an exported case file still owes its credit, and the connector
+ * row it came from may have been edited or deleted by then.
+ *
+ * There is a `createdAt` and deliberately **no `updatedAt`**: a record of what an upstream
+ * said at 14:32 has no correct edit. The user's changing view of it belongs in a `note`.
+ *
+ * ## One save per feature per workspace, and no track history
+ *
+ * `workspace_feature_snapshots_unique_idx` allows a feature to be saved into a workspace
+ * once. Re-saving is a no-op that reports "already saved". The rejected alternative was to
+ * let a user accumulate positions for the same aircraft over time, which is a flight-track
+ * table assembled one click at a time — the thing the Live block comment forbids, arrived at
+ * by a route that felt like a feature. A user who needs a sequence of observations writes
+ * timestamped notes, which is what `notes` is for.
+ *
+ * ## `featureRef` is deliberately not indexed on its own
+ *
+ * Same reasoning as the absent index on `connector_requests.actor_key`. A standalone index
+ * would make "every workspace that saved this aircraft" a fast query across users, which is
+ * a surveillance affordance this product has no use for. The leading column of every index
+ * here is a workspace or a user.
+ */
+export const workspaceFeatureSnapshots = pgTable(
+  'workspace_feature_snapshots',
+  {
+    /** PK *and* FK: exactly one snapshot per `mapFeature` item, enforced structurally. */
+    workspaceItemId: uuid('workspace_item_id')
+      .primaryKey()
+      .references(() => workspaceItems.id, { onDelete: 'cascade' }),
+    /** Denormalised, as on `workspace_items` and `notes`, so ownership is not a join. */
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspaces.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+
+    /**
+     * The adapter slug (`SourceAdapter.slug`), as text and deliberately **not** an FK to
+     * `connectors`. A source we retire, or a registry row an operator deletes, must not take
+     * a user's saved evidence with it — the same reasoning that makes `workspaceItems.toolId`
+     * `on delete set null` with the name kept alongside it. ADR 0008.
+     */
+    sourceSlug: text('source_slug').notNull(),
+    /** The source's display name at save time, so the export reads correctly without a join. */
+    sourceName: text('source_name').notNull(),
+    sourceKind: text('source_kind', { enum: SOURCE_KINDS }).notNull(),
+
+    /**
+     * `SourceFeature.id` — stable within a source across polls. Used only to recognise a
+     * re-save within the same workspace. Never joined on, never indexed alone.
+     */
+    featureRef: text('feature_ref').notNull(),
+
+    /**
+     * Plain `double precision`, not PostGIS. ADR 0022: there is no spatial predicate anywhere
+     * in this product. The only query over this table is "the features in this workspace",
+     * and the map draws them from a list of at most a few hundred points. `cameras` already
+     * stores coordinates this way for the same reason.
+     */
+    latitude: doublePrecision('latitude').notNull(),
+    longitude: doublePrecision('longitude').notNull(),
+    /** Metres, where the source published it. */
+    altitudeMetres: doublePrecision('altitude_metres'),
+
+    /**
+     * When the **upstream** observed this, not when we cached it and not when the user
+     * clicked save. It is the whole value of the row: a saved feature is a claim about a
+     * moment, and a moment we recorded from our own clock would be a different claim.
+     */
+    observedAt: timestamptz('observed_at').notNull(),
+
+    /** Where a reader gets back to the origin, when the source publishes a per-feature URL. */
+    sourceUrl: text('source_url'),
+
+    /**
+     * The credit owed for this data, captured at save time. Not nullable: several of these
+     * licences — ODbL, CC BY, the TfL terms — make attribution a condition of use, so a
+     * feature saved without its credit is a licence breach waiting to be exported. The same
+     * fail-closed posture as `connectors_attribution_check`.
+     */
+    attribution: text('attribution').notNull(),
+    licence: text('licence').notNull(),
+
+    /**
+     * `SourceFeature.properties` as stored — the adapter-specific detail the feature panel
+     * and the export render. `jsonb` because the shape is genuinely per-source and modelling
+     * eleven source kinds as columns would be eleven mostly-null column sets. A CHECK keeps
+     * it an object rather than a bare scalar or array.
+     */
+    properties: jsonb('properties').notNull().default({}),
+
+    /** Set once. There is no `updatedAt` — see the block comment. */
+    createdAt: timestamptz('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('workspace_feature_snapshots_workspace_idx').on(t.workspaceId, t.observedAt.desc()),
+    index('workspace_feature_snapshots_user_id_idx').on(t.userId),
+    /** A feature is saved into a workspace at most once. */
+    uniqueIndex('workspace_feature_snapshots_unique_idx').on(
+      t.workspaceId,
+      t.sourceSlug,
+      t.featureRef,
+    ),
+
+    check('workspace_feature_snapshots_source_kind_check', oneOf('source_kind', SOURCE_KINDS)),
+    check('workspace_feature_snapshots_latitude_check', sql`latitude between -90 and 90`),
+    check('workspace_feature_snapshots_longitude_check', sql`longitude between -180 and 180`),
+    check('workspace_feature_snapshots_feature_ref_check', sql`length(feature_ref) > 0`),
+    check('workspace_feature_snapshots_source_slug_check', sql`length(source_slug) > 0`),
+    /** A bare scalar or array here would break every reader of `properties`. */
+    check('workspace_feature_snapshots_properties_check', sql`jsonb_typeof(properties) = 'object'`),
+  ],
+)
+
 /* ================================================================== *
  * Reviews — designed, NOT exposed in v1. See data-model.md §8 and ADR 0010.
  * ================================================================== */
@@ -723,6 +945,10 @@ export const reviews = pgTable(
  *     string, no parameters, no bounding box, no camera id, no response body. The audit log
  *     records that a call happened, what it cost and how it ended. Never its content.
  *   - Any raw actor identifier anywhere in this subtree. See `connectorRequests.actorKey`.
+ *   - Any durable store of live map features — a `cached_features` table, a "layer cache"
+ *     table, a materialised view of the last poll. ADR 0022. Renaming the aircraft position
+ *     table to `cached_features` and giving it a `kind` column does not make it a different
+ *     table. The live cache is Redis, it expires, and that is the product's claim about it.
  *
  * The absence of these tables is the design, not an omission to be filled in later.
  * ================================================================== */
@@ -783,6 +1009,12 @@ export const connectors = pgTable(
     /** How long past the TTL we keep serving, labelled stale, before the degraded state. */
     staleWhileRevalidateSeconds: integer('stale_while_revalidate_seconds').notNull(),
 
+    /**
+     * Whether the worker polls this source once for everyone, or the request path fetches it.
+     * See `POLL_MODES`. Added in migration 0006; ADR 0021's deferred fan-out, as data.
+     */
+    pollMode: text('poll_mode', { enum: POLL_MODES }).notNull().default('onDemand'),
+
     /** The operator kill-switch. False means: make no outbound call, serve the degraded state. */
     enabled: boolean('enabled').notNull().default(false),
     status: text('status', { enum: PUBLICATION_STATUSES }).notNull().default('draft'),
@@ -804,6 +1036,7 @@ export const connectors = pgTable(
 
     check('connectors_kind_check', oneOf('kind', CONNECTOR_KINDS)),
     check('connectors_status_check', oneOf('status', PUBLICATION_STATUSES)),
+    check('connectors_poll_mode_check', oneOf('poll_mode', POLL_MODES)),
     /**
      * ADR 0011 rule 1, enforced by the database rather than by remembering: a connector
      * with no recorded licence, no legal basis and no verification date cannot be published.
@@ -1071,6 +1304,7 @@ export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
   playbook: one(playbooks, { fields: [workspaces.playbookId], references: [playbooks.id] }),
   items: many(workspaceItems),
   notes: many(notes),
+  featureSnapshots: many(workspaceFeatureSnapshots),
 }))
 
 export const workspaceItemsRelations = relations(workspaceItems, ({ one, many }) => ({
@@ -1082,7 +1316,27 @@ export const workspaceItemsRelations = relations(workspaceItems, ({ one, many })
   tool: one(tools, { fields: [workspaceItems.toolId], references: [tools.id] }),
   step: one(playbookSteps, { fields: [workspaceItems.stepId], references: [playbookSteps.id] }),
   notes: many(notes),
+  /** Present exactly when `kind = 'mapFeature'`. ADR 0025. */
+  featureSnapshot: one(workspaceFeatureSnapshots, {
+    fields: [workspaceItems.id],
+    references: [workspaceFeatureSnapshots.workspaceItemId],
+  }),
 }))
+
+export const workspaceFeatureSnapshotsRelations = relations(
+  workspaceFeatureSnapshots,
+  ({ one }) => ({
+    item: one(workspaceItems, {
+      fields: [workspaceFeatureSnapshots.workspaceItemId],
+      references: [workspaceItems.id],
+    }),
+    workspace: one(workspaces, {
+      fields: [workspaceFeatureSnapshots.workspaceId],
+      references: [workspaces.id],
+    }),
+    user: one(users, { fields: [workspaceFeatureSnapshots.userId], references: [users.id] }),
+  }),
+)
 
 export const notesRelations = relations(notes, ({ one }) => ({
   workspace: one(workspaces, { fields: [notes.workspaceId], references: [workspaces.id] }),
@@ -1148,6 +1402,8 @@ export type WorkspaceItem = typeof workspaceItems.$inferSelect
 export type NewWorkspaceItem = typeof workspaceItems.$inferInsert
 export type Note = typeof notes.$inferSelect
 export type NewNote = typeof notes.$inferInsert
+export type WorkspaceFeatureSnapshot = typeof workspaceFeatureSnapshots.$inferSelect
+export type NewWorkspaceFeatureSnapshot = typeof workspaceFeatureSnapshots.$inferInsert
 export type Review = typeof reviews.$inferSelect
 export type NewReview = typeof reviews.$inferInsert
 export type RateLimit = typeof rateLimits.$inferSelect

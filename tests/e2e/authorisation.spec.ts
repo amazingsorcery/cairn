@@ -134,13 +134,19 @@ test.describe("a signed-in non-owner", () => {
     let targetId = process.env[OWNER_WORKSPACE_PATH_ENV] ?? null;
     if (!targetId) {
       await ownerPage.goto("/workspaces");
-      // The list streams behind `loading.tsx`, so wait for it to resolve one way or the other
-      // before counting — a bare `count()` does not auto-wait and would read "no cases" from
-      // the skeleton, creating a fresh row on every run.
-      const probe = ownerPage.getByRole("link", { name: OWNER_PROBE_CASE, exact: true });
+      /*
+       * Wait for the list to RESOLVE before looking in it. Two traps here, both of which bit:
+       *   · the list streams behind `loading.tsx`, and `count()` does not auto-wait, so a
+       *     bare count reads "no cases" off the skeleton and creates a fresh row every run;
+       *   · waiting for "the probe, or the empty state" is not exhaustive — the common case
+       *     is *other* cases existing and the probe not, and that wait can only time out.
+       * So: wait for any case link or the empty state, THEN look for the probe.
+       */
+      const anyCase = ownerPage.locator('a[href^="/workspaces/"]');
       const empty = ownerPage.getByRole("heading", { name: "No cases yet" });
-      await expect(probe.first().or(empty).first()).toBeVisible();
+      await expect(anyCase.first().or(empty).first()).toBeVisible();
 
+      const probe = ownerPage.getByRole("link", { name: OWNER_PROBE_CASE, exact: true });
       if ((await probe.count()) > 0) {
         const href = await probe.first().getAttribute("href");
         targetId = href?.match(/^\/workspaces\/([0-9a-f-]{36})$/)?.[1] ?? null;

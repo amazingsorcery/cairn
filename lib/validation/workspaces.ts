@@ -53,12 +53,39 @@ export const workspaceIdSchema = z.object({ id: uuidSchema });
  * or `playbook_steps.title` at insert (ADR 0008), because it is a record of what the user
  * saw — a client-supplied title would be a record of what the client claimed.
  */
+/**
+ * What is copied out of a live layer when a reader saves a feature into a case.
+ *
+ * Everything needed to render the item months later, including the attribution and licence,
+ * because the obligation to credit the source does not lapse when the source forgets the
+ * feature — and by then we cannot go back and ask what it was.
+ */
+export const savedFeatureSchema = z.object({
+  sourceSlug: z.string().min(1).max(64),
+  sourceName: z.string().min(1).max(160),
+  sourceKind: z.string().min(1).max(32),
+  /** The upstream's own id, so a reader can go back and look it up. */
+  featureRef: z.string().min(1).max(256),
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+  altitudeMetres: z.number().finite().nullable().default(null),
+  /** When the upstream observed it — never when we saved it. */
+  observedAt: z.coerce.date(),
+  sourceUrl: z.string().url().nullable().default(null),
+  attribution: z.string().min(1),
+  licence: z.string().min(1),
+  properties: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).default({}),
+});
+export type SavedFeatureInput = z.infer<typeof savedFeatureSchema>;
+
 export const addWorkspaceItemSchema = z
   .object({
     workspaceId: uuidSchema,
     kind: workspaceItemKindSchema,
     toolId: uuidSchema.nullable().default(null),
     stepId: uuidSchema.nullable().default(null),
+    /** Required exactly when `kind = "mapFeature"`. */
+    feature: savedFeatureSchema.nullable().default(null),
   })
   .superRefine((item, ctx) => {
     if (item.kind === "tool") {
@@ -91,6 +118,37 @@ export const addWorkspaceItemSchema = z
           code: z.ZodIssueCode.custom,
           path: ["toolId"],
           message: "A checklist entry must not also reference a tool",
+        });
+      }
+    }
+
+    // `mapFeature` is the kind with nothing to point at. Its referent is a position an
+    // upstream published for a moment — no row in our database owns it, and by the time the
+    // user opens the case that aircraft has moved and that wildfire may be out. So it carries
+    // neither FK, and everything worth keeping is copied into `workspace_feature_snapshots`
+    // at save time. A dangling reference to something ephemeral would be worse than a
+    // snapshot: it would silently become wrong rather than visibly become old.
+    if (item.kind === "mapFeature") {
+      if (item.toolId) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["toolId"],
+          message: "A saved map feature must not reference a tool",
+        });
+      }
+      if (item.stepId) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["stepId"],
+          message: "A saved map feature must not reference a playbook step",
+        });
+      }
+      if (!item.feature) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["feature"],
+          message:
+            "A saved map feature must carry its snapshot: the live source will not have it later",
         });
       }
     }

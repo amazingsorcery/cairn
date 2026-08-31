@@ -34,6 +34,8 @@ const connector: Connector = {
   timeoutMs: 5000,
   cacheTtlSeconds: 15,
   staleWhileRevalidateSeconds: 60,
+  /* Migration 0006 / ADR 0021: the flights connector is still fetched in the request path. */
+  pollMode: "onDemand",
   enabled: true,
   status: "published",
   lastCheckedAt: new Date("2026-08-31T00:00:00Z"),

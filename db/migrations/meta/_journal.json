@@ -43,6 +43,13 @@
       "when": 1788140591290,
       "tag": "0005_connector_rate_limited_outcome",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788140591292,
+      "tag": "0006_map_registry_and_saved_features",
+      "breakpoints": true
     }
   ]
 }

@@ -94,7 +94,7 @@ test.describe("keyboard-only traversal of the vertical slice", () => {
     let stopsToFirstEntry = -1;
 
     // Bounded, and generously. Since `fbc6e43` put the results first in DOM order this
-    // reaches an entry in ~14 presses; before that it took 362. The bound stays high so that
+    // reaches an entry in ~14 presses; before that it took 366. The bound stays high so that
     // a regression reports the number it actually took rather than dying at the limit — the
     // annotation below is the measurement, and the test after this one is where the claim
     // about an acceptable number is made.
@@ -161,7 +161,7 @@ test.describe("keyboard-only traversal of the vertical slice", () => {
    * DEFECT THIS CATCHES: no way to bypass the facet panel — WCAG 2.4.1, Bypass Blocks.
    *
    * THIS TEST FOUND A REAL DEFECT AND IS NOW A REGRESSION GUARD. When it was written,
-   * `/directory` put **362** focusable elements before the first catalogue entry: the header,
+   * `/directory` put **366** focusable elements before the first catalogue entry: the header,
    * the toolbar, and a facet sidebar whose tag group alone held 297 checkboxes. The one skip
    * link targeted `<main>`, and `<main>` *contains* the panel, so there was no escape. Every
    * one of those stops had a correct focus ring, which is exactly why no focus-indicator test
@@ -183,7 +183,7 @@ test.describe("keyboard-only traversal of the vertical slice", () => {
    * trust for an exact count.
    *
    * The threshold is a judgement: 60 stops is already a long traverse, and the measured value
-   * before the fix was 362.
+   * before the fix was 366.
    */
   test("the catalogue is reachable without tabbing through every facet", async ({ page }) => {
     await page.goto("/directory");
@@ -251,5 +251,76 @@ test.describe("keyboard-only traversal of the vertical slice", () => {
 
     await page.keyboard.press("Escape");
     await expect(sheet).toBeHidden();
+  });
+});
+
+test.describe("document outline — the mobile navigation", () => {
+  /**
+   * DEFECT THIS CATCHES: a phantom "menu" heading in the document outline.
+   *
+   * **This is integration finding I-07, and the finding as written does not reproduce.** I-07
+   * says the mobile navigation's `SheetTitle` "contributes an `<h2>menu` to the document
+   * outline on every page, including at desktop width where the control is not visible".
+   * Measured against this build, it does not: `<SheetTitle>menu</SheetTitle>` sits inside
+   * `<SheetContent>`, and Radix mounts dialog content only while the dialog is open. With
+   * the sheet closed there is **no** "menu" heading at either width; with it open there is
+   * exactly one, and it is inside the dialog, where a title is what Radix requires and what
+   * a dialog is supposed to have.
+   *
+   * So the test asserts the behaviour that is actually correct, and it is a real guard rather
+   * than a formality — two plausible edits bring the phantom back:
+   *   · `forceMount` on `SheetContent`, which mounts the title on every page at every width;
+   *   · moving the title out of the dialog to "fix" a Radix warning, which detaches it from
+   *     the thing it names and leaves it in the page outline.
+   *
+   * The heading outline is the table of contents for anyone navigating by heading, so a
+   * phantom entry at the top of every page is not cosmetic — which is why I-07 was right to
+   * be filed, and why this is worth guarding even though the defect is not present.
+   *
+   * Asserted against the live DOM, not the served HTML: whether Radix has mounted the portal
+   * is precisely the question, and only a browser can answer it.
+   */
+  test("no 'menu' heading while the navigation sheet is closed", async ({ page }) => {
+    await page.goto("/directory");
+    await expect(page.getByRole("heading", { level: 1, name: "Directory" })).toBeVisible();
+
+    await expect(
+      page.getByRole("heading", { name: "menu", exact: true }),
+      "I-07: a 'menu' heading in the outline of a page whose menu is not open",
+    ).toHaveCount(0);
+  });
+
+  /**
+   * DEFECT THIS CATCHES: the sheet losing its accessible name, or gaining one that is not
+   * scoped to it. Radix names the dialog from its title; without it the sheet announces as an
+   * unnamed dialog, and a reader who opens it is told nothing about what they opened.
+   */
+  test("the open sheet is titled, and the title belongs to the dialog", async ({
+    page,
+    isMobile,
+  }) => {
+    // `test.skip(condition, reason)` — the callback form is only valid at describe level, and
+    // inside a test body it is a truthy function, i.e. a test that always skips.
+    test.skip(isMobile !== true, "the navigation sheet only exists below md:");
+
+    await page.goto("/directory");
+    const trigger = page.getByRole("button", { name: "open menu" });
+    await expect(trigger).toBeVisible();
+    await trigger.click();
+
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toBeVisible();
+
+    const title = page.getByRole("heading", { name: "menu", exact: true });
+    await expect(title, "exactly one, not one per page render").toHaveCount(1);
+    await expect(
+      dialog.getByRole("heading", { name: "menu", exact: true }),
+      "the heading must be inside the dialog it names, not loose in the page outline",
+    ).toHaveCount(1);
+
+    // And it goes away again, rather than being left mounted in the outline.
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
+    await expect(title).toHaveCount(0);
   });
 });

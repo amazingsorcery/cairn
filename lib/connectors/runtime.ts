@@ -3,6 +3,7 @@ import { logger } from "@/lib/logger";
 import { getLiveConnector } from "@/lib/queries/live";
 import { consume } from "@/lib/rate-limit";
 import { recordConnectorRequest } from "./audit";
+import { e2eOverride } from "./e2e-override";
 import type { ActorIdentity, ConnectorDriver, ConnectorEnvelope } from "./types";
 
 /**
@@ -198,6 +199,39 @@ export async function runConnector<Params, Result>(
   /* 1. Registry, kill-switch and legal basis ------------------------- */
 
   const connector = options.connector ?? (await getLiveConnector(driver.kind));
+
+  /*
+   * TEST-ONLY STATE OVERRIDE - see `./e2e-override.ts`.
+   *
+   * ABOVE the "no live connector" return on purpose. The registry read is a database query,
+   * not an outbound call, so doing it first costs nothing and lets a forced state carry the
+   * operator's real attribution when there is a row. But the override must still fire when
+   * there is NO live row - which is the normal state of `adsb-lol`, seeded draft and
+   * disabled so it fails closed - because otherwise the hook is unusable in exactly the
+   * situation it was written for.
+   *
+   * A forced state stands in for the WHOLE call: no cache read, no quota consumed, no audit
+   * row, and above all no outbound request. It is disabled unconditionally when
+   * NODE_ENV === "production", which `e2eOverride` checks before it reads any variable.
+   *
+   * It exists because /live/flights calls a third party from OUR server, so a browser test
+   * cannot intercept it. Without it the four degraded states of ADR 0011 rule 5 were only
+   * observable by luck, and architecture HANDOFF section 11 assertion 21 - "the stale and
+   * unavailable states are reachable in tests, not just theoretically implemented" - could
+   * not be met at all.
+   */
+  const forcedState = e2eOverride<Result>(
+    connector?.slug ?? driver.slug,
+    connector?.attribution ?? null,
+    now,
+  );
+  if (forcedState) {
+    logger.info(
+      { scope: "connector.run", slug: forcedState.connectorSlug, reason: forcedState.reason },
+      "State forced by E2E_CONNECTOR_STATE; no outbound call made",
+    );
+    return forcedState;
+  }
 
   if (!connector) {
     // No published, enabled connector with a recorded legal basis. This is a decision
