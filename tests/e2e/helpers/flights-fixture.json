@@ -1,4 +1,20 @@
 {
+  "_provenance": {
+    "note": "Derived from lib/sources/__fixtures__/adsb-lol.json, a real captured api.adsb.lol response. NOT invented. Field values, including the awkward ones, are the upstream's.",
+    "derivedFrom": "lib/sources/__fixtures__/adsb-lol.json",
+    "transformation": "The same mapping trim() applies in lib/connectors/flights.ts, so this is the driver's Result shape (FlightsPayload) rather than the raw upstream envelope.",
+    "edgeCasesKeptDeliberately": [
+      "alt_baro arrives as the STRING \"ground\", not a number — becomes onGround:true, altitudeFt:null",
+      "aircraft with no `flight` field — becomes callsign:null, so the table must render a row with no callsign",
+      "fractional groundSpeedKt and positionAgeSeconds — the upstream does not send integers"
+    ],
+    "counts": {
+      "aircraft": 8,
+      "onGround": 2,
+      "withoutCallsign": 1,
+      "withoutAltitude": 2
+    }
+  },
   "adsb-lol": {
     "ageSeconds": 3,
     "data": {

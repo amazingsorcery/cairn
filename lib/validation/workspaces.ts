@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { markdownSchema, uuidSchema } from "./common";
-import { workspaceItemKindSchema, workspaceStatusSchema } from "./vocabulary";
+import { sourceKindSchema, workspaceItemKindSchema, workspaceStatusSchema } from "./vocabulary";
 
 /**
  * Write-side validation for `workspaces`, `workspace_items` and `notes`.
@@ -63,7 +63,7 @@ export const workspaceIdSchema = z.object({ id: uuidSchema });
 export const savedFeatureSchema = z.object({
   sourceSlug: z.string().min(1).max(64),
   sourceName: z.string().min(1).max(160),
-  sourceKind: z.string().min(1).max(32),
+  sourceKind: sourceKindSchema,
   /** The upstream's own id, so a reader can go back and look it up. */
   featureRef: z.string().min(1).max(256),
   latitude: z.number().min(-90).max(90),
@@ -75,6 +75,22 @@ export const savedFeatureSchema = z.object({
   attribution: z.string().min(1),
   licence: z.string().min(1),
   properties: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).default({}),
+  /**
+   * Carried into the snapshot so the caveat survives the boundary.
+   *
+   * Without this a reader could save an NWS alert and read a precise-looking coordinate in a
+   * PDF export months later, with nothing left to say it is an administrative centroid
+   * possibly tens of kilometres from the weather. The map renders that caveat from the live
+   * feature; an export never touches the map. The honest place for it is on the saved record.
+   */
+  precision: z
+    .object({
+      label: z.string().min(1).max(80),
+      note: z.string().min(1).max(400),
+      approximateRadiusMetres: z.number().positive().finite().optional(),
+    })
+    .nullable()
+    .default(null),
 });
 export type SavedFeatureInput = z.infer<typeof savedFeatureSchema>;
 

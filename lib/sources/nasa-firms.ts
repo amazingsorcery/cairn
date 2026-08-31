@@ -343,6 +343,11 @@ export const nasaFirms: SourceAdapter<WildfireFeature> = {
   },
   /** Well inside 5000 transactions / 10 minutes, and matched to satellite revisit cadence. */
   ttlSeconds: 900,
+  /**
+   * One hour against a 15-minute TTL. FIRMS is satellite-pass driven, so the underlying data
+   * genuinely does not change between passes and staleness costs little.
+   */
+  staleWhileRevalidateSeconds: 3600,
   apiKeyEnvVar: FIRMS_API_KEY_ENV_VAR,
   responseSchema: firmsResponseSchema,
   normalise: normaliseFirms,

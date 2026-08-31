@@ -224,6 +224,11 @@ export const trafficCameras: SourceAdapter<CameraFeature> = {
   },
   /** Product-brief §2b: webcam metadata ~1h. Nothing is fetched, so this is a re-read floor. */
   ttlSeconds: 3600,
+  /**
+   * A day. This is a registry of which cameras exist, not their imagery — the imagery is
+   * fetched client-side at view time and is never ours to cache.
+   */
+  staleWhileRevalidateSeconds: 86400,
   responseSchema: cameraRegistrySchema,
   normalise: normaliseCameras,
 

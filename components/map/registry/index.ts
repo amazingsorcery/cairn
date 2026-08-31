@@ -26,7 +26,7 @@ export type {
  * THE LAYER REGISTRY.
  *
  * Adding a source to the map is: write one file in this directory, add it to the array
- * below, and register its adapter in `app/(public)/map/adapters.ts`. **No component in
+ * below, and make sure `lib/sources/index.ts` exports an adapter whose slug matches `sourceSlug`. **No component in
  * `components/map/` changes.** That is the whole design, and `registry.test.ts` enforces it
  * by failing if any component outside this directory contains a layer id.
  *

@@ -35,6 +35,10 @@ export const devStressSource: SourceAdapter<SourceFeature> = {
     licence: "n/a — generated locally",
   },
   ttlSeconds: 3600,
+  /**
+   * Development-only synthetic source; the value is arbitrary but must exist.
+   */
+  staleWhileRevalidateSeconds: 60,
   responseSchema: z.never(),
 
   normalise: () => generate(),

@@ -1,9 +1,14 @@
-# Production stack for a single 2-4 GB Ubuntu LTS VPS.
+# Production stack for a single 8 GB Ubuntu LTS VPS.
 #
-#   caddy -> the only service with published ports. Terminates TLS, sets security headers.
-#   web   -> Next.js standalone server. No published port; reachable only as web:3000.
-#   db    -> PostgreSQL 16 on a named volume, on an egress-less internal network.
+#   caddy   -> the only service with published ports. Terminates TLS, sets security headers.
+#   web     -> Next.js standalone server. No published port; reachable only as web:3000.
+#   worker  -> the pollers (ADR 0019). No published port, and Caddy has no route to it.
+#   db      -> PostgreSQL 16 on a named volume, on an egress-less internal network.
+#   redis   -> source cache, rate limiting and layer pub/sub. Cache only: no persistence.
 #   migrate -> one-shot, profile-gated. Never runs as part of `up`.
+#
+# Five services, up from v1's three. The two new ones are ADR 0019, and the VPS target moved
+# from 2-4 GB to 8 GB in the same decision.
 #
 # Usage:
 #   docker compose -f docker-compose.prod.yml up -d --build
@@ -11,13 +16,24 @@
 # In practice you run infra/deploy.sh, which does all of this in the right order with a
 # backup and a rollback path.
 #
-# Interpolation vs container environment — these are two different mechanisms and mixing
+# NO POSTGIS, DELIBERATELY. product-brief section 5 locks "PostgreSQL 16 + PostGIS" and
+# ADR 0022 reverses it after the architect looked at what the map actually queries: there is
+# no spatial predicate anywhere in this product, no `cached_features` table, and the live
+# positions live in Redis and expire. Switching to `postgis/postgis:16-3.5` later is a
+# one-line image change on the SAME data volume (same major version, same PGDATA layout) --
+# but note that the postgis image's own initdb hook runs `CREATE EXTENSION postgis` on FIRST
+# BOOT, which would take the decision out of the migration's hands. That is the second reason
+# this stays `postgres:16-bookworm`: ADR 0022 says the extension is created by a migration if
+# it is ever created at all, and an image that creates it for you cannot honour that.
+# See docs/deploy/RUNBOOK.md section 19 for the switch procedure in both directions.
+#
+# Interpolation vs container environment -- these are two different mechanisms and mixing
 # them up is the most common way this file breaks:
 #   * `${VAR}` below is substituted by the *compose CLI* from the shell and from the file
 #     literally named `.env` sitting next to this file. It is what makes `${DOMAIN}` work.
 #   * `env_file:` injects variables into the *container*. It does not affect `${...}`.
 # Both read the same `.env`, which is why one file is enough. `${VAR:?message}` makes
-# compose refuse to start rather than silently substitute an empty string — a missing
+# compose refuse to start rather than silently substitute an empty string -- a missing
 # POSTGRES_PASSWORD would otherwise create a trust-auth database.
 
 name: ${COMPOSE_PROJECT_NAME:-app}
@@ -30,7 +46,13 @@ name: ${COMPOSE_PROJECT_NAME:-app}
 # crash-looping container writing a stack trace 20 times a second will fill a 40 GB VPS
 # disk in days, at which point Postgres refuses writes, Caddy cannot renew certificates,
 # and the site goes down in a way that looks like everything is broken at once.
-# 10 MB x 3 files x 4 services = 120 MB worst case. Applied to EVERY service.
+# 10 MB x 3 files x 6 services = 180 MB worst case. Applied to EVERY service.
+#
+# v2 note: `worker` is the service most likely to be loud, because it logs one line per poll
+# outcome per source (HANDOFF section 14) -- six sources, the fastest on a 30 s TTL, so
+# roughly 17 lines a minute at steady state and far more when an upstream starts flapping.
+# That is the intended behaviour ("a poller that dies silently is worse than one that crashes
+# loudly") and it is exactly why the rotation limit is applied to it too.
 x-logging: &default-logging
   driver: json-file
   options:
@@ -65,32 +87,35 @@ services:
       TZ: ${TZ:-UTC}
       PGTZ: ${TZ:-UTC}
 
-    # Tuned for a ~768 MB ceiling on a 2 GB box. Rationale for each value:
-    #   shared_buffers 192MB      ~25% of the container limit, the standard starting point.
-    #   effective_cache_size 512MB planner hint only, no allocation. Assumes the page cache
-    #                              can hold roughly this much given the other containers.
-    #   work_mem 4MB              per sort/hash node, and a single query can use several.
-    #                              30 connections x a few nodes is the real ceiling; 4 MB
+    # Retuned for a 2 GB container ceiling on an 8 GB box (v1 was 768 MB on a 2 GB box).
+    # Rationale for each value:
+    #   shared_buffers 512MB       ~25% of the container limit, the standard starting point.
+    #   effective_cache_size 1536MB planner hint only, no allocation. Assumes the page cache
+    #                              can hold roughly this much given the other five containers.
+    #   work_mem 8MB               per sort/hash node, and a single query can use several.
+    #                              60 connections x a few nodes is the real ceiling; 8 MB
     #                              keeps the worst case well inside the limit.
-    #   maintenance_work_mem 64MB used by VACUUM, CREATE INDEX and pg_restore.
-    #   max_connections 30        one web container with a modest pg Pool, plus migrations
-    #                              and pg_dump. 100 (the default) is a memory reservation
-    #                              this box cannot back.
+    #   maintenance_work_mem 128MB used by VACUUM, CREATE INDEX and pg_restore.
+    #   max_connections 60         v1 had 30 for one web container. v2 adds `worker`, which
+    #                              opens its own pool to read the connector registry on every
+    #                              poll (ADR 0024), plus migrations and pg_dump. 60 is two
+    #                              pools of 20 with headroom, not the default 100 -- which is
+    #                              a memory reservation even this box should not make.
     #   max_parallel_workers_per_gather 0
     #                              parallel query multiplies work_mem and hammers /dev/shm
     #                              for no benefit at this data size. Boring beats clever.
     command:
       - postgres
       - -c
-      - shared_buffers=192MB
+      - shared_buffers=512MB
       - -c
-      - effective_cache_size=512MB
+      - effective_cache_size=1536MB
       - -c
-      - work_mem=4MB
+      - work_mem=8MB
       - -c
-      - maintenance_work_mem=64MB
+      - maintenance_work_mem=128MB
       - -c
-      - max_connections=30
+      - max_connections=60
       - -c
       - max_parallel_workers_per_gather=0
       - -c
@@ -104,13 +129,13 @@ services:
       - db_data:/var/lib/postgresql/data
 
     # Postgres mounts /dev/shm for parallel workers and large hash joins. Docker's default
-    # is 64 MB, which produces "could not resize shared memory segment" under load. 256 MB
+    # is 64 MB, which produces "could not resize shared memory segment" under load. 512 MB
     # is generous for this workload and is counted against mem_limit below.
-    shm_size: 256mb
+    shm_size: 512mb
 
-    mem_limit: 768m
-    mem_reservation: 256m
-    cpus: 1.5
+    mem_limit: 2g
+    mem_reservation: 512m
+    cpus: 2.0
 
     # pg_isready, not a TCP probe: the port is open long before the cluster finishes
     # initdb on first boot, and `web` waiting on a merely-open port would race the schema.
@@ -126,6 +151,126 @@ services:
       retries: 6
       start_period: 45s
 
+    networks:
+      - backend
+
+  # -------------------------------------------------------------------------------------
+  # redis -- source cache, rate limiting, layer pub/sub (ADR 0019, ADR 0022, ADR 0023)
+  # -------------------------------------------------------------------------------------
+  # THIS IS A CACHE, AND IT IS CONFIGURED AS ONE. Everything in it is derived data that can
+  # be re-fetched from an upstream, and ADR 0022 makes that a stated product property rather
+  # than an implementation detail: the map says how old each layer is precisely because it is
+  # not promising to remember it. So:
+  #
+  #   * NO PERSISTENCE. `--save ""` removes every RDB snapshot point and `--appendonly no`
+  #     keeps the AOF off. A cache that fsyncs is a slower cache, and on this box the fsync
+  #     would contend with Postgres -- the one process here whose durability actually matters
+  #     -- for the same disk. There is also no volume mounted below, so there is nowhere for
+  #     a snapshot to land even if one were somehow written.
+  #   * WHAT A RESTART COSTS, stated because "no persistence" hides it: every key is gone, so
+  #     the next tick re-fetches all six sources at once. That is six requests, once, spread
+  #     across six different upstreams -- well inside every one of their limits, including
+  #     adsb.lol's, which is the tightest at roughly 10 requests/minute (ADR 0021). The
+  #     thundering herd that would matter is one poll per *reader*, and that cannot happen:
+  #     the worker owns the poll and readers read the cache.
+  #   * NO PUBLISHED PORT, and `backend` only, which is `internal: true` -- so Redis has no
+  #     route to the internet and none from it. An unauthenticated Redis reachable from
+  #     outside is a remote-code-execution primitive via `CONFIG SET dir`; this one is
+  #     reachable from four containers on one host and nothing else. See REDIS_PASSWORD in
+  #     .env.example for the opt-in second layer and why it is off by default.
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    logging: *default-logging
+    <<: *default-hardening
+    cap_drop:
+      - ALL
+    init: true
+
+    # Run as the image's own unprivileged `redis` user from PID 1 rather than starting as
+    # root and letting the entrypoint gosu down to it. With no volume mounted there is
+    # nothing for the entrypoint's root phase to chown, so skipping it removes the need to
+    # grant back CAP_SETUID/CAP_SETGID -- which `cap_drop: [ALL]` above has just taken away.
+    # IF REDIS FAILS TO START with a permissions error on /data, remove this line and add
+    # `cap_add: [SETUID, SETGID]` instead; that is the image's own designed path.
+    user: redis
+
+    command:
+      - redis-server
+      # --- Persistence: off. See the block comment above. ---
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+
+      # --- Memory ceiling, and what happens at it ---
+      # 512 MB of an 8 GB box, inside a 768 MB container limit. The gap is not slack: Redis's
+      # own overhead (client output buffers, allocator fragmentation) sits OUTSIDE
+      # `maxmemory`, and a maxmemory equal to the container limit is how a cache gets
+      # OOM-killed by the kernel instead of evicting politely. Roughly 2:3 is the conventional
+      # ratio and it is the one used here.
+      #
+      # Sizing sanity check, from measured payloads (RUNBOOK section 18): the six layers
+      # together are on the order of a few hundred KB of JSON per cached viewport. 512 MB is
+      # not tight -- it is a ceiling that exists so a runaway key pattern cannot eat the box,
+      # not a budget the working set is expected to approach.
+      - --maxmemory
+      - ${REDIS_MAXMEMORY:-512mb}
+
+      # `allkeys-lru`, NOT the `noeviction` default and NOT `volatile-lru`.
+      #   * `noeviction` returns OOM errors on write once full. For a cache that is a
+      #     self-inflicted outage: the worker's polls start failing and every layer goes
+      #     stale, for a condition whose correct response is "forget the least useful key".
+      #   * `volatile-lru` only evicts keys that carry a TTL. It is the tempting choice, and
+      #     it is wrong here for a specific reason: the moment any code path writes a key
+      #     WITHOUT an expiry -- a heartbeat, a pub/sub bookkeeping key, a counter someone
+      #     forgot to EXPIRE -- those keys become permanently un-evictable and Redis starts
+      #     returning OOM again over memory it is not allowed to reclaim. `allkeys-lru`
+      #     cannot get into that state.
+      #   * THE COST, which must not be discovered later: under `allkeys-lru` ANY key can be
+      #     evicted, including one a caller assumed would still be there. Rate-limit counters
+      #     are the case that matters -- an evicted counter fails OPEN. ADR 0009 keeps the
+      #     authoritative limiter in Postgres and that must stay true while this policy is
+      #     `allkeys-lru`. Recorded as a blocking requirement in HANDOFF section 15.
+      - --maxmemory-policy
+      - allkeys-lru
+
+      # Free memory on a background thread rather than blocking the event loop. It matters
+      # most exactly when blocking is worst: while evicting under pressure.
+      - --lazyfree-lazy-eviction
+      - "yes"
+      - --lazyfree-lazy-expire
+      - "yes"
+
+      # ADR 0023 pushes layer updates over Redis pub/sub to the web container, which then
+      # fans them out over SSE. A subscriber that stops reading gets its output buffer capped
+      # and is disconnected rather than being allowed to grow Redis's memory without bound.
+      # These are Redis's own defaults, restated so that a future edit has to argue with them.
+      - --client-output-buffer-limit
+      - "pubsub 32mb 8mb 60"
+
+      - --tcp-keepalive
+      - "60"
+      - --loglevel
+      - notice
+
+    # `redis-cli ping` -> PONG. If REDIS_PASSWORD is ever set (it is empty by default), this
+    # command must become `redis-cli -a "$${REDIS_PASSWORD}" ping` or the healthcheck reports
+    # NOAUTH, the container never goes healthy, and `web` and `worker` never start at all.
+    # Called out because it is the exact trap that makes "just add a password" a 3 a.m.
+    # outage. RUNBOOK section 20 has the full procedure.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+    mem_limit: 768m
+    mem_reservation: 128m
+    cpus: 0.5
+
+    # No `volumes:` entry, on purpose. See the persistence note above.
     networks:
       - backend
 
@@ -148,7 +293,7 @@ services:
     # zombies. `init: true` inserts docker-init, giving clean `docker compose down`.
     init: true
 
-    # NOT `ports:`. Publishing 3000 here would bypass Caddy entirely — the app would be
+    # NOT `ports:`. Publishing 3000 here would bypass Caddy entirely -- the app would be
     # reachable over plain HTTP on the VPS's public IP with none of the security headers,
     # and UFW would not save you because Docker writes its own iptables rules ahead of
     # UFW's chain. The only correct exposure is through caddy.
@@ -163,6 +308,12 @@ services:
         # service_healthy, not service_started. The app opens a pool and runs its first
         # query within a second of boot; a merely-started Postgres will refuse it and the
         # container restart-loops until the DB happens to win the race.
+        condition: service_healthy
+      redis:
+        # `web` reads the source cache and subscribes to the layer pub/sub channel to serve
+        # SSE (ADR 0023). A missing Redis degrades rather than crashes --
+        # `lib/sources/cache.ts` treats a cache that is down as a cache miss -- but starting
+        # before it is up means the first readers get a cold, uncacheable map for no reason.
         condition: service_healthy
 
     # Repeated from the Dockerfile so that `docker compose ps` reports health even if the
@@ -181,13 +332,107 @@ services:
       retries: 3
       start_period: 45s
 
-    mem_limit: 768m
-    mem_reservation: 256m
-    cpus: 1.5
+    mem_limit: 2g
+    mem_reservation: 512m
+    cpus: 2.0
 
     networks:
-      - backend # to reach db
+      - backend # to reach db and redis
       - edge # to be reached by caddy, and for outbound SMTP / GitHub OAuth
+
+  # -------------------------------------------------------------------------------------
+  # worker -- the pollers (ADR 0019)
+  # -------------------------------------------------------------------------------------
+  # Six adapters on independent TTLs (30 s to 1 h), each writing its result into Redis under
+  # its own key and publishing a layer-update message that the web container turns into SSE
+  # (ADR 0023). The reason this is a separate container and not a background task inside
+  # `web` is one sentence from ADR 0019: a slow upstream must not occupy a request thread.
+  #
+  # THREE THINGS THIS SERVICE MUST BE, in the order they matter:
+  #
+  # 1. UNREACHABLE FROM OUTSIDE. No `ports:`. Caddy is on `edge` and this is not, so Caddy
+  #    cannot resolve `worker`, let alone route to it. The health endpoint on 9091 is bound
+  #    inside the container and published nowhere. Nothing in the Caddyfile refers to it.
+  # 2. STARTED ONLY AFTER db AND redis ARE HEALTHY. Not "started" -- healthy. A poller that
+  #    comes up against a Postgres still running initdb cannot read the connector registry
+  #    (ADR 0024) and so cannot know which sources are enabled; a poller that comes up
+  #    against a missing Redis writes its results nowhere. Both produce a container that is
+  #    running and useless, which is the state this design exists to make impossible.
+  # 3. LOUD WHEN IT DIES. See the healthcheck below and HANDOFF section 14.
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: worker
+    image: ${IMAGE_NAME:-app-web}-worker:${IMAGE_TAG:-current}
+    restart: unless-stopped
+    logging: *default-logging
+    <<: *default-hardening
+    cap_drop:
+      - ALL
+    init: true
+
+    # Documentation, not publication. `expose` opens nothing to the host; it records which
+    # port the healthcheck below talks to. There is deliberately no `ports:` key.
+    expose:
+      - "9091"
+
+    env_file:
+      - .env
+
+    environment:
+      # The health/status listener. Overridable so a second worker could be run side by side
+      # for a cutover, not because anyone should change it casually.
+      WORKER_HEALTH_PORT: ${WORKER_HEALTH_PORT:-9091}
+
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+    # THE POINT OF THIS HEALTHCHECK, because a wrong one here is worse than none:
+    #
+    # It asks "is the poll loop still ticking", NOT "is every upstream up". Those are
+    # different questions with different owners, and conflating them breaks product-brief
+    # section 2b, which requires one bad upstream to disable its own layer and nothing else.
+    # If a dead NASA FIRMS made this container unhealthy, Compose would restart a perfectly
+    # good worker every 90 seconds and take the other five layers down with it.
+    #
+    #   /healthz 200 -> every enabled source has ATTEMPTED a poll within its deadline.
+    #                   Some of those attempts may have failed. That is fine and expected.
+    #   /healthz 503 -> at least one source's loop has stopped attempting. That is our bug,
+    #                   and it is the silent death this container exists to make loud.
+    #
+    # The full contract, including the deadline formula and the /status board, is
+    # docs/deploy/HANDOFF.md section 14. It is a contract because three things depend on it:
+    # this line, infra/deploy.sh's post-deploy verification, and infra/healthcheck.sh.
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:'+(process.env.WORKER_HEALTH_PORT||9091)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      # 3 retries x 30 s = 90 s of sustained silence before Compose calls it unhealthy. Long
+      # enough that a single slow tick is not a fault, short enough that a dead loop shows up
+      # in `docker compose ps` within two minutes.
+      retries: 3
+      # Longer than web's: the first tick of a six-source cold start waits on the slowest
+      # upstream, and marking the container unhealthy while it is legitimately still doing
+      # its first poll would restart it into another cold start, forever.
+      start_period: 90s
+
+    mem_limit: 1g
+    mem_reservation: 256m
+    cpus: 1.0
+
+    networks:
+      - backend # to reach db and redis
+      - egress # its ONLY route to the internet; see the networks block at the bottom
 
   # -------------------------------------------------------------------------------------
   # caddy
@@ -222,6 +467,12 @@ services:
 
     volumes:
       - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      # csp.caddy is `import`ed by the Caddyfile and MUST be mounted alongside it. Caddy
+      # resolves `import` relative to the config file's own directory, so without this line
+      # Caddy fails to load its configuration at all and the container never serves a byte.
+      # This was missing in v1 and is a start-blocking defect, not a v2 addition -- the whole
+      # site would have been down on the first deploy. Recorded in HANDOFF section 16.
+      - ./infra/csp.caddy:/etc/caddy/csp.caddy:ro
       # /data holds the issued certificates AND the ACME account key. If this is not a
       # named volume, every redeploy re-requests certificates, and five of those in an
       # hour gets the hostname rate-limited by Let's Encrypt for a week.
@@ -235,15 +486,19 @@ services:
       # instead of a connection refused with no certificate.
       - web
 
-    mem_limit: 128m
-    mem_reservation: 32m
+    # Raised from v1's 128 MB. Caddy holds a goroutine and a connection per open SSE stream
+    # (ADR 0023), and those stay open for the lifetime of a reader's tab rather than for the
+    # tens of milliseconds a page render takes. 256 MB is still small; it is the difference
+    # between "a proxy" and "a proxy holding a few hundred long-lived connections".
+    mem_limit: 256m
+    mem_reservation: 64m
     cpus: 0.5
 
     networks:
       - edge
 
   # -------------------------------------------------------------------------------------
-  # migrate — one-shot
+  # migrate -- one-shot
   # -------------------------------------------------------------------------------------
   # Behind a profile so `docker compose up -d` can never start it. Invoke explicitly:
   #   docker compose -f docker-compose.prod.yml --profile tools run --rm migrate
@@ -276,12 +531,35 @@ volumes:
   caddy_data:
   caddy_config:
 
+# ---------------------------------------------------------------------------------------
+# Networks -- three, and each one has a single reason
+# ---------------------------------------------------------------------------------------
+# The rule that produces this shape: `backend` has no gateway, so a container attached to
+# `backend` AND one other network takes its default route from the other one. That is what
+# gives `web` and `worker` internet access while `db` and `redis` have none, and it is why
+# the two-network trick in v1 worked at all. It is deterministic rather than lucky --
+# `internal: true` means Docker creates no gateway on that bridge, so there is only ever one
+# candidate default route.
 networks:
+  # Reached by the internet, through caddy's published ports only.
   edge:
     driver: bridge
+
+  # No gateway, therefore no route to the internet and no route from it. Postgres and Redis
+  # cannot phone home and cannot be reached from outside even if a port were published by
+  # mistake. `web` and `worker` are on this and on one other network, so they still have
+  # egress.
   backend:
     driver: bridge
-    # No gateway, therefore no route to the internet and no route from it. Postgres cannot
-    # phone home and cannot be reached from outside even if a port were published by
-    # mistake. `web` is on both networks, so it still has egress via `edge`.
     internal: true
+
+  # The worker's route to the internet, and nothing else's.
+  #
+  # It would have been shorter to put `worker` on `edge` and stop, and that is what v1's
+  # two-network shape implies. It is not done because `edge` means "the network the public
+  # internet reaches", and a poller has no business on it: nothing should be able to arrive
+  # at the worker from Caddy -- by configuration, by typo, or by a future `reverse_proxy`
+  # line. Keeping `edge` to exactly {caddy, web} makes that a property of the topology
+  # instead of a promise about the Caddyfile.
+  egress:
+    driver: bridge

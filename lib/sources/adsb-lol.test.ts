@@ -52,6 +52,55 @@ describe("adsb-lol normalise", () => {
     expect(features[0]?.altitude).toBeUndefined();
   });
 
+  /**
+   * The two shapes below are asserted against the CAPTURED payload, not a hand-written one.
+   *
+   * That distinction is the whole argument for captured fixtures. Both were flagged
+   * independently by the e2e engineer working from the same capture, and an invented fixture
+   * would have contained neither: `alt_baro` is typed as a number in every reasonable mental
+   * model of this API, and it is a bare string for a quarter of the aircraft in a real
+   * response over London. This is the same way the 1.3% NWS geometry problem surfaced.
+   */
+  it("handles the string alt_baro that a real response is full of", () => {
+    const raw = fixture.ac.filter((a) => a.alt_baro === "ground");
+    // 41 of 165 on 2026-08-31 — not a rare edge case, a quarter of the payload.
+    expect(raw.length).toBeGreaterThan(0);
+
+    const onGround = normaliseAdsbLol(fixture, {}).filter((f) => f.properties.onGround);
+    expect(onGround.length).toBe(raw.length);
+
+    for (const feature of onGround) {
+      // Never NaN, never the string, never a number: an aircraft on the tarmac has no
+      // altitude, and any of those three would render as a plane at some invented height.
+      expect(feature.properties.altitudeFt).toBeNull();
+      expect(feature.altitude).toBeUndefined();
+      expect(feature.label.trim()).not.toBe("");
+    }
+  });
+
+  it("still labels the aircraft in a real response that broadcast no callsign", () => {
+    const raw = fixture.ac.filter((a) => !a.flight || a.flight.trim() === "");
+    expect(raw.length).toBeGreaterThan(0);
+
+    const anonymous = normaliseAdsbLol(fixture, {}).filter((f) => f.properties.callsign === null);
+    expect(anonymous.length).toBe(raw.length);
+
+    for (const feature of anonymous) {
+      // Falls back to registration, then to the hex. A blank map pin is unclickable and
+      // tells a reader nothing, so there is no path here that produces one.
+      expect(feature.label.trim()).not.toBe("");
+      expect(feature.label).toBe(
+        feature.properties.registration ?? feature.properties.icao24.toUpperCase(),
+      );
+    }
+  });
+
+  it("gives every feature in the captured payload a non-empty label", () => {
+    const features = normaliseAdsbLol(fixture, {});
+    expect(features.length).toBe(fixture.ac.length);
+    expect(features.every((f) => f.label.trim().length > 0)).toBe(true);
+  });
+
   it('treats emergency "none" as an absence, not as a state to render', () => {
     const features = normaliseAdsbLol(
       {

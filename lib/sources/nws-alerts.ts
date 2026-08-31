@@ -420,6 +420,11 @@ export const nwsAlerts: SourceAdapter<WeatherAlertFeature> = {
    * of minutes.
    */
   ttlSeconds: 60,
+  /**
+   * Ten minutes. A warning that has since been cancelled is actively dangerous to display,
+   * which argues for a short horizon even though the alerts themselves last hours.
+   */
+  staleWhileRevalidateSeconds: 600,
   responseSchema: nwsAlertsResponseSchema,
   normalise: normaliseNwsAlerts,
 

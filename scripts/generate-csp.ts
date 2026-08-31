@@ -12,6 +12,7 @@
  */
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { basemap } from "../components/map/basemap";
 import { mapTiles } from "../config/live";
 import { cameraProviderFileSchema } from "../lib/content/schema";
 
@@ -68,7 +69,13 @@ function build(): string {
   const embedOrigins = collectEmbedOrigins();
   const tileOrigin = originOf(mapTiles.origin);
 
-  const imgSrc = ["'self'", "data:", "blob:", tileOrigin, ...embedOrigins].join(" ");
+  // The basemap origin is read from `components/map/basemap.ts` rather than restated, so a
+  // provider change cannot land without the policy following it. `config/live.ts` carries the
+  // same origin for /live/flights; both are included and de-duplicated in case they diverge.
+  const basemapOrigin = originOf(basemap.origin);
+  const tileOrigins = [...new Set([tileOrigin, basemapOrigin])].sort();
+
+  const imgSrc = ["'self'", "data:", "blob:", ...tileOrigins, ...embedOrigins].join(" ");
 
   const policy = [
     "default-src 'self'",
@@ -84,7 +91,23 @@ function build(): string {
     "style-src 'self' 'unsafe-inline'",
     `img-src ${imgSrc}`,
     "font-src 'self'",
-    "connect-src 'self'",
+    // MapLibre fetches the style JSON, TileJSON, vector tiles and glyph ranges over XHR, so
+    // the tile origin needs connect-src as well as img-src. Without this the map renders a
+    // black rectangle with correct data drawn on it — deck.gl has its own canvas, so the
+    // points look perfect while the basemap never loads. That reads as a styling bug and is
+    // not one, which is exactly why it must not be discovered in production.
+    `connect-src 'self' ${tileOrigins.join(" ")}`,
+    // MapLibre constructs its web worker from a blob URL. Without blob: in worker-src it
+    // never starts, never parses a tile, and never even issues a tile request.
+    "worker-src 'self' blob:",
+    // Fallback for engines that do not implement worker-src.
+    "child-src 'self' blob:",
+    // Radio Browser streams play client-side, direct from the broadcaster — the §2b rule
+    // working as intended. Without media-src this falls back to default-src 'self' and every
+    // stream is blocked. `https:` rather than an allowlist because the station list is
+    // community-maintained and changes daily; an allowlist would be stale within a week and
+    // the alternative is proxying audio, which §2b forbids for good reason.
+    "media-src 'self' https:",
     "manifest-src 'self'",
     "upgrade-insecure-requests",
   ].join("; ");

@@ -22,7 +22,7 @@ import { numberProp } from "./props";
  * ## Why it cannot reach a reader
  *
  * `devOnly` is filtered out of `MAP_LAYERS` when `NODE_ENV` is `production`, and its adapter
- * in `app/(public)/map/adapters.ts` is registered under the same condition. Both gates are
+ * in `app/(public)/map/dev-stress-source.ts` is only resolved under the same condition. Both gates are
  * build-time constants, so the bundler drops the branch entirely. Synthetic data on a
  * shipped path would be fabricated content on a product whose entire value is credibility
  * (product-brief §6); two gates for one dev tool is the right ratio.

@@ -42,6 +42,28 @@ describe("radio-browser normalise", () => {
     }
   });
 
+  it("flags the http streams a browser will block as mixed content", () => {
+    /**
+     * MEASURED against the live catalogue on 2026-08-31: 2,473 of 12,413 working geolocated
+     * stations publish a plain `http:` URL — 20%. In this captured fixture it is 34 of 200.
+     *
+     * They are flagged rather than dropped: hiding a fifth of the catalogue silently is the
+     * failure mode this codebase has already hit twice. But a play button on one fails with
+     * no error at all on an HTTPS page, so the UI has to know.
+     */
+    const features = normaliseRadioBrowser(fixture, {});
+    const insecure = features.filter((f) => f.properties.isInsecureStream);
+
+    expect(insecure.length).toBeGreaterThan(0);
+    expect(insecure.length).toBeLessThan(features.length);
+    for (const feature of insecure) {
+      expect(feature.properties.streamUrl.startsWith("http://")).toBe(true);
+    }
+    for (const feature of features.filter((f) => !f.properties.isInsecureStream)) {
+      expect(feature.properties.streamUrl.startsWith("https://")).toBe(true);
+    }
+  });
+
   it("refuses a stream URL that is not http(s)", () => {
     const features = normaliseRadioBrowser([
       {

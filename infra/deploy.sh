@@ -5,6 +5,10 @@
 #   ./infra/deploy.sh              normal deploy
 #   ./infra/deploy.sh --no-pull    deploy the working tree as-is (use after a manual fix)
 #   ./infra/deploy.sh --skip-backup   skip the pre-migration dump (NOT recommended)
+#   ./infra/deploy.sh --allow-degraded-worker
+#                                  finish the deploy even if the poller container never
+#                                  becomes healthy. Use when you are deliberately shipping
+#                                  a web-only change and already know the worker is broken.
 #
 # Design contract:
 #   * IDEMPOTENT. Running it twice in a row is a no-op deploy that ends healthy. Every
@@ -36,10 +40,12 @@ ENV_FILE="${REPO_DIR}/.env"
 # --- Options ---------------------------------------------------------------------------
 DO_PULL=1
 DO_BACKUP=1
+ALLOW_DEGRADED_WORKER=0
 for arg in "$@"; do
 	case "${arg}" in
 	--no-pull) DO_PULL=0 ;;
 	--skip-backup) DO_BACKUP=0 ;;
+	--allow-degraded-worker) ALLOW_DEGRADED_WORKER=1 ;;
 	-h | --help)
 		sed -n '2,30p' "${BASH_SOURCE[0]}"
 		exit 0
@@ -123,6 +129,27 @@ for var in DOMAIN ACME_EMAIL POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB DATABAS
 	esac
 done
 log "Environment: DOMAIN=${DOMAIN}  APP_URL=${APP_URL}"
+
+# REDIS_URL is optional in lib/env.schema.ts, because a missing cache degrades rather than
+# crashes. In THIS stack it is not optional in practice: the worker writes its poll results
+# there and `web` reads them, so an unset or wrong value produces a map that works, is slow,
+# and calls every upstream on every request — which is the exact behaviour ADR 0021's
+# rate-limit arithmetic assumes cannot happen. Neither symptom raises an error anywhere.
+#
+# `localhost` is checked by name because it is the specific wrong answer: it is correct on a
+# developer's host and points a container at itself.
+if [ -z "${REDIS_URL:-}" ]; then
+	warn "REDIS_URL is not set. The worker and web will run without a shared cache: every"
+	warn "reader request will call upstreams directly, and the poll ceilings in ADR 0021"
+	warn "will be exceeded. Set REDIS_URL=redis://redis:6379 in .env."
+else
+	case "${REDIS_URL}" in
+	*localhost* | *127.0.0.1*)
+		die "REDIS_URL points at localhost (${REDIS_URL}). Inside a container that is the container itself and nothing is listening. Use redis://redis:6379 — see .env.example."
+		;;
+	esac
+	log "Redis: ${REDIS_URL%%://*}://<redacted>"
+fi
 
 IMAGE_NAME="${IMAGE_NAME:-app-web}"
 IMAGE_TAG="${IMAGE_TAG:-current}"

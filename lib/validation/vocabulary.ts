@@ -7,7 +7,9 @@ import {
   CONNECTOR_KINDS,
   CONNECTOR_REQUEST_OUTCOMES,
   DIFFICULTY_LEVELS,
+  POLL_MODES,
   PUBLICATION_STATUSES,
+  SOURCE_KINDS,
   USER_ROLES,
   WORKSPACE_ITEM_KINDS,
   WORKSPACE_STATUSES,
@@ -45,6 +47,19 @@ export const difficultySchema = z.enum(DIFFICULTY_LEVELS);
 export const workspaceStatusSchema = z.enum(WORKSPACE_STATUSES);
 export const workspaceItemKindSchema = z.enum(WORKSPACE_ITEM_KINDS);
 export const connectorKindSchema = z.enum(CONNECTOR_KINDS);
+
+/**
+ * What a source's data is about. CHECK-constrained on both `connectors.kind` (as a subset —
+ * that column also still accepts the deprecated `flights`, ADR 0024) and on
+ * `workspace_feature_snapshots.source_kind`, where these eleven are the whole vocabulary.
+ *
+ * Imported rather than typed out for the reason at the top of this file, and the point is
+ * sharper here than usual: a free-form string would pass validation and then be rejected by
+ * `workspace_feature_snapshots_source_kind_check` as a 23514 at insert, which reaches the
+ * user as a 500 on a save button rather than as a field error.
+ */
+export const sourceKindSchema = z.enum(SOURCE_KINDS);
+export const pollModeSchema = z.enum(POLL_MODES);
 export const connectorOutcomeSchema = z.enum(CONNECTOR_REQUEST_OUTCOMES);
 export const cameraViewKindSchema = z.enum(CAMERA_VIEW_KINDS);
 

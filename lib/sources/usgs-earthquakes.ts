@@ -262,6 +262,11 @@ export const usgsEarthquakes: SourceAdapter<EarthquakeFeature> = {
   },
   /** The feed's own `Cache-Control: max-age=60`, and its documented one-minute update. */
   ttlSeconds: 60,
+  /**
+   * Fifteen minutes. An earthquake that happened stays happened, so a stale list is still
+   * true; what ages is the absence of newer events.
+   */
+  staleWhileRevalidateSeconds: 900,
   responseSchema: usgsResponseSchema,
   normalise: normaliseUsgs,
 

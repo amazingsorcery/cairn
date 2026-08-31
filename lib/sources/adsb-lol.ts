@@ -308,6 +308,11 @@ export const adsbLol: SourceAdapter<AircraftFeature> = {
   },
   /** See the arithmetic at the top of this file. 2 calls/minute per viewport. */
   ttlSeconds: 30,
+  /**
+   * Three minutes. An aircraft position is worthless within minutes — at cruise this is
+   * already ~24 km of travel — so showing a stale one is worse than showing none.
+   */
+  staleWhileRevalidateSeconds: 180,
   responseSchema: adsbLolResponseSchema,
   normalise: normaliseAdsbLol,
 

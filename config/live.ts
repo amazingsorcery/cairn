@@ -6,25 +6,35 @@
  */
 
 /**
- * Map tiles for `/live/flights`.
+ * Map tiles.
  *
- * OpenStreetMap's tile usage policy restricts heavy or automated use and requires
- * attribution. At the traffic this deployment expects that is acceptable, and the map is
- * opt-in click-to-load so tiles are not fetched unless a reader asks for them.
+ * WAS `tile.openstreetmap.org`, which was wrong: the OSM tile usage policy explicitly
+ * forbids production use of that endpoint, and "we are small and it is click-to-load" is
+ * not an exemption it offers. The map engineer caught that `/live/flights` was still
+ * pointing at it after `/map` had moved off.
  *
- * A deployment with real traffic must move to a paid or self-hosted provider. That is a
- * hosting-terms obligation, not a preference — this note lives next to the value rather
- * than in a document precisely so whoever changes the traffic profile reads it.
+ * Now OpenFreeMap, which is the same provider `components/map/basemap.ts` uses. Its terms,
+ * read 2026-08-31: no registration, no API key, no cookies, no request limit, commercial
+ * use permitted, attribution required.
  *
- * Changing the provider means changing `origin` here and regenerating the CSP.
+ * The no-API-key property is doing real work: a keyed tile provider means a runtime secret
+ * inside a client-side asset, which is not a thing that can be kept. The no-cookies property
+ * is one this product demands of itself and should therefore demand of what it embeds.
+ *
+ * It is a donation-funded service with no SLA. The mitigation is that self-hosting is
+ * documented and they publish processed planet images, so the failure mode is "stand up our
+ * own tile host", not "the map is gone".
+ *
+ * Changing the provider means changing `origin` here AND in `components/map/basemap.ts`,
+ * then regenerating the CSP.
  */
 export const mapTiles = {
-  origin: "https://tile.openstreetmap.org",
-  urlTemplate: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
-  maxZoom: 19,
-  /** Rendered visibly on the map, not in a footer. Required by the tile usage policy. */
-  attribution: "© OpenStreetMap contributors",
-  attributionUrl: "https://www.openstreetmap.org/copyright",
+  origin: "https://tiles.openfreemap.org",
+  urlTemplate: "https://tiles.openfreemap.org/styles/dark",
+  maxZoom: 20,
+  /** Rendered visibly on the map, not in a footer. Required by the licence. */
+  attribution: "© OpenFreeMap contributors, © OpenMapTiles, © OpenStreetMap contributors",
+  attributionUrl: "https://openfreemap.org/",
 } as const;
 
 /**

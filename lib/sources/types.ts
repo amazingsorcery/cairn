@@ -86,6 +86,29 @@ export interface CachedSourceResult<T> {
   readonly cachedAt: Date;
 }
 
+/**
+ * How precisely a feature's coordinate describes where the thing actually is.
+ *
+ * This is on the FEATURE, not derived per-layer, because it leaks otherwise. The map
+ * engineer built a per-layer `precision()` renderer for the weather caveat and then found
+ * the hole: a reader can save an NWS alert into a workspace and read a precise-looking
+ * coordinate in a PDF export months later, with nothing left to say it is an administrative
+ * centroid possibly tens of kilometres from the weather. The export never calls the map's
+ * renderer. Carrying it here means the snapshot carries it too.
+ *
+ * `null` means the coordinate is as exact as the source can make it — and returning `null`
+ * for the 1.3% of NWS alerts that do have real geometry matters as much as setting it for
+ * the rest, because caveating everything is caveating nothing.
+ */
+export interface PositionalPrecision {
+  /** Short qualifier for a table cell, beside the number it qualifies: "approx · zone centre". */
+  readonly label: string;
+  /** The full sentence, for a detail panel or an export. Say what the imprecision IS. */
+  readonly note: string;
+  /** Rough radius of uncertainty in metres, where it can honestly be stated. */
+  readonly approximateRadiusMetres?: number;
+}
+
 /** A normalised map feature. Every adapter produces this shape, whatever the upstream. */
 export interface SourceFeature {
   /** Stable within a source across polls, so the map can track a feature between frames. */
@@ -99,6 +122,12 @@ export interface SourceFeature {
   readonly label: string;
   /** Where this feature came from, so a reader can always get back to the origin. */
   readonly sourceUrl?: string;
+  /**
+   * Set when the coordinate is an approximation. `null` or absent means it is as exact as
+   * the source can make it. Travels with the feature into a workspace snapshot and an
+   * export, so the caveat cannot be lost at a boundary the map does not own.
+   */
+  readonly precision?: PositionalPrecision | null;
   /** Adapter-specific detail, rendered by the feature panel. Never `any`. */
   readonly properties: Readonly<Record<string, string | number | boolean | null>>;
 }
@@ -151,6 +180,17 @@ export interface SourceAdapter<T extends SourceFeature = SourceFeature> {
    * Product-brief §2b: aircraft 5–10s, ships ~30s, quakes ~60s, fires ~15min, webcams ~1h.
    */
   readonly ttlSeconds: number;
+
+  /**
+   * How long a cached payload may still be shown, past `ttlSeconds`, when the upstream is
+   * unreachable — after which the surface shows nothing rather than something wrong.
+   *
+   * Separate from `ttlSeconds` because they answer different questions: when to refetch, and
+   * when to stop believing. A 30-second aircraft feed and a one-hour camera index do not
+   * share a horizon, and ADR 0014 §3 requires one. Aircraft positions are worthless within
+   * minutes; a camera index is fine for a day.
+   */
+  readonly staleWhileRevalidateSeconds: number;
 
   /** Env var holding the key, when one is needed. The key itself never lives in the DB. */
   readonly apiKeyEnvVar?: string;

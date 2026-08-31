@@ -159,3 +159,86 @@ test.describe("magic-link sign-in", () => {
     await future.close();
   });
 });
+
+test.describe("magic-link sign-in — the surrounding surface", () => {
+  test.describe.configure({ mode: "serial" });
+  test.skip(({ isMobile }) => isMobile === true, "one engine is enough for a credential path");
+
+  test.beforeEach(async () => {
+    test.skip(
+      !(await mailboxAvailable()),
+      "no mailbox on 127.0.0.1:8025 — start Mailpit or `node tests/e2e/helpers/smtp-sink.mjs`",
+    );
+    await clearMailbox();
+  });
+
+  /**
+   * DEFECT THIS CATCHES: the address reaching a URL.
+   *
+   * `/signin/check-email` names the address it just wrote to, and it reads it from an
+   * **httpOnly cookie** rather than `?address=…` precisely so it never enters browser history
+   * or any access log between the reader and us. `HANDOFF-workspaces.md` §8.2 puts that in
+   * the same class as writing a case note to `localStorage`, which `states.md` §7.4 rules out
+   * by name: on a shared machine both leak who was investigating what.
+   *
+   * `?address=` would render an identical-looking page, which is exactly why this is a test.
+   */
+  test("the address is carried in an httpOnly cookie, never in the URL", async ({
+    page,
+    context,
+  }) => {
+    const email = address();
+
+    await page.goto("/signin");
+    await page.getByLabel("email", { exact: true }).fill(email);
+    await page.getByRole("button", { name: /email a sign-in link/i }).click();
+
+    await expect(page).toHaveURL(/\/signin\/check-email/);
+    expect(page.url(), "the address must not be in the address bar").not.toContain(email);
+    expect(page.url()).not.toMatch(/address=|email=/);
+
+    // The page still knows it, from the cookie.
+    await expect(page.getByText(email)).toBeVisible();
+
+    const cookie = (await context.cookies()).find((one) => one.name === "signin-address");
+    expect(cookie, "no signin-address cookie was set").toBeDefined();
+    expect(cookie?.httpOnly, "the address cookie must be httpOnly").toBe(true);
+  });
+
+  /**
+   * DEFECT THIS CATCHES: an unmetered mail sender. Each request sends an email, so an open
+   * form is an open relay — it burns the sending domain's reputation and makes the product a
+   * tool for mailbombing a third party. `RATE_LIMIT_POLICIES["signin-email"]` is 5 per 15
+   * minutes; this drives past it and asserts the refusal is stated.
+   *
+   * It also checks what the refusal does NOT say. The copy must not confirm whether the
+   * address is one we know: a rate-limit message that reads differently for a registered and
+   * an unregistered address is an account-enumeration oracle on the one page that is
+   * reachable without a session.
+   *
+   * LAST IN THE FILE, deliberately. It exhausts a window keyed on this client, so anything
+   * after it would be refused for reasons of its own.
+   */
+  test("sending is rate limited, and the refusal enumerates nothing", async ({ page }) => {
+    const limited = page.getByText("Too many sign-in links requested");
+
+    // Bounded: the policy is 5 per window, and earlier tests in this file have already spent
+    // some of it. Eight attempts reaches the limit from any starting point within the window.
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      if (await limited.isVisible().catch(() => false)) break;
+      await page.goto("/signin");
+      await page.getByLabel("email", { exact: true }).fill(address());
+      await page.getByRole("button", { name: /email a sign-in link/i }).click();
+      await page.waitForLoadState("load");
+    }
+
+    await expect(limited, "the sender was never refused").toBeVisible();
+    await expect(page.getByText(/Wait \d+ minutes? before asking for another/)).toBeVisible();
+
+    const body = await page.locator("main").innerText();
+    expect(
+      /no account|not registered|unknown address|doesn't exist|does not exist/i.test(body),
+      "the refusal must not reveal whether the address is known to us",
+    ).toBe(false);
+  });
+});

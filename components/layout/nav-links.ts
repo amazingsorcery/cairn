@@ -29,6 +29,8 @@ export interface NavLink {
 
 /** Always visible. The four pillars plus search (`docs/design/states.md` §1.1). */
 export const PRIMARY_NAV: readonly NavLink[] = [
+  { href: "/map", label: "map", prefixMatch: true },
+  { href: "/toolbench", label: "tools", prefixMatch: true },
   { href: "/directory", label: "directory", prefixMatch: true },
   { href: "/playbooks", label: "playbooks", prefixMatch: true },
   { href: "/live", label: "live", prefixMatch: true },

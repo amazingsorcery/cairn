@@ -145,6 +145,20 @@ export interface RadioStationFeature extends SourceFeature {
     readonly streamUrl: string;
     /** Whether the stream is HLS, so the client can choose a player. 0/1 upstream. */
     readonly isHls: boolean;
+    /**
+     * True when the stream URL is plain `http:`.
+     *
+     * MEASURED 2026-08-31: **20% of working geolocated stations (2,473 of 12,413) publish an
+     * `http:` stream URL.** A browser on our HTTPS page blocks those as mixed content no
+     * matter what our CSP says, so a play button on one fails silently — the worst failure
+     * shape there is, because nothing errors and the reader concludes the tool is broken.
+     *
+     * Surfaced as data rather than filtered out, deliberately. Dropping a fifth of the
+     * catalogue without saying so is the silent-incompleteness failure this codebase has
+     * been bitten by twice (NWS geometry, adsb.lol corners). The UI decides: label it,
+     * de-emphasise it, or offer it as a link out. It must not offer it as a play button.
+     */
+    readonly isInsecureStream: boolean;
     readonly codec: string | null;
     readonly bitrateKbps: number | null;
     readonly homepage: string | null;
@@ -208,6 +222,7 @@ function mapRadioBrowser(data: RadioPayload, query: SourceQuery): readonly Radio
         stationUuid: station.stationuuid,
         streamUrl,
         isHls: station.hls === 1,
+        isInsecureStream: streamUrl.startsWith("http://"),
         codec: station.codec ?? null,
         bitrateKbps: typeof station.bitrate === "number" ? station.bitrate : null,
         homepage: station.homepage ?? null,
@@ -288,6 +303,10 @@ export const radioBrowser: SourceAdapter<RadioStationFeature> = {
   },
   /** Station metadata changes over days. Mirrors are volunteer-run; poll like a guest. */
   ttlSeconds: 3600,
+  /**
+   * A day. A station list changes slowly and a slightly old one is entirely usable.
+   */
+  staleWhileRevalidateSeconds: 86400,
   responseSchema: radioBrowserResponseSchema,
   normalise: normaliseRadioBrowser,
 

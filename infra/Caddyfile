@@ -48,7 +48,38 @@ import csp.caddy
 	# --- Compression ------------------------------------------------------------------
 	# zstd first (better ratio, cheaper to decompress), gzip for everything older.
 	# Caddy negotiates from Accept-Encoding and skips already-compressed content types.
-	encode zstd gzip
+	#
+	# THE `match` BLOCK IS NOT DECORATION. Caddy's default response matcher for `encode`
+	# includes `header Content-Type text/*`, and `text/event-stream` matches `text/*`. So
+	# the default would compress the SSE stream, and a compressor holds bytes in its own
+	# buffer until it has enough to emit a block — which converts a live stream into
+	# "nothing for thirty seconds, then everything at once". ADR 0023 names this as the
+	# thing that silently breaks SSE and makes excluding it a devops obligation rather than
+	# a default to be trusted.
+	#
+	# The list below is Caddy's own default set with `text/*` expanded to the specific text
+	# types we serve and `text/event-stream` absent. Repeated `header Content-Type` lines in
+	# a response matcher are OR'd, which is how Caddy's own default is written.
+	#
+	# ADDING A CONTENT TYPE HERE IS SAFE. Adding `text/*` back is not.
+	encode zstd gzip {
+		match {
+			header Content-Type text/html*
+			header Content-Type text/plain*
+			header Content-Type text/css*
+			header Content-Type text/javascript*
+			header Content-Type text/xml*
+			header Content-Type text/markdown*
+			header Content-Type application/json*
+			header Content-Type application/javascript*
+			header Content-Type application/xhtml+xml*
+			header Content-Type application/atom+xml*
+			header Content-Type application/rss+xml*
+			header Content-Type application/manifest+json*
+			header Content-Type application/wasm*
+			header Content-Type image/svg+xml*
+		}
+	}
 
 	# --- Request body limit -----------------------------------------------------------
 	# A cap on how much a single request may push into the app before Caddy rejects it
@@ -290,33 +321,78 @@ import csp.caddy
 	# --- Reverse proxy ----------------------------------------------------------------
 	# `web` is the compose service name, resolved on the `edge` docker network. Port 3000
 	# is not published to the host by that service — this is the only path to it.
-	reverse_proxy web:3000 {
-		# SET, not append. Caddy's default is to append the peer address to any incoming
-		# X-Forwarded-For, which means a client sending
-		#     X-Forwarded-For: 10.0.0.1
-		# gets that value delivered to the app ahead of its real address. Every one of
-		# these lines overwrites the incoming header with a value Caddy derived from the
-		# actual connection, so nothing client-controlled reaches the app in these fields.
-		header_up X-Forwarded-For {remote_host}
-		header_up X-Real-IP {remote_host}
+	#
+	# TWO BRANCHES, because the live layer stream needs different proxy behaviour from every
+	# other response on this origin. Both are `handle` blocks rather than one `handle` plus
+	# a bare directive: `handle` blocks are mutually exclusive and evaluated in the order
+	# written, so the shape below says exactly what it does with no reliance on Caddy's
+	# directive-ordering rules.
+	#
+	# `worker` is deliberately absent from this file and there is no route to it. It is not
+	# on the `edge` network, so Caddy cannot resolve the name even if a line were added by
+	# mistake. See docker-compose.prod.yml's networks block.
 
-		# Auth.js v5 builds absolute callback URLs from these. Without X-Forwarded-Proto
-		# the app sees the plaintext http:// hop from Caddy to web:3000 and generates
-		# http:// magic-link and OAuth callback URLs, which then fail. The app must also
-		# set AUTH_TRUST_HOST=true for these to be honoured — see HANDOFF.md #3.
-		header_up X-Forwarded-Proto {scheme}
-		header_up X-Forwarded-Host {host}
+	# --- Branch 1: the SSE layer stream (ADR 0023) --------------------------------------
+	# GET /api/map/stream — one stream per client carrying every layer, per ADR 0023 point 1.
+	@sse path /api/map/stream /api/map/stream/*
+	handle @sse {
+		reverse_proxy web:3000 {
+			# THE LINE THIS BRANCH EXISTS FOR. `-1` means "do not buffer the response body;
+			# flush every write straight to the client". Caddy does auto-detect
+			# `Content-Type: text/event-stream` and stream it, so this is belt and braces —
+			# and ADR 0023 point 4 requires it to be explicit rather than inherited,
+			# because a default that is not written down is a default a version bump or a
+			# future edit can change without anyone noticing. The failure it prevents is
+			# not an error: it is a map whose ages are silently thirty seconds wrong.
+			flush_interval -1
 
-		# Caddy preserves the original Host header by default, which is what Auth.js and
-		# Next.js want. Stated here so nobody "fixes" it later.
-		header_up Host {host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Host {host}
+			header_up Host {host}
 
-		# Give up on a dead upstream quickly rather than holding connections open through
-		# a restart. Next.js server-renders in tens of milliseconds; 30 s of read timeout
-		# is generous even for the PDF export path.
-		transport http {
-			dial_timeout 5s
-			response_header_timeout 30s
+			transport http {
+				dial_timeout 5s
+				# NO `response_header_timeout` here, unlike the branch below. An SSE
+				# response sends its headers immediately and then never ends, so the 30 s
+				# ceiling is harmless for the headers and wrong as a mental model for the
+				# body. Caddy applies no read timeout to the body by default, which is
+				# what an open stream needs.
+			}
+		}
+	}
+
+	# --- Branch 2: everything else ------------------------------------------------------
+	handle {
+		reverse_proxy web:3000 {
+			# SET, not append. Caddy's default is to append the peer address to any incoming
+			# X-Forwarded-For, which means a client sending
+			#     X-Forwarded-For: 10.0.0.1
+			# gets that value delivered to the app ahead of its real address. Every one of
+			# these lines overwrites the incoming header with a value Caddy derived from the
+			# actual connection, so nothing client-controlled reaches the app in these fields.
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Real-IP {remote_host}
+
+			# Auth.js v5 builds absolute callback URLs from these. Without X-Forwarded-Proto
+			# the app sees the plaintext http:// hop from Caddy to web:3000 and generates
+			# http:// magic-link and OAuth callback URLs, which then fail. The app must also
+			# set AUTH_TRUST_HOST=true for these to be honoured — see HANDOFF.md #3.
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Forwarded-Host {host}
+
+			# Caddy preserves the original Host header by default, which is what Auth.js and
+			# Next.js want. Stated here so nobody "fixes" it later.
+			header_up Host {host}
+
+			# Give up on a dead upstream quickly rather than holding connections open through
+			# a restart. Next.js server-renders in tens of milliseconds; 30 s of read timeout
+			# is generous even for the PDF export path.
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 30s
+			}
 		}
 	}
 
