@@ -53,7 +53,35 @@ export function cached<Args extends unknown[], Result>(
   keyParts: string[],
   options: { tags: string[]; revalidate: number },
 ): (...args: Args) => Promise<Result> {
-  return unstable_cache(fn, keyParts, options);
+  const memoised = unstable_cache(fn, keyParts, options);
+  return async (...args: Args) => {
+    try {
+      return await memoised(...args);
+    } catch (error) {
+      if (!isMissingCacheContext(error)) throw error;
+      // No Next.js incremental cache in scope. Read straight through rather than failing:
+      // see `isMissingCacheContext`.
+      return fn(...args);
+    }
+  };
+}
+
+/**
+ * `unstable_cache` requires Next.js's incremental-cache context, which exists during a
+ * request or a build and NOT in a plain Node process. Without this fallback, every script
+ * that reads through the query layer — `db/seed.ts`, `scripts/verify-backend.ts`, any future
+ * maintenance CLI — would throw `Invariant: incrementalCache missing in unstable_cache`.
+ *
+ * Falling back to an uncached read is correct rather than convenient: outside a request there
+ * is no cache to populate and no route to revalidate, so the memoisation has nothing to do.
+ * The error is matched narrowly, so a genuine failure inside `fn` still propagates.
+ */
+function isMissingCacheContext(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message.includes("incrementalCache") &&
+    error.message.includes("unstable_cache")
+  );
 }
 
 /**
@@ -67,6 +95,5 @@ export function cachedByKey<Result>(
   tagsFor: (key: string) => string[],
   revalidate: number,
 ): (key: string) => Promise<Result> {
-  return (key: string) =>
-    unstable_cache(fn, keyParts, { tags: tagsFor(key), revalidate })(key);
+  return (key: string) => cached(fn, keyParts, { tags: tagsFor(key), revalidate })(key);
 }

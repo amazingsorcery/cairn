@@ -1,40 +1,35 @@
-import { Pool } from "pg";
-const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 1 });
+import { Client } from "pg";
+async function attempt(sqlText: string, values: unknown[]) {
+  const c = new Client({ connectionString: process.env.DATABASE_URL });
+  c.on("error", (e) => console.log("   [client error event]", (e as {code?:string}).code));
+  await c.connect();
+  try {
+    await c.query(sqlText, values);
+    return "ACCEPTED";
+  } catch (e) {
+    const pg = e as { code?: string; constraint?: string; message?: string };
+    return `REJECTED ${pg.code} ${pg.constraint ?? ""} ${pg.code ? "" : pg.message}`;
+  } finally {
+    try { await c.end(); } catch (e) { console.log("   [end error]", (e as Error).message); }
+  }
+}
 async function main() {
-  const q = async (sql: string) => (await pool.query(sql)).rows;
-  console.log("counts:", JSON.stringify((await q(`
-    select
-      (select count(*) from categories) as categories,
-      (select count(*) from tags) as tags,
-      (select count(*) from tools) as tools,
-      (select count(*) from tool_tags) as tool_tags,
-      (select count(*) from playbooks) as playbooks,
-      (select count(*) from playbook_steps) as steps,
-      (select count(*) from playbook_step_tools) as step_tools,
-      (select count(*) from connectors) as connectors,
-      (select count(*) from cameras) as cameras
-  `))[0]));
-  console.log("published:", JSON.stringify((await q(`
-    select
-      (select count(*) from tools where status='published') as tools_pub,
-      (select count(*) from playbooks where status='published') as playbooks_pub,
-      (select count(*) from cameras where status='published') as cameras_pub,
-      (select count(*) from tools where search_keywords = '') as empty_kw
-  `))[0]));
-  console.log("step order indexes (per playbook):");
-  for (const r of await q(`select p.slug, array_agg(s.order_index order by s.order_index) as idx from playbooks p join playbook_steps s on s.playbook_id=p.id group by p.slug order by p.slug`)) {
-    console.log("   ", (r as {slug:string}).slug, JSON.stringify((r as {idx:number[]}).idx));
-  }
-  console.log("sample search_keywords:");
-  for (const r of await q(`select slug, left(search_keywords, 110) as kw from tools order by slug limit 3`)) {
-    console.log("   ", JSON.stringify(r));
-  }
-  console.log("connectors:");
-  for (const r of await q(`select slug, kind, status, enabled, attribution_required, terms_url is not null as has_terms, legal_basis is not null as has_basis, last_checked_at is not null as has_checked from connectors order by slug`)) {
-    console.log("   ", JSON.stringify(r));
-  }
-  console.log("camera view kinds:", JSON.stringify(await q(`select view_kind, count(*) from cameras group by 1 order by 1`)));
-  console.log("cameras embed+connector:", JSON.stringify((await q(`select count(*) filter (where embed_permitted) as embeddable, count(*) filter (where embed_permitted and connector_id is null) as embed_without_connector from cameras`))[0]));
-  await pool.end();
+  const cat = await (async () => {
+    const c = new Client({ connectionString: process.env.DATABASE_URL });
+    await c.connect();
+    const r = await c.query("select id from categories limit 1");
+    await c.end();
+    return r.rows[0].id as string;
+  })();
+  console.log("1:", await attempt(
+    `insert into tools (slug,name,url,summary,description,category_id,cost_model,status,last_verified_at,reliability)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    ["vp-a","N","https://e.invalid","summary text here","description text here", cat, "free", "published", null, null]));
+  console.log("2:", await attempt(
+    `insert into tools (slug,name,url,summary,description,category_id,cost_model,status,last_verified_at,reliability)
+     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    ["vp-b","N","https://e.invalid","summary text here","description text here", cat, "free", "draft", null, null]));
+  const c = new Client({ connectionString: process.env.DATABASE_URL });
+  await c.connect(); await c.query("delete from tools where slug like 'vp-%'"); await c.end();
 }
 void main();

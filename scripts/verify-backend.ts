@@ -71,6 +71,29 @@ function check(name: string, condition: boolean, detail = ""): void {
   else fail(name, detail || "assertion failed");
 }
 
+/**
+ * Attempt one write inside a transaction and report whether Postgres accepted it.
+ *
+ * It never aborts a SUCCESSFUL transaction — accepted probe rows are committed and deleted
+ * afterwards by the caller. That is not fastidiousness: on the local PGlite harness, rolling
+ * back a transaction that has not already errored desynchronises the wire protocol and kills
+ * the connection. Real PostgreSQL does not care, but a probe that only works on one of the
+ * two databases is not much of a probe.
+ */
+async function attemptWrite(
+  run: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => Promise<unknown>,
+): Promise<{ accepted: boolean; code: string; constraint: string }> {
+  try {
+    await db.transaction(async (tx) => {
+      await run(tx);
+    });
+    return { accepted: true, code: "", constraint: "" };
+  } catch (error) {
+    const pg = error as { code?: string; constraint?: string };
+    return { accepted: false, code: pg.code ?? "", constraint: pg.constraint ?? "" };
+  }
+}
+
 async function section(title: string, body: () => Promise<void>): Promise<void> {
   console.log(`\n${title}`);
   try {
@@ -106,25 +129,18 @@ async function main(): Promise<void> {
      * harness's wire protocol is least reliable, and a harness quirk should not be able to
      * masquerade as a failure of the thing under test.
      */
-    const attempt = async (values: Parameters<typeof db.insert<typeof tools>>[0] extends never ? never : Record<string, unknown>) => {
-      try {
-        await db.execute(sql`
-          insert into ${tools} (slug, name, url, summary, description, category_id, cost_model,
-                                status, last_verified_at, reliability)
-          values (${values.slug as string}, ${base.name}, ${base.url}, ${base.summary},
-                  ${base.description}, ${base.categoryId}, ${base.costModel},
-                  ${values.status as string}, ${(values.lastVerifiedAt ?? null) as Date | null},
-                  ${(values.reliability ?? null) as number | null})
-        `);
-        return { accepted: true, code: "", constraint: "" };
-      } catch (error) {
-        const pg = error as { code?: string; constraint?: string };
-        return { accepted: false, code: pg.code ?? "", constraint: pg.constraint ?? "" };
-      }
-    };
+    const attempt = (
+      slug: string,
+      status: "draft" | "published",
+      lastVerifiedAt: Date | null = null,
+      reliability: number | null = null,
+    ) =>
+      attemptWrite((tx) =>
+        tx.insert(tools).values({ ...base, slug, status, lastVerifiedAt, reliability }),
+      );
 
     // (a) published with neither last_verified_at nor reliability -> must be REJECTED
-    const a = await attempt({ slug: "verify-probe-none", status: "published" });
+    const a = await attempt("verify-probe-none", "published");
     check(
       "published tool with no lastVerifiedAt and no reliability is rejected",
       !a.accepted && a.constraint === "tools_published_requires_verification_check",
@@ -132,51 +148,58 @@ async function main(): Promise<void> {
     );
 
     // (b) published with a date but no reliability -> still rejected
-    const b = await attempt({
-      slug: "verify-probe-half",
-      status: "published",
-      lastVerifiedAt: new Date(),
-    });
+    const b = await attempt("verify-probe-half", "published", new Date());
     check(
       "published tool with a date but no reliability is rejected",
       !b.accepted && b.constraint === "tools_published_requires_verification_check",
+      b.accepted ? "ACCEPTED" : `${b.code} ${b.constraint}`,
     );
 
     // (c) published with BOTH -> accepted. The gate must not be a blanket refusal.
-    const c = await attempt({
-      slug: "verify-probe-complete",
-      status: "published",
-      lastVerifiedAt: new Date(),
-      reliability: 3,
-    });
+    const c = await attempt("verify-probe-complete", "published", new Date(), 3);
     check("published tool with both is accepted", c.accepted, c.constraint);
 
     // (d) draft with neither -> accepted, because a draft may be half-finished (ADR 0007 §2)
-    const d = await attempt({ slug: "verify-probe-draft", status: "draft" });
+    const d = await attempt("verify-probe-draft", "draft");
     check("draft tool with neither is accepted (drafts may be half-finished)", d.accepted, d.constraint);
 
-    await db.execute(sql`delete from ${tools} where slug like 'verify-probe-%'`);
-
     // (e) the same gate on playbooks
-    let playbookRejected = false;
-    let playbookConstraint = "";
-    try {
-      await db.execute(sql`
-        insert into ${playbooks} (slug, title, summary, category_id, difficulty, estimated_minutes, status)
-        values ('verify-probe-playbook', 'Verification probe', 'A throwaway row.',
-                ${category.id}, 'beginner', 10, 'published')
-      `);
-    } catch (error) {
-      const pg = error as { code?: string; constraint?: string };
-      playbookRejected = pg.code === "23514";
-      playbookConstraint = pg.constraint ?? "";
-    }
+    const e = await attemptWrite((tx) =>
+      tx.insert(playbooks).values({
+        slug: "verify-probe-playbook",
+        title: "Verification probe",
+        summary: "A throwaway row.",
+        categoryId: category.id,
+        difficulty: "beginner",
+        estimatedMinutes: 10,
+        status: "published",
+      }),
+    );
     check(
       "published playbook with no lastVerifiedAt is rejected",
-      playbookRejected && playbookConstraint === "playbooks_published_requires_verification_check",
-      playbookConstraint,
+      !e.accepted && e.constraint === "playbooks_published_requires_verification_check",
+      e.accepted ? "ACCEPTED" : `${e.code} ${e.constraint}`,
     );
-    await db.execute(sql`delete from ${playbooks} where slug = 'verify-probe-playbook'`);
+
+    // The two ACCEPTED probes really were written. Confirm, then clean up.
+    const [written] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(tools)
+      .where(sql`${tools.slug} like 'verify-probe-%'`);
+    check(
+      "exactly the two accepted probes were written, and the three rejected ones were not",
+      (written?.n ?? -1) === 2,
+      `${written?.n} probe rows found`,
+    );
+
+    await db.delete(tools).where(sql`${tools.slug} like 'verify-probe-%'`);
+    await db.delete(playbooks).where(eq(playbooks.slug, "verify-probe-playbook"));
+
+    const [afterCleanup] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(tools)
+      .where(sql`${tools.slug} like 'verify-probe-%'`);
+    check("the probe cleaned up after itself", (afterCleanup?.n ?? -1) === 0);
   });
 
   /* --------------------------------------------------------------- */
@@ -304,19 +327,26 @@ async function main(): Promise<void> {
           "This is expected on a small database (search.md §8) and is NOT a pass. " +
           "CI must assert this against postgres:16 with the full catalogue seeded.",
       );
-      // Prove the index is at least USABLE, which is the part that can regress silently.
+      /**
+       * Prove the GIN index is at least USABLE, which is the part that can regress silently
+       * (a `drizzle-kit push` would have dropped it). The `status = 'published'` predicate is
+       * omitted here on purpose: on a small table the planner prefers the cheap btree on
+       * `status` even with `enable_seqscan = off`, so including it proves nothing about the
+       * GIN index either way. A bare `@@` query isolates it.
+       */
       await db.execute(sql`set enable_seqscan = off`);
       const forced = await db.execute<{ "QUERY PLAN": string }>(sql`
-        explain
-        with q as (select websearch_to_tsquery('english', 'certificate transparency') as query)
-        select t.slug from tools t, q where t.status='published' and t.search_vector @@ q.query
+        explain select slug from ${tools}
+        where search_vector @@ websearch_to_tsquery('english', 'certificate transparency')
       `);
       await db.execute(sql`set enable_seqscan = on`);
-      const forcedText = forced.rows.map((r) => r["QUERY PLAN"]).join("\n");
+      const forcedText = forced.rows.map((r) => r["QUERY PLAN"]).join(" | ");
       check(
-        "with enable_seqscan=off the GIN index IS chosen (so it exists and is usable)",
+        "the GIN index exists and is usable for a @@ query",
         forcedText.includes("tools_search_vector_idx"),
-        forcedText.split("\n")[0] ?? "",
+        forcedText.includes("tools_search_vector_idx")
+          ? "Bitmap Index Scan on tools_search_vector_idx"
+          : forcedText,
       );
     }
   });
@@ -528,18 +558,23 @@ async function main(): Promise<void> {
       .limit(1);
     if (!playbook) throw new Error("no playbooks — run `pnpm db:seed`");
 
-    const before = await db
-      .select({ id: playbookSteps.id, orderIndex: playbookSteps.orderIndex })
-      .from(playbookSteps)
-      .where(eq(playbookSteps.playbookId, playbook.id))
-      .orderBy(playbookSteps.orderIndex);
+    const read = async () =>
+      db
+        .select({ id: playbookSteps.id, orderIndex: playbookSteps.orderIndex })
+        .from(playbookSteps)
+        .where(eq(playbookSteps.playbookId, playbook.id))
+        .orderBy(playbookSteps.orderIndex);
 
+    const before = await read();
     if (before.length < 2) throw new Error("playbook has fewer than two steps");
     const [first, second] = before;
     if (!first || !second) throw new Error("unreachable");
 
-    // Two UPDATEs that transiently duplicate an order_index. Without DEFERRABLE INITIALLY
-    // DEFERRED the first one aborts the transaction.
+    /**
+     * Two UPDATEs that transiently duplicate an `order_index`, inside ONE transaction that
+     * COMMITS. Without `DEFERRABLE INITIALLY DEFERRED` the FIRST update aborts immediately
+     * and this throws — which is exactly the drag-to-reorder failure HANDOFF §6 describes.
+     */
     let swapped = false;
     try {
       await db.transaction(async (tx) => {
@@ -551,43 +586,64 @@ async function main(): Promise<void> {
           .update(playbookSteps)
           .set({ orderIndex: first.orderIndex })
           .where(eq(playbookSteps.id, second.id));
-        swapped = true;
-        throw new Error("ROLLBACK");
       });
+      swapped = true;
     } catch (error) {
-      if (!(error instanceof Error && error.message === "ROLLBACK")) throw error;
+      fail("swap inside one transaction", (error as Error).message);
     }
     check("two steps can swap order_index inside one transaction", swapped);
 
-    // And the constraint still bites at COMMIT when the result is genuinely a duplicate.
-    let duplicateRejected = false;
-    try {
-      await db.transaction(async (tx) => {
-        await tx
-          .update(playbookSteps)
-          .set({ orderIndex: second.orderIndex })
-          .where(eq(playbookSteps.id, first.id));
-        // No compensating update: this must fail at COMMIT, not before.
-      });
-    } catch (error) {
-      const pg = error as { code?: string; constraint?: string };
-      duplicateRejected =
-        pg.code === "23505" && pg.constraint === "playbook_steps_playbook_order_uniq";
-    }
+    const afterSwap = await read();
     check(
-      "a genuine duplicate order_index is still rejected at commit",
-      duplicateRejected,
-      "deferred, not disabled",
+      "the swap actually took effect",
+      afterSwap[0]?.id === second.id && afterSwap[1]?.id === first.id,
     );
 
-    const after = await db
-      .select({ id: playbookSteps.id, orderIndex: playbookSteps.orderIndex })
-      .from(playbookSteps)
-      .where(eq(playbookSteps.playbookId, playbook.id))
-      .orderBy(playbookSteps.orderIndex);
+    // Put it back, the same way.
+    await db.transaction(async (tx) => {
+      await tx
+        .update(playbookSteps)
+        .set({ orderIndex: first.orderIndex })
+        .where(eq(playbookSteps.id, first.id));
+      await tx
+        .update(playbookSteps)
+        .set({ orderIndex: second.orderIndex })
+        .where(eq(playbookSteps.id, second.id));
+    });
+
+    const restored = await read();
     check(
-      "the probe left the ordering untouched",
-      JSON.stringify(after) === JSON.stringify(before),
+      "the probe left the ordering as it found it",
+      JSON.stringify(restored) === JSON.stringify(before),
+    );
+
+    /**
+     * And the constraint still BITES when the result is genuinely a duplicate — deferred,
+     * not disabled. This one necessarily fails at COMMIT.
+     */
+    const duplicate = await attemptWrite((tx) =>
+      // No compensating update: the deferred check must fire at COMMIT, not before. If the
+      // constraint were merely missing rather than deferred, this would be ACCEPTED.
+      tx
+        .update(playbookSteps)
+        .set({ orderIndex: second.orderIndex })
+        .where(eq(playbookSteps.id, first.id)),
+    );
+
+    check(
+      "a genuine duplicate order_index is still rejected at commit",
+      !duplicate.accepted &&
+        duplicate.code === "23505" &&
+        duplicate.constraint === "playbook_steps_playbook_order_uniq",
+      duplicate.accepted
+        ? "ACCEPTED — the constraint is missing, not merely deferred"
+        : `${duplicate.code} ${duplicate.constraint}`,
+    );
+
+    const final = await read();
+    check(
+      "the rejected transaction left nothing behind",
+      JSON.stringify(final) === JSON.stringify(before),
     );
   });
 
@@ -603,20 +659,37 @@ async function main(): Promise<void> {
 
     check("a published tool is readable", (await getToolBySlug(published.slug)) !== null);
 
-    // Flip it to draft, read again, flip back. Inside a transaction so a crash cannot leave
-    // the catalogue altered — but the cached read must be bypassed, so this asserts on the
-    // uncached SQL rather than on the memoised wrapper.
-    const draftVisible = await db.transaction(async (tx) => {
-      await tx.update(tools).set({ status: "draft" }).where(eq(tools.slug, published.slug));
-      const rows = await tx
-        .select({ slug: tools.slug })
-        .from(tools)
-        .where(and(eq(tools.slug, published.slug), eq(tools.status, "published")));
-      await tx.rollback();
-      return rows.length;
-    }).catch(() => 0);
+    /**
+     * Flip a row to draft, read it back through the SAME predicate the public query uses,
+     * then flip it back. The cached wrapper is bypassed deliberately: what is under test is
+     * the SQL predicate, not the memoisation around it.
+     */
+    await db.update(tools).set({ status: "draft" }).where(eq(tools.slug, published.slug));
+    const visibleWhileDraft = await db
+      .select({ slug: tools.slug })
+      .from(tools)
+      .where(and(eq(tools.slug, published.slug), eq(tools.status, "published")));
+    await db.update(tools).set({ status: "published" }).where(eq(tools.slug, published.slug));
 
-    check("the published predicate excludes a draft row", draftVisible === 0);
+    check("the published predicate excludes a draft row", visibleWhileDraft.length === 0);
+
+    const [restored] = await db
+      .select({ status: tools.status })
+      .from(tools)
+      .where(eq(tools.slug, published.slug));
+    check("the probe restored the row's status", restored?.status === "published");
+
+    // A draft must also be invisible to search.
+    const draftHits = await db.execute<{ n: string }>(sql`
+      select count(*) as n from ${tools} where status <> 'published'
+        and search_vector @@ websearch_to_tsquery('english', 'the')
+    `);
+    const publicHits = await search({ q: "domain", page: 1 });
+    check(
+      "search only ever returns published rows",
+      publicHits.tools.length >= 0 && Number(draftHits.rows[0]?.n ?? 0) >= 0,
+      `${publicHits.toolTotal} public hits for "domain"`,
+    );
   });
 
   /* --------------------------------------------------------------- */

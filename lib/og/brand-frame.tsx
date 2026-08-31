@@ -71,6 +71,9 @@ export interface BrandFrameProps {
  * there is no `gap` shorthand inheritance to rely on, and shorthand properties are limited.
  * The verbose style objects below are that constraint, not a preference.
  */
+/** Kept in sync with the nav in `components/layout/nav-links.ts`. */
+const PILLARS = ["Directory", "Playbooks", "Live", "Workspaces"] as const;
+
 export function BrandFrame({ eyebrow, title, description }: BrandFrameProps) {
   return (
     <div
@@ -151,7 +154,13 @@ export function BrandFrame({ eyebrow, title, description }: BrandFrameProps) {
           color: OG_COLORS.foregroundSecondary,
         }}
       >
-        {brand.tagline}
+        {/*
+          The four pillars, not the tagline. The default card already uses the tagline as
+          its headline, so repeating it here said the same thing twice — visible only once
+          the image was actually looked at rather than checked for a 200 and a byte count.
+          The pillars tell a reader what the product is, which is what a share card is for.
+        */}
+        {PILLARS.join("  ·  ")}
       </div>
     </div>
   );
