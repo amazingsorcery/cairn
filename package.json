@@ -21,7 +21,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx db/migrate.ts",
     "db:seed": "tsx db/seed.ts",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "content:check": "tsx scripts/validate-content.ts"
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.7.4",
