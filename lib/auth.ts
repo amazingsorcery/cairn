@@ -6,10 +6,12 @@ import { DrizzleAdapter } from "@auth/drizzle-adapter";
 import { eq } from "drizzle-orm";
 import { createTransport } from "nodemailer";
 
-import brand from "@/config/brand";
+
 import { accounts, sessions, users, verificationTokens, type UserRole } from "@/db/schema";
 import { db } from "./db";
 import { adminEmails, authProviders, env } from "./env";
+import { magicLinkEmail } from "./auth-mail";
+import { safeRedirect } from "./auth-redirect";
 import { logger, maskEmail } from "./logger";
 import { consumeSafely } from "./rate-limit";
 
@@ -39,153 +41,6 @@ declare module "next-auth" {
   interface User {
     role?: UserRole;
   }
-}
-
-/* ------------------------------------------------------------------ *
- * The magic-link email
- * ------------------------------------------------------------------ */
-
-/**
- * Every visible string comes from `config/brand.ts` (product-brief §7). Renaming the
- * product must not require editing an email template.
- *
- * Both parts are sent: HTML for readers who accept it, and a real plain-text alternative
- * for the substantial share of this audience who read mail in mutt, in a terminal client,
- * or with remote content disabled as a matter of policy. A plain-text part that just says
- * "view this in HTML" is a broken sign-in for exactly the most security-conscious users.
- *
- * The HTML is a table-based layout with inline styles and no remote assets: no tracking
- * pixel, no web font, no logo fetched from our server. A remote image in a sign-in email
- * tells us when and where the recipient opened it, which for this audience is precisely
- * what we must not learn.
- */
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-export function magicLinkEmail(params: { url: string; host: string }): {
-  subject: string;
-  text: string;
-  html: string;
-} {
-  const { url, host } = params;
-  const safeUrl = escapeHtml(url);
-  const safeHost = escapeHtml(host);
-
-  const subject = `Sign in to ${brand.name}`;
-
-  const text = [
-    `Sign in to ${brand.name}`,
-    "",
-    `Open this link to sign in at ${host}:`,
-    url,
-    "",
-    "The link works once and expires in 24 hours.",
-    "",
-    `If you did not ask to sign in to ${brand.name}, no account action has been taken and`,
-    "you can ignore this message. Do not forward this email: anyone holding the link can",
-    "sign in as you.",
-    "",
-    brand.copyright,
-  ].join("\n");
-
-  const html = `<!doctype html>
-<html lang="en">
-  <body style="margin:0;padding:24px;background:#0b0d10;color:#e6e8eb;font-family:ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;font-size:16px;line-height:1.5;">
-    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:560px;margin:0 auto;">
-      <tr>
-        <td style="padding-bottom:8px;font-size:20px;font-weight:600;">${escapeHtml(brand.name)}</td>
-      </tr>
-      <tr>
-        <td style="padding-bottom:24px;color:#9aa4b2;font-size:14px;">${escapeHtml(brand.tagline)}</td>
-      </tr>
-      <tr>
-        <td style="padding-bottom:16px;">Open the link below to sign in at <strong>${safeHost}</strong>.</td>
-      </tr>
-      <tr>
-        <td style="padding-bottom:24px;">
-          <a href="${safeUrl}" style="display:inline-block;padding:12px 20px;background:#e6e8eb;color:#0b0d10;text-decoration:none;border-radius:6px;font-weight:600;">Sign in</a>
-        </td>
-      </tr>
-      <tr>
-        <td style="padding-bottom:24px;color:#9aa4b2;font-size:14px;word-break:break-all;">
-          If the button does not work, paste this into your browser:<br />${safeUrl}
-        </td>
-      </tr>
-      <tr>
-        <td style="padding-bottom:16px;color:#9aa4b2;font-size:14px;">
-          The link works once and expires in 24 hours.
-        </td>
-      </tr>
-      <tr>
-        <td style="padding-bottom:24px;color:#9aa4b2;font-size:14px;">
-          If you did not ask to sign in to ${escapeHtml(brand.name)}, no account action has been
-          taken and you can ignore this message. Do not forward this email: anyone holding the
-          link can sign in as you.
-        </td>
-      </tr>
-      <tr>
-        <td style="border-top:1px solid #23262b;padding-top:16px;color:#6b7280;font-size:12px;">
-          ${escapeHtml(brand.copyright)}
-        </td>
-      </tr>
-    </table>
-  </body>
-</html>`;
-
-  return { subject, text, html };
-}
-
-/* ------------------------------------------------------------------ *
- * Redirect safety
- * ------------------------------------------------------------------ */
-
-/**
- * Decide where a sign-in may land. This is the open-redirect surface and it is attacked
- * with URLs that look same-origin to a careless check:
- *
- *   //evil.test/x          protocol-relative — a browser reads this as another origin
- *   /\evil.test/x          backslash; some parsers normalise it to `//`
- *   https://app.test.evil  prefix match on the origin string succeeds, host differs
- *   https://evil.test?u=https://app.test   the real host is evil.test
- *
- * So: parse with the URL API against our own base and compare `origin` exactly. Anything
- * that fails to parse, or parses to a different origin, becomes the base URL. Never
- * reflect an attacker-supplied absolute URL back into a redirect.
- *
- * Exported for unit tests — this function is where an open redirect would live and QA is
- * going to attack it.
- */
-export function safeRedirect(url: string, baseUrl: string): string {
-  // Reject before parsing: a bare `//host` or `/\host` is relative-looking but resolves to
-  // a foreign origin, and no legitimate callback in this app begins that way.
-  if (/^\s*[/\\]{2}/.test(url)) return baseUrl;
-
-  let base: URL;
-  try {
-    base = new URL(baseUrl);
-  } catch {
-    return baseUrl;
-  }
-
-  let target: URL;
-  try {
-    // A relative path resolves against `base`; an absolute URL ignores it. Either way the
-    // origin comparison below is what decides.
-    target = new URL(url, base);
-  } catch {
-    return baseUrl;
-  }
-
-  if (target.origin !== base.origin) return baseUrl;
-
-  // Return path + query + fragment only. Returning `target.href` would be equivalent here,
-  // but a relative result cannot become an absolute redirect if this is ever refactored.
-  return `${target.pathname}${target.search}${target.hash}`;
 }
 
 /* ------------------------------------------------------------------ *
@@ -362,7 +217,9 @@ export const authConfig: NextAuthConfig = {
      */
     async createUser({ user }) {
       const address = user.email?.trim().toLowerCase();
-      if (!address || !adminEmails.includes(address)) return;
+      // `id` is optional on the base `User` type even though the adapter always supplies
+      // it; without the guard we would silently update every row on a `where undefined`.
+      if (!address || !user.id || !adminEmails.includes(address)) return;
 
       await db.update(users).set({ role: "admin" }).where(eq(users.id, user.id));
       logger.info(
@@ -391,6 +248,9 @@ export const authConfig: NextAuthConfig = {
 };
 
 export const { handlers, auth, signIn, signOut } = NextAuth(authConfig);
+
+export { magicLinkEmail } from "./auth-mail";
+export { safeRedirect } from "./auth-redirect";
 
 /* ------------------------------------------------------------------ *
  * Session helpers used by queries, actions and route handlers
