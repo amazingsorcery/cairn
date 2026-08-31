@@ -76,6 +76,30 @@ const serverSchema = z
 
     /** Comma-separated user emails granted the admin role on first sign-in. */
     ADMIN_EMAILS: z.string().default(""),
+
+    /* ---------------------------------------------------------------- *
+     * Live sources (v2). All optional: a missing key must disable ONE
+     * layer with a visible "source unavailable" state, never stop the
+     * process. That is why none of these is required — product-brief §2b.
+     * ---------------------------------------------------------------- */
+
+    /** NASA FIRMS wildfire hotspots. Register at firms.modaps.eosdis.nasa.gov. */
+    FIRMS_MAP_KEY: z.string().optional(),
+    /** Which FIRMS satellite product to read, e.g. VIIRS_SNPP_NRT. */
+    FIRMS_SOURCE: z.string().optional(),
+    /** Override the USGS earthquake feed window, e.g. all_hour, all_day. */
+    USGS_QUAKE_FEED: z.string().optional(),
+    /** Default aircraft viewport as "lat,lon,radiusNm". See ADR 0021 on the 30s TTL. */
+    AIRCRAFT_VIEWPORT: z.string().optional(),
+    /**
+     * Contact address sent in the User-Agent to upstreams that ask for one.
+     * NWS and Nominatim both request it; sending it is a condition of polite use, and an
+     * operator who cannot be contacted is one who gets blocked without warning.
+     */
+    SOURCE_CONTACT_EMAIL: z.string().email().optional(),
+
+    /** Redis, for the source cache, rate limiting and layer pub/sub (ADR 0019). */
+    REDIS_URL: z.string().optional(),
   })
   .superRefine((env, ctx) => {
     if (env.RATE_LIMIT_SECRET === env.AUTH_SECRET) {

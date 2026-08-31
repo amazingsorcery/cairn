@@ -1,0 +1,105 @@
+import { describe, expect, it } from "vitest";
+
+import { LINK_ONLY_REGISTRY, normaliseCameras, trafficCameras } from "./traffic-cameras";
+
+/**
+ * The "fixture" here is the committed registry itself — `content/cameras/*.json`, verified by
+ * hand in v1 with licences read and URLs fetched. It is real content, not a capture of a live
+ * response, because this adapter makes no live request (ADR 0015).
+ */
+
+describe("traffic-cameras", () => {
+  it("serves the verified registry as renderable features", async () => {
+    const result = await trafficCameras.fetch(new AbortController().signal);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.features.length).toBeGreaterThan(0);
+    for (const feature of result.features) {
+      expect(feature.kind).toBe("cameras");
+      expect(feature.properties.embedUrl).toMatch(/^https:\/\//);
+      expect(feature.properties.licence).not.toBe("");
+    }
+  });
+
+  it("carries a per-camera attribution, because two licences cannot share one string", async () => {
+    const result = await trafficCameras.fetch(new AbortController().signal);
+    if (!result.ok) throw new Error("registry should parse");
+
+    // TfL's terms require their exact wording including the Ordnance Survey notice; CC BY
+    // requires Fintraffic's. A blended layer-level string would satisfy neither licence.
+    for (const feature of result.features) {
+      if (feature.properties.attributionRequired) {
+        expect(feature.properties.attribution).toBeTruthy();
+      }
+    }
+    const strings = new Set(result.features.map((f) => f.properties.attribution));
+    expect(strings.size).toBeGreaterThan(1);
+  });
+
+  it("excludes link-only providers, whose embed permission was never confirmed", async () => {
+    const result = await trafficCameras.fetch(new AbortController().signal);
+    if (!result.ok) throw new Error("registry should parse");
+
+    // The separate file exists precisely because an embed permission could not be confirmed.
+    // Rendering those on an embedding layer would undo that judgement.
+    const linkOnly = normaliseCameras([LINK_ONLY_REGISTRY]);
+    if (!linkOnly.ok) throw new Error("link-only registry should parse");
+    expect(linkOnly.features).toEqual([]);
+
+    const ids = new Set(result.features.map((f) => f.id));
+    expect(ids.has("statens-vegvesen-webkamera-network")).toBe(false);
+  });
+
+  it("never hands out a camera it may not embed, even if one appeared in an embedding file", () => {
+    const result = normaliseCameras([
+      {
+        provider: { slug: "p", name: "Provider", attribution: "credit", licence: "test" },
+        cameras: [
+          {
+            slug: "not-permitted",
+            name: "Not permitted",
+            operator: "op",
+            jurisdiction: "GB",
+            locationLabel: "somewhere",
+            latitude: 51,
+            longitude: 0,
+            sourceUrl: "https://example.com",
+            embedUrl: "https://example.com/a.jpg",
+            embedPermitted: false,
+            attributionRequired: true,
+            attribution: "credit",
+            licence: "test",
+            subject: "traffic",
+            confidence: "verified",
+            lastVerifiedAt: "2026-08-31",
+          },
+        ],
+      },
+    ]);
+    if (!result.ok) throw new Error("payload should parse");
+    expect(result.features).toEqual([]);
+  });
+
+  it("reports the date a human verified the entry, not the moment it ran", async () => {
+    // A static registry that claims to have been observed just now is lying about its age,
+    // which is the freshness failure ADR 0014 exists to prevent.
+    const result = await trafficCameras.fetch(new AbortController().signal);
+    if (!result.ok) throw new Error("registry should parse");
+    expect(result.observedAt.getTime()).toBeLessThan(Date.now());
+    expect(result.observedAt.getFullYear()).toBeGreaterThanOrEqual(2026);
+  });
+
+  it("degrades rather than throwing if the registry stops matching its schema", () => {
+    const result = normaliseCameras([{ provider: {}, cameras: "not an array" }]);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.failure.kind).toBe("schemaChanged");
+  });
+
+  it("reports healthy without making a network call", async () => {
+    const health = await trafficCameras.healthcheck(new AbortController().signal);
+    expect(health.ok).toBe(true);
+    expect(health.detail).toContain("cameras");
+  });
+});

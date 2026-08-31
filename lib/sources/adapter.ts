@@ -164,16 +164,20 @@ export function describeFailure(failure: SourceFailure): string {
   }
 }
 
-/** Finite, in-range coordinates. A NaN longitude renders somewhere confidently wrong. */
-export function isRenderableCoordinate(longitude: unknown, latitude: unknown): boolean {
-  return (
-    typeof longitude === "number" &&
-    typeof latitude === "number" &&
-    Number.isFinite(longitude) &&
-    Number.isFinite(latitude) &&
-    longitude >= -180 &&
-    longitude <= 180 &&
-    latitude >= -90 &&
-    latitude <= 90
-  );
+/**
+ * Finite, in-range coordinates, or null.
+ *
+ * Returns the narrowed pair rather than a boolean so the caller cannot forget the check and
+ * still index into the array. A NaN or out-of-range longitude does not fail loudly — it
+ * renders a feature somewhere confidently wrong, which is the worst outcome on a map whose
+ * whole claim is that it is accurate.
+ */
+export function coordinatePair(
+  longitude: unknown,
+  latitude: unknown,
+): { readonly longitude: number; readonly latitude: number } | null {
+  if (typeof longitude !== "number" || typeof latitude !== "number") return null;
+  if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return null;
+  if (longitude < -180 || longitude > 180 || latitude < -90 || latitude > 90) return null;
+  return { longitude, latitude };
 }

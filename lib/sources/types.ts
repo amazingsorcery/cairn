@@ -66,10 +66,25 @@ export type SourceResult<T> =
       readonly features: readonly T[];
       /** When the upstream produced this data, not when we cached it. */
       readonly observedAt: Date;
-      /** True when served from cache past its TTL because the upstream is unreachable. */
-      readonly stale: boolean;
     }
   | { readonly ok: false; readonly failure: SourceFailure; readonly lastGoodAt: Date | null };
+
+/**
+ * A result plus the staleness only the cache layer can know.
+ *
+ * `stale` deliberately does NOT live on `SourceResult`: an adapter has just called upstream,
+ * so the only honest value it could ever set is `false`. Whether the caller is looking at a
+ * cache entry served past its TTL because the upstream is unreachable is known by the worker
+ * holding the Redis key, and nowhere else. Putting the field on the adapter's return would
+ * have invited six adapters to each lie about it in the same way.
+ */
+export interface CachedSourceResult<T> {
+  readonly result: SourceResult<T>;
+  /** Served past TTL because the upstream could not be reached. */
+  readonly stale: boolean;
+  /** When this payload was cached, as distinct from when the upstream observed it. */
+  readonly cachedAt: Date;
+}
 
 /** A normalised map feature. Every adapter produces this shape, whatever the upstream. */
 export interface SourceFeature {
@@ -86,6 +101,42 @@ export interface SourceFeature {
   readonly sourceUrl?: string;
   /** Adapter-specific detail, rendered by the feature panel. Never `any`. */
   readonly properties: Readonly<Record<string, string | number | boolean | null>>;
+}
+
+/**
+ * What is being asked for. Most sources ignore all of it; viewport-scoped ones do not.
+ *
+ * This exists so the registry can hold *sources* rather than pre-bound instances of a
+ * source. Binding a viewport into the slug at construction time works right up until two
+ * viewports are needed, and then the registry is quietly holding two of the same thing.
+ */
+export interface SourceQuery {
+  readonly bbox?: {
+    readonly west: number;
+    readonly south: number;
+    readonly east: number;
+    readonly north: number;
+  };
+  /** Cap on features returned, where the upstream supports it. */
+  readonly limit?: number;
+}
+
+/**
+ * Everything an adapter needs from the outside world, passed in rather than imported, so an
+ * adapter is testable without a running Redis and cannot reach for a global.
+ */
+export interface SourceContext {
+  readonly signal: AbortSignal;
+  /** Shared, durable side cache. Survives a worker restart; see `fetch`. */
+  readonly cache: SourceCache;
+  /** Reads a required key and returns `notConfigured` upward rather than throwing. */
+  readonly env: (name: string) => string | undefined;
+}
+
+/** The narrow slice of a cache an adapter may use. Redis in production, a map in tests. */
+export interface SourceCache {
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string, ttlSeconds?: number): Promise<void>;
 }
 
 export interface SourceAdapter<T extends SourceFeature = SourceFeature> {
@@ -107,9 +158,26 @@ export interface SourceAdapter<T extends SourceFeature = SourceFeature> {
   /** Zod schema for the raw upstream payload. A parse failure is `schemaChanged`. */
   readonly responseSchema: z.ZodTypeAny;
 
-  /** Fetch and normalise. Must not throw for an expected failure — return one. */
-  fetch(signal: AbortSignal): Promise<SourceResult<T>>;
+  /**
+   * Map an already-validated upstream payload to features.
+   *
+   * Separate from `fetch` so it can be tested against a captured fixture with no network —
+   * which is the most valuable test an adapter has, because upstream shape changes are the
+   * failure this whole layer exists to survive. Capture real payloads; do not invent them.
+   */
+  normalise(payload: unknown, query: SourceQuery): readonly T[];
+
+  /**
+   * Fetch and normalise. Must not throw for an expected failure — return one.
+   *
+   * `query` carries the viewport for sources that are scoped to one, so a viewport-scoped
+   * source can describe itself rather than being baked into the registry as a pre-bound
+   * instance. `cache` is the shared store: several adapters need a long-lived side cache
+   * (NWS zone centroids, mirror discovery) that must survive a worker restart, and without
+   * a handle here each one invents its own in-process map that empties on every deploy.
+   */
+  fetch(query: SourceQuery, ctx: SourceContext): Promise<SourceResult<T>>;
 
   /** Cheap liveness probe for the operator dashboard and the deploy health check. */
-  healthcheck(signal: AbortSignal): Promise<{ readonly ok: boolean; readonly detail: string }>;
+  healthcheck(ctx: SourceContext): Promise<{ readonly ok: boolean; readonly detail: string }>;
 }
