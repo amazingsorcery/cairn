@@ -104,6 +104,7 @@ export const brand = {
     security: `security@${DOMAIN}`,
     press: `press@${DOMAIN}`,
     privacy: `privacy@${DOMAIN}`,
+    legal: `legal@${DOMAIN}`,
   },
 
   /**
@@ -119,6 +120,33 @@ export const brand = {
 
   /** Source repository. */
   repoUrl: `https://github.com/${NAME_LOWER}/${NAME_LOWER}`,
+
+  /**
+   * Legal facts the policy documents in `content/legal/` interpolate.
+   *
+   * These are NOT known. No entity is incorporated, no jurisdiction of establishment is
+   * chosen, and no lawyer has reviewed anything — see `docs/content/legal-review.md`.
+   *
+   * They are deliberately `null` rather than filled with a plausible guess. A privacy
+   * policy that names a governing law we invented is worse than one that admits the gap:
+   * it is a false statement of fact in the one document a user is entitled to rely on,
+   * and it would mislead exactly the people least able to absorb the consequences.
+   *
+   * `reviewComplete` gates the rendering. While it is false the legal pages render with a
+   * pre-launch banner and show unresolved values as a visible marker, never as prose that
+   * reads as settled. Flip it in the same commit that records counsel's answers.
+   */
+  legal: {
+    reviewComplete: false,
+    /** Where the operating entity is established. Determines the supervisory authority. */
+    governingLaw: null,
+    /** Where user data physically rests. Required by the privacy notice. */
+    dataRegion: null,
+    /** Effective date of the current policy version. Set when counsel signs off. */
+    policyEffectiveDate: null,
+    /** Billing currency. Nothing is charged in v1, so this is unresolved by design. */
+    currency: null,
+  },
 
   /** Copyright. */
   copyrightHolder: `The ${NAME} maintainers`,

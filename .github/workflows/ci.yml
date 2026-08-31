@@ -134,6 +134,12 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
+      # The catalogue is the product's credibility. A duplicate slug, a playbook step
+      # citing a tool that was omitted during verification, or non-contiguous step
+      # ordering all reach users as broken links, and none of them are caught by tsc.
+      - name: Validate seed content
+        run: pnpm content:check
+
       # Migrations before build: any page that reads the database during static generation
       # needs the schema to exist. Running them here also means the migration script itself
       # is exercised on every commit, against a real Postgres 16 — which is the only way a
