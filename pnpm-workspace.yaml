@@ -1,7 +1,22 @@
+# Which dependencies may run install scripts.
+#
+# pnpm 11 refuses to finish an install with unresolved entries here and exits non-zero. That
+# is survivable interactively — it prints a prompt — and fatal in a Docker build, which is
+# where it was found: `pnpm install --frozen-lockfile` failed with ERR_PNPM_IGNORED_BUILDS on
+# the first ever container build. Nothing had built an image before, because the development
+# machine has no Docker.
+#
+# Both entries below genuinely need their install script: each downloads or links a native
+# binary for the host platform, and neither works without it. They are build-time only and
+# reach no runtime path.
+#
+# `@vaadin/vaadin-usage-statistics` is deliberately absent rather than set to false. It was a
+# transitive dependency of the deck.gl umbrella package — via @deck.gl/arcgis and the whole
+# ArcGIS SDK — and it phones home. Using the scoped deck.gl packages removed it entirely, and
+# an entry here would quietly re-admit it.
 allowBuilds:
-  '@vaadin/vaadin-usage-statistics': set this to true or false
-  esbuild: set this to true or false
-  unrs-resolver: set this to true or false
+  esbuild: true
+  unrs-resolver: true
 
 # Force the patched postcss everywhere. Next vendors postcss@8.4.31 internally, which carries
 # two HIGH advisories (arbitrary file read, and path traversal via source-map auto-loading).

@@ -153,7 +153,15 @@ fi
 
 step "7/8  Deploy"
 cd "$APP_DIR"
-./infra/deploy.sh
+# --no-pull when there is no git checkout. The code can arrive by other means than a clone —
+# it arrived by tar over ssh on the first real deploy — and deploy.sh's `git pull --ff-only`
+# aborts the whole run on a directory that is not a repository.
+if [ -d "${APP_DIR}/.git" ]; then
+  ./infra/deploy.sh
+else
+  note "no .git here — deploying the files as they are"
+  ./infra/deploy.sh --no-pull
+fi
 
 step "8/8  Seed the catalogue"
 # Deliberately not part of deploy.sh: loading content should be a deliberate act, not a
