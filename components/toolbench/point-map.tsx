@@ -11,6 +11,7 @@ import * as React from "react";
 import { GeoJSONSource, Map as MapLibreMap, Marker, setWorkerUrl } from "maplibre-gl";
 import { Minus, Plus, TriangleAlert } from "lucide-react";
 
+import { readTheme, type Theme } from "@/components/layout/theme";
 import { mapTiles } from "@/config/live";
 import { cn } from "@/lib/utils";
 
@@ -55,7 +56,13 @@ import { cn } from "@/lib/utils";
  *
  * 4. **The tile style comes from `config/live.ts` and nowhere else.** That file is the single
  *    declaration `scripts/generate-csp.ts` reads. A hardcoded URL here produces a map that
- *    works locally and is blocked in production.
+ *    works locally and is blocked in production. It declares one style per theme
+ *    (`mapTiles.styleUrls`) and this picks by the document's `data-theme`: a black map inside
+ *    a white card is a hard visual edge, and light is a preference this product respects
+ *    rather than tolerates (`components/layout/theme.ts` — it is set for astigmatism, low
+ *    vision and bright rooms). Both styles are the same origin, so the CSP is identical either
+ *    way. `mapTiles.styleUrl` is the dark fallback for a caller that cannot read the theme;
+ *    this one can, so it does not use it.
  *
  * 5. **The coordinate is written out under the map, always.** The number is the answer and
  *    the map is the illustration, so a dead tile host costs the reader the illustration and
@@ -129,6 +136,37 @@ function accuracyRing(
 const NO_RING: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
 
 /**
+ * Add the accuracy ring to whichever style is currently loaded.
+ *
+ * Called on `load` and again after every `setStyle`. MapLibre discards every source and layer
+ * when a style is replaced, so a theme switch that did not re-add them would leave a correctly
+ * themed basemap with no ring on it — which reads as a coordinate that names a point when it
+ * does not. The pin needs no such care: a `Marker` is DOM rather than style, and survives a
+ * swap by itself.
+ */
+function installAccuracy(map: MapLibreMap, data: GeoJSON.FeatureCollection): void {
+  if (!map.getSource(ACCURACY_SOURCE)) {
+    map.addSource(ACCURACY_SOURCE, { type: "geojson", data });
+  }
+  if (!map.getLayer(ACCURACY_FILL)) {
+    map.addLayer({
+      id: ACCURACY_FILL,
+      type: "fill",
+      source: ACCURACY_SOURCE,
+      paint: { "fill-color": "#38bdf8", "fill-opacity": 0.12 },
+    });
+  }
+  if (!map.getLayer(ACCURACY_LINE)) {
+    map.addLayer({
+      id: ACCURACY_LINE,
+      type: "line",
+      source: ACCURACY_SOURCE,
+      paint: { "line-color": "#38bdf8", "line-width": 1 },
+    });
+  }
+}
+
+/**
  * The marker, built as DOM rather than as JSX.
  *
  * MapLibre moves a marker's element into its own container, which is why this is not a React
@@ -188,9 +226,67 @@ export default function PointMap({
   /* Motion is a vestibular trigger, not a decoration, and a map is a large moving surface. */
   const reducedMotionRef = React.useRef(false);
 
+  /**
+   * `null` until the document's theme has been read, and the map is not created before then.
+   *
+   * MapLibre loads a whole style file rather than following a CSS custom property, so a map
+   * built against a guess would be a dark basemap on a light page until the reader toggled
+   * something — and the reader who chose light is frequently the one who cannot comfortably
+   * read the dark one.
+   */
+  const [theme, setTheme] = React.useState<Theme | null>(null);
+  const themeRef = React.useRef<Theme | null>(null);
+  themeRef.current = theme;
+  /**
+   * The style URL the map is actually showing.
+   *
+   * Without it the swap effect below fires once on the first theme resolution and calls
+   * `setStyle` with the URL the map was just built with — a second download of the same file
+   * and a needless teardown of its sources.
+   */
+  const appliedStyleRef = React.useRef<string | null>(null);
+
+  /**
+   * The ring, recomputed only when the coordinate or the stated accuracy changes.
+   *
+   * Also held in a ref, so `installAccuracy` can seed a freshly swapped style with the ring
+   * that is on screen rather than with an empty collection followed by a frame of nothing.
+   */
+  const ringData = React.useMemo(
+    () =>
+      accuracyMetres !== undefined && accuracyMetres > 1
+        ? accuracyRing(latitude, longitude, accuracyMetres)
+        : NO_RING,
+    [latitude, longitude, accuracyMetres],
+  );
+  const ringDataRef = React.useRef(ringData);
+  ringDataRef.current = ringData;
+
+  /*
+   * Read the theme once, then follow it. The toggle sets `data-theme` on the document element,
+   * which is the same signal `components/toolbench/osm-result-map.tsx` watches.
+   */
+  React.useEffect(() => {
+    setTheme(readTheme());
+    const observer = new MutationObserver(() => setTheme(readTheme()));
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+    return () => observer.disconnect();
+  }, []);
+
+  /*
+   * `theme !== null`, not `theme`, in the create-once effect below. This flips false → true
+   * exactly once, when the theme is first read. A later theme CHANGE must not reach that
+   * effect: re-running it would tear the map down and rebuild it, losing the reader's pan and
+   * zoom. The swap is `setStyle` further down, which keeps the viewport.
+   */
+  const themeKnown = theme !== null;
+
   React.useEffect(() => {
     const container = containerRef.current;
-    if (!container || mapRef.current) return;
+    if (!container || mapRef.current || !themeKnown) return;
 
     const reducedMotion =
       typeof window.matchMedia === "function" &&
@@ -205,9 +301,12 @@ export default function PointMap({
      */
     const ring = accuracyMetres !== undefined && accuracyMetres > 1 ? ringExtent(latitude, accuracyMetres) : null;
 
+    const initialStyle = mapTiles.styleUrls[themeRef.current ?? "dark"];
+    appliedStyleRef.current = initialStyle;
+
     const map = new MapLibreMap({
       container,
-      style: mapTiles.styleUrl,
+      style: initialStyle,
       center: [longitude, latitude],
       zoom,
       ...(ring
@@ -241,22 +340,12 @@ export default function PointMap({
      */
     map.on("error", () => setBasemapFailed(true));
 
-    map.on("load", () => {
-      map.addSource(ACCURACY_SOURCE, { type: "geojson", data: NO_RING });
-      map.addLayer({
-        id: ACCURACY_FILL,
-        type: "fill",
-        source: ACCURACY_SOURCE,
-        paint: { "fill-color": "#38bdf8", "fill-opacity": 0.12 },
-      });
-      map.addLayer({
-        id: ACCURACY_LINE,
-        type: "line",
-        source: ACCURACY_SOURCE,
-        paint: { "line-color": "#38bdf8", "line-width": 1 },
-      });
+    const install = () => {
+      installAccuracy(map, ringDataRef.current);
       setReady(true);
-    });
+    };
+
+    map.on("load", install);
 
     const marker = new Marker({ element: createPinElement(), anchor: "bottom" })
       .setLngLat([longitude, latitude])
@@ -278,7 +367,34 @@ export default function PointMap({
      * Once the map exists the reader owns the viewport, and the effect below moves the marker
      * without tearing the map down.
      */
-  }, [latitude, longitude, zoom, accuracyMetres]);
+  }, [latitude, longitude, zoom, accuracyMetres, themeKnown]);
+
+  /**
+   * Swap the basemap when the reader changes theme, keeping the map and their viewport.
+   *
+   * `setStyle` rather than a rebuild: rebuilding would lose the reader's pan and zoom.
+   *
+   * **The `once("styledata")` is not optional and not stylistic.** MapLibre discards every
+   * source and layer when a style is replaced, so the accuracy ring has to be re-added. The
+   * obvious form — `map.on("styledata", () => { if (map.isStyleLoaded()) install(); })` — is
+   * what `components/toolbench/osm-result-map.tsx` uses and it does **not** work here: on
+   * `maplibre-gl@6` every `styledata` that follows `setStyle` reports `isStyleLoaded()` false,
+   * so the guard never opens and the ring never comes back. Verified in a browser by toggling
+   * the theme with the map open: correct new basemap, marker still in place, ring gone —
+   * which reads as a coordinate that names a point when it names a 1 km square. The pin needs
+   * no help: a `Marker` is DOM rather than style and survives a swap by itself.
+   */
+  React.useEffect(() => {
+    const map = mapRef.current;
+    if (!map || theme === null) return;
+    const next = mapTiles.styleUrls[theme];
+    if (appliedStyleRef.current === next) return;
+    appliedStyleRef.current = next;
+    map.setStyle(next);
+    map.once("styledata", () => {
+      installAccuracy(map, ringDataRef.current);
+    });
+  }, [theme]);
 
   /** Move the marker and re-centre as the coordinate changes, without rebuilding the map. */
   React.useEffect(() => {
@@ -297,12 +413,8 @@ export default function PointMap({
     if (!map || !ready) return;
     const source = map.getSource(ACCURACY_SOURCE);
     if (!(source instanceof GeoJSONSource)) return;
-    source.setData(
-      accuracyMetres !== undefined && accuracyMetres > 1
-        ? accuracyRing(latitude, longitude, accuracyMetres)
-        : NO_RING,
-    );
-  }, [latitude, longitude, accuracyMetres, ready]);
+    source.setData(ringData);
+  }, [ringData, ready]);
 
   const zoomBy = React.useCallback((delta: 1 | -1) => {
     const map = mapRef.current;

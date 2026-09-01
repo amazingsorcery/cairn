@@ -172,6 +172,8 @@ export default function OsmResultMap({
   const onViewportChangeRef = React.useRef(onViewportChange);
   onViewportChangeRef.current = onViewportChange;
   const dataRef = React.useRef({ bbox, features, selectedId });
+  /** The style URL currently applied, so a re-render cannot re-apply the same one. */
+  const appliedStyleRef = React.useRef<string | null>(null);
   dataRef.current = { bbox, features, selectedId };
 
   React.useEffect(() => {
@@ -193,6 +195,11 @@ export default function OsmResultMap({
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
     const initial = dataRef.current;
+    // Record what the map is actually built with, so the theme effect below does not
+    // immediately re-apply the same style — a wasted fetch and a needless overlay reinstall
+    // on every first render.
+    appliedStyleRef.current = basemapStyleUrl(theme === "light" ? "light" : "dark");
+
     const map = new MapLibreMap({
       container,
       style: basemapStyleUrl(theme === "light" ? "light" : "dark"),
@@ -240,10 +247,6 @@ export default function OsmResultMap({
     };
 
     map.on("load", install);
-    // After a style swap MapLibre discards every source and layer; re-add them.
-    map.on("styledata", () => {
-      if (map.isStyleLoaded()) install();
-    });
 
     map.on("click", RESULT_LAYER, (event: MapMouseEvent & { features?: GeoJSON.Feature[] }) => {
       const id = event.features?.[0]?.properties?.["id"];
@@ -275,11 +278,35 @@ export default function OsmResultMap({
     };
   }, [theme]);
 
-  /* Swap the basemap when the reader changes theme, keeping the map and its viewport. */
+  /*
+   * Swap the basemap when the reader changes theme, keeping the map and its viewport.
+   *
+   * The overlays are re-added with `once("styledata")` immediately after `setStyle`, NOT with
+   * a persistent `on("styledata")` guarded by `isStyleLoaded()`. On maplibre-gl@6 every
+   * `styledata` event following a `setStyle` reports `isStyleLoaded()` false, so that guard
+   * never opens and the overlays are simply never restored.
+   *
+   * The failure is silent, which is why it needs the comment. The new basemap draws
+   * correctly, and the marker survives because markers are DOM rather than style — so the
+   * only thing missing is the bounding box and the result circles. An Overpass results map
+   * with no results on it reads as a query that matched nothing. No error, nothing in the
+   * console. Found by looking at a screenshot taken after a theme toggle.
+   */
   React.useEffect(() => {
     const map = mapRef.current;
     if (!map || theme === null) return;
-    map.setStyle(basemapStyleUrl(theme === "light" ? "light" : "dark"));
+
+    const applied = appliedStyleRef.current;
+    const next = basemapStyleUrl(theme === "light" ? "light" : "dark");
+    // Without this the effect fires on the first theme resolution and re-applies the style
+    // the map was built with one tick earlier — a wasted style fetch and a needless reinstall.
+    if (applied === next) return;
+    appliedStyleRef.current = next;
+
+    map.setStyle(next);
+    map.once("styledata", () => {
+      installOverlays(map, dataRef.current.bbox, dataRef.current.features, dataRef.current.selectedId);
+    });
   }, [theme]);
 
   React.useEffect(() => {

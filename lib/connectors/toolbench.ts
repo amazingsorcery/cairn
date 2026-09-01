@@ -42,9 +42,6 @@ import type { ConnectorEnvelope } from "./types";
  * the record never to exist.
  */
 
-/** The `kind` all four Toolbench sources are registered under. See `db/schema.ts`. */
-export const TOOLBENCH_CONNECTOR_KIND = "infrastructure" as const;
-
 /* ------------------------------------------------------------------ *
  * The one outbound HTTP path for these four drivers
  * ------------------------------------------------------------------ */

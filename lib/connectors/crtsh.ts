@@ -201,11 +201,20 @@ export const CRTSH_CONNECTOR_SEED = {
   globalCeiling: 5,
   windowSeconds: 60,
   /**
-   * 25s. Longer than any other connector here, because crt.sh legitimately takes tens of
-   * seconds on a large domain — and shorter than the 60s hang that precedes its 502, so a
-   * reader gets "this source did not respond in time" rather than a minute of nothing.
+   * 40s, raised from 25s on measurement rather than preference, and matching the Wayback row
+   * for the same reason.
+   *
+   * Measured 2026-09-01 05:22-05:24, with the service oscillating on a scale of tens of
+   * seconds: `curl` completed the filtered `ripe.net` query inside 40s at 05:23:45, while our
+   * 25s attempt seconds later aborted. A shorter timeout does not make crt.sh faster; it turns
+   * a slow success into a failure the reader cannot distinguish from an empty result, which is
+   * the same trap point 4 above exists to close.
+   *
+   * Still bounded, and still shorter than the ~60s hang that precedes its 502, so a reader
+   * gets "this source did not respond in time" rather than a minute of nothing. Nothing
+   * retries.
    */
-  timeoutMs: 25_000,
+  timeoutMs: 40_000,
   /** CT logs are append-only and a new certificate is not urgent; 15 minutes is generous. */
   cacheTtlSeconds: 900,
   staleWhileRevalidateSeconds: 3600,
