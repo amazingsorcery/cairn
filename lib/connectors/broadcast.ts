@@ -83,13 +83,12 @@ export const broadcastDriver: ConnectorDriver<BroadcastFilters, BroadcastPayload
   /** Bounds every value before it can reach a URL. Throws on anything outside the schema. */
   normalise: (raw) => broadcastFilterSchema.parse(raw),
 
-  /** The query and nothing about who asked. ADR 0014 §4. */
   /**
-   * A station search is a private query: the cache key is the name, country or tag the
-   * reader typed. QV-02 — the quota is spent before the cache is read, so a hit costs the
-   * caller a unit and cannot be used to learn what somebody else searched for.
+   * The query and nothing about who asked (ADR 0014 §4) — but the query is the name, country
+   * or tag the READER typed, so a free read of the shared entry would answer "what did
+   * somebody else search for?". QV-02: `runConnector` spends the caller's quota before it
+   * consults the cache, for every driver, so a hit costs a unit and leaves a counter behind.
    */
-  perActor: true,
   cacheKey: filtersCacheKey,
 
   async fetch(connector: Connector, params, signal) {

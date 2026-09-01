@@ -20,24 +20,34 @@ import type { ActorIdentity, ConnectorDriver, ConnectorEnvelope } from "./types"
  *
  * ORDER OF CHECKS, and why it is this order:
  *
+ *   0. entry budget        — one `connector-entry` unit per call, per client, BEFORE the
+ *                            registry read. QA finding QV-25: six Toolbench entry points and
+ *                            `/api/live/flights` were unauthenticated and unlimited, and 100
+ *                            anonymous requests wrote 100 rows into the one table in the
+ *                            schema with no natural bound. The counter is HERE rather than at
+ *                            each entry point because this is the chokepoint every path must
+ *                            cross; a limiter each surface is expected to remember to call is
+ *                            a limiter the eighth surface will not have.
  *   1. registry lookup     — is there a published, enabled connector with a recorded legal
- *                            basis for this surface? (kill-switch, ADR 0012 §1)
- *   1b. per-user quota     — FOR A `perActor` DRIVER ONLY, and before the cache is read.
- *                            QA finding QV-02: on those drivers the cache key is the reader's
- *                            own query, so a free cache read is an oracle for what other
- *                            readers looked up. Paying for the answer is what closes it.
+ *                            basis for this surface? (kill-switch, ADR 0012 §1), with a
+ *                            refusal memo in front of it so a switched-off connector is not
+ *                            re-read and re-audited once per anonymous request (QV-25).
+ *   1b. per-user quota     — for EVERY driver, and before the cache is read. QA finding
+ *                            QV-02: the cache key is the caller's own question, so a free
+ *                            cache read is an oracle for what other readers looked up.
+ *                            Paying for the answer is what closes it, and there is no flag
+ *                            for a driver to exempt itself with — that flag is what let
+ *                            `/api/live/flights` keep the oracle after the first fix.
  *   2. cache               — a fresh entry is served without calling anyone.
  *   3. global ceiling      — would this call breach the upstream's fair use across ALL our
- *                            users? Checked before the per-user quota (on a shared driver)
- *                            because it protects a third party rather than us, and a user
- *                            under their own quota must still be refused when the ceiling is
- *                            reached. It is consumed only when a call is actually made, so it
- *                            keeps meaning "outbound calls", which is what fair use counts.
- *   4. per-user quota      — ADR 0011 rule 3, for a shared driver.
- *   5. the call itself     — with an AbortSignal armed to the connector's `timeout_ms`.
+ *                            users? Consumed only when a call is actually made, so it keeps
+ *                            meaning "outbound calls", which is what fair use counts.
+ *   4. the call itself     — with an AbortSignal armed to the connector's `timeout_ms`.
  *
  * Every one of those, including the refusals, is written to the audit log — except a cache
- * hit, which is not an outbound call and is not recorded as one (ADR 0013, QV-05).
+ * hit, which is not an outbound call and is not recorded as one (ADR 0013, QV-05); a
+ * remembered refusal, which is the same refusal already recorded; and an entry-budget
+ * denial, which is a request we declined to look at.
  *
  * NOTHING HERE THROWS for an expected failure. It returns a degraded envelope, because
  * ADR 0011 rule 5 requires the surface to state what is wrong and how old the data is, and
@@ -137,6 +147,76 @@ function writeCache(slug: string, key: string, entry: CacheEntry): void {
 }
 
 /* ------------------------------------------------------------------ *
+ * The refusal memo — QA finding QV-25
+ * ------------------------------------------------------------------ */
+
+/**
+ * A refusal we have already computed and already audited, and how long it stands.
+ *
+ * WHY. Closing QV-01 put a `recordConnectorRequest({ outcome: "disabled" })` on the request
+ * path of seven unauthenticated entry points. That is the right row — a control that denies
+ * traffic is invisible if only successes are recorded (ADR 0013 §4) — but it was written once
+ * per anonymous request, so 100 requests wrote 100 rows, plus 100 registry SELECTs, against a
+ * table swept nightly with a 30-day retention on a box where Postgres shares 8 GB with the
+ * app and the worker.
+ *
+ * `pollSource` already had this memo and `runConnector` did not, which is QV-25's own
+ * observation ("the same author wrote both in the same commit range"). This is that memo,
+ * with the same asymmetry and for the same reason:
+ *
+ *   - only a REFUSAL is remembered. Switching a source OFF therefore bites on the very next
+ *     request, because a live row is never memoised and the registry is read every time.
+ *   - re-ENABLING waits out at most `min(cache_ttl_seconds, 60)` seconds. That is the trade
+ *     ADR 0012's consequences already record, bounded so a human will wait through it rather
+ *     than conclude the switch is broken.
+ *
+ * The remembered envelope is byte-identical to the one the first caller got, so a caller
+ * cannot tell a remembered refusal from a fresh one — a memo that answered differently would
+ * be a new oracle for whether anybody else had just asked.
+ */
+type RememberedRefusal = { until: number; envelope: ConnectorEnvelope<never> };
+
+const globalForRefusal = globalThis as typeof globalThis & {
+  __cairnConnectorRefusalMemo__?: Map<string, RememberedRefusal>;
+};
+const refusalMemo: Map<string, RememberedRefusal> = (globalForRefusal.__cairnConnectorRefusalMemo__ ??=
+  new Map());
+
+/** The cap on how long a refusal stands, in seconds. See the asymmetry above. */
+const MAX_REFUSAL_MEMO_SECONDS = 60;
+
+function rememberRefusal(
+  slug: string,
+  envelope: ConnectorEnvelope<never>,
+  ttlSeconds: number,
+  now: Date,
+): void {
+  const seconds = Math.max(1, Math.min(ttlSeconds, MAX_REFUSAL_MEMO_SECONDS));
+  refusalMemo.set(slug, { until: now.getTime() + seconds * 1000, envelope });
+}
+
+function recallRefusal(slug: string, now: Date): RememberedRefusal | null {
+  const entry = refusalMemo.get(slug);
+  if (!entry) return null;
+  if (entry.until <= now.getTime()) {
+    refusalMemo.delete(slug);
+    return null;
+  }
+  return entry;
+}
+
+/**
+ * Forget every remembered refusal.
+ *
+ * Called by the admin kill-switch so re-enabling a connector takes effect immediately in this
+ * process, and by tests. In-process, like every other cache in this subtree, so a second
+ * process still waits out its own window — which is the honest bound on the trade.
+ */
+export function clearRefusalMemo(): void {
+  refusalMemo.clear();
+}
+
+/* ------------------------------------------------------------------ *
  * Upstream backoff — the QA finding Q-02
  * ------------------------------------------------------------------ */
 
@@ -207,8 +287,8 @@ function ageSeconds(fetchedAt: Date, now: Date): number {
 }
 
 /**
- * The instant a `perActor` connector reports to the caller: the real one, rounded DOWN to the
- * start of the cache window it falls in, epoch-aligned like `windowStart` in the limiter.
+ * The instant reported to the caller: the real one, rounded DOWN to the start of the cache
+ * window it falls in, epoch-aligned like `windowStart` in the limiter.
  *
  * QV-02's second half. The exact millisecond a payload was fetched is a fact about *another
  * reader's request*, and on a small deployment with a known user list "somebody here resolved
@@ -222,9 +302,22 @@ function ageSeconds(fetchedAt: Date, now: Date): number {
  * because otherwise "exact timestamp" versus "rounded timestamp" would itself distinguish a
  * miss from a hit, which is the oracle again with an extra step.
  *
- * A shared live layer keeps the exact instant. There the age IS the product — a 40-second-old
- * aircraft position is a different claim from a 4-second-old one — and the timestamp says
- * nothing about any reader, because every reader is asking the same question.
+ * APPLIED TO EVERY CONNECTOR, including the live ones. The exception used to be a live layer,
+ * on the argument that there the age IS the product — a 40-second-old aircraft position is a
+ * different claim from a 4-second-old one — and that a shared question says nothing about any
+ * reader. QA measured what the exception cost: on `/live/flights`, where the reader supplies
+ * the coordinates, the exact millisecond of a victim's fetch came back to an attacker four
+ * times from a URL. The age is still honest, because it is only ever rounded in the direction
+ * that makes the data look OLDER; the price is that it is coarse to one cache window
+ * (60 seconds for adsb.lol), which is the granularity of the refresh anyway.
+ *
+ * KNOWN RESIDUAL, recorded rather than hidden (QA, QV-02, low). The window is aligned to the
+ * epoch and an entry written near the end of one window is still inside its TTL after the
+ * next opens, so a hit can report the previous window's start while a miss reports the
+ * current one — one bit, at window granularity, for a caller with quota left. Closing it
+ * entirely would mean reporting an instant derived from `now` rather than from the payload,
+ * which would either claim a payload is fresher than it is, or report every fresh fetch as a
+ * whole window old. Both are worse lies on a surface whose product is the age of the data.
  */
 function quantiseInstant(at: Date, windowSeconds: number): Date {
   if (!Number.isFinite(windowSeconds) || windowSeconds <= 0) return at;
@@ -264,7 +357,69 @@ export async function runConnector<Params, Result>(
 ): Promise<ConnectorEnvelope<Result>> {
   const now = options.now ?? new Date();
 
+  /* 0. The entry budget --------------------------------------------- */
+
+  /**
+   * QA finding QV-25. One unit per call, per client, before anything reads or writes the
+   * database.
+   *
+   * WHY IT IS HERE AND NOT AT THE ENTRY POINTS. Seven surfaces reach a connector today —
+   * six Toolbench entry points and `/api/live/flights` — and `middleware.ts` matches
+   * neither, so nothing above them counted anything. A `consumeSafely` at the top of each is
+   * seven correct call sites and an eighth written by somebody who has not read this file.
+   * `runConnector` is the only exported way to reach a driver, so the counter goes here and
+   * every path crosses it by construction. `tests/security/connector-entry-points.test.ts`
+   * asserts both halves: that the inventory of surfaces is exactly what it is declared to be,
+   * and that this consumption happens before the registry read.
+   *
+   * FAIL OPEN, and only here. This limiter protects OUR box; every path behind it needs the
+   * same database, so failing closed buys no protection and costs a confusing error. The
+   * connector quotas below fail CLOSED, because they protect a third party's fair-use
+   * ceiling and an uncounted call against somebody else's limit is a call we had no right to
+   * make. (`consume` rather than `consumeSafely` for one reason: this module must keep
+   * working when a caller has stubbed the limiter, and a second entry point into the same
+   * module is a second thing to stub wrongly.)
+   */
+  let entryAllowed = true;
+  let entryResetAt = now;
+  try {
+    const entry = await consume("connector-entry", actor.subject, { now });
+    entryAllowed = entry.ok !== false;
+    entryResetAt = entry.resetAt ?? now;
+  } catch (error) {
+    logger.error(
+      { scope: "connector.run", slug: driver.slug, err: error },
+      "Entry rate limit check failed; allowing the request",
+    );
+  }
+  if (!entryAllowed) {
+    logger.warn(
+      { scope: "connector.run", slug: driver.slug, resetsAt: entryResetAt.toISOString() },
+      "Refused before reading the registry: caller is over the connector entry limit",
+    );
+    /*
+     * No audit row. `connector_requests` records outbound attempts and the decisions about
+     * them; a request we declined to look at is neither, and writing one would defeat the
+     * purpose of a counter whose job is to bound writes to that table.
+     *
+     * The refusal is identical whatever was asked, so a spent caller cannot use this path to
+     * learn whether a cache entry exists either.
+     */
+    return unavailable(
+      driver.slug,
+      "quota-exhausted",
+      "You have made too many requests to our live sources. Try again shortly.",
+    );
+  }
+
   /* 1. Registry, kill-switch and legal basis ------------------------- */
+
+  /*
+   * A refusal we have already computed and already recorded, inside its window: no registry
+   * read, no audit row, no request, and the same envelope the first caller got (QV-25).
+   */
+  const remembered = recallRefusal(driver.slug, now);
+  if (remembered) return remembered.envelope as ConnectorEnvelope<Result>;
 
   /*
    * Resolve by SLUG, never by kind.
@@ -351,11 +506,19 @@ export async function runConnector<Params, Result>(
         at: now,
       });
     }
-    return unavailable(
+    const envelope = unavailable<never>(
       driver.slug,
       "disabled",
       `This live source is switched off — ${reason}. No request was made.`,
     );
+    /*
+     * Remembered for at most `min(cache_ttl_seconds, 60)` seconds, so the next anonymous
+     * request neither re-reads the registry nor writes a second identical row. Only the
+     * refusal is remembered: a live row is read every time, so switching a source OFF still
+     * bites on the very next request (QV-25).
+     */
+    rememberRefusal(driver.slug, envelope, connector?.cacheTtlSeconds ?? MAX_REFUSAL_MEMO_SECONDS, now);
+    return envelope as ConnectorEnvelope<Result>;
   }
 
   /**
@@ -427,50 +590,54 @@ export async function runConnector<Params, Result>(
 
   const userPolicy = { limit: connector.perUserQuota, windowSeconds: connector.windowSeconds };
 
-  /* 1b. Per-actor quota, BEFORE the cache is read -------------------- */
+  /* 1b. The caller's quota, BEFORE the cache is read ----------------- */
 
   /**
-   * QA finding QV-02. On a `perActor` driver the cache key IS the caller's question, so a
-   * free cache read answers "has anybody here looked this up recently?" for anyone who can
-   * send an HTTP request. Charging the read a quota unit is what removes the free oracle
-   * while keeping ADR 0014 §4's shared entry: the upstream still sees one call for many
-   * readers, and the cache key still encodes nothing about who asked.
+   * QA finding QV-02, and the second time it was filed.
+   *
+   * The cache key is the caller's question, so a free cache read answers "has anybody here
+   * looked this up recently?" for anyone who can send an HTTP request. Charging the read a
+   * quota unit removes the free oracle while keeping ADR 0014 §4's shared entry: the upstream
+   * still sees one call for many readers, and the key still encodes nothing about who asked.
+   *
+   * UNCONDITIONAL, with no per-driver exemption. The first fix made this depend on
+   * `driver.perActor`; seven drivers set it true and `flightsDriver` set it false, on
+   * reasoning about `/map` — a surface that does not use that driver. The exemption was the
+   * defect, not its value. Whether a key holds caller-supplied input is a fact about the call
+   * site, and a driver cannot see its call sites. See the long note in `types.ts`.
    *
    * NOTHING IS SERVED FROM THE CACHE ON A DENIAL — not even a stale payload. Serving stale
    * data to a spent actor would rebuild the same oracle one layer down: the answer would
    * again depend on whether somebody else had asked. A spent actor gets the identical
    * refusal for a cached term and for one nobody has ever typed, which is the property the
-   * regression test asserts.
+   * regression tests assert for a fixture driver and for the real flights driver.
    */
-  if (driver.perActor) {
-    const spent = await spendQuota(
-      "connector-user",
-      `${connector.slug}:${actor.subject}`,
-      userPolicy,
+  const spent = await spendQuota(
+    "connector-user",
+    `${connector.slug}:${actor.subject}`,
+    userPolicy,
+  );
+  if (spent !== "ok") {
+    await auditQuotaDenied();
+    return unavailable(
+      connector.slug,
+      "quota-exhausted",
+      spent === "denied"
+        ? "You have reached this source's request limit. Try again shortly."
+        : "This live source is temporarily unavailable.",
+      attribution,
     );
-    if (spent !== "ok") {
-      await auditQuotaDenied();
-      return unavailable(
-        connector.slug,
-        "quota-exhausted",
-        spent === "denied"
-          ? "You have reached this source's request limit. Try again shortly."
-          : "This live source is temporarily unavailable.",
-        attribution,
-      );
-    }
   }
 
   const key = `${connector.slug}:${driver.cacheKey(params)}`;
   const cached = readCache(key);
 
   /**
-   * The instant this caller is told about. Quantised for a per-actor connector so it cannot
-   * carry another reader's request time; exact for a shared live layer, where the age is the
-   * product and says nothing about any reader. See `quantiseInstant`.
+   * The instant this caller is told about, rounded down to the connector's cache window so it
+   * cannot carry another reader's request time. See `quantiseInstant` for why down, and why
+   * it is applied to a fresh fetch as well as to a hit.
    */
-  const outwardInstant = (at: Date): Date =>
-    driver.perActor ? quantiseInstant(at, connector.cacheTtlSeconds) : at;
+  const outwardInstant = (at: Date): Date => quantiseInstant(at, connector.cacheTtlSeconds);
 
   /* 2. Serve from cache while fresh ---------------------------------- */
 
@@ -614,34 +781,14 @@ export async function runConnector<Params, Result>(
         );
   }
 
-  /**
-   * The per-user quota, for a SHARED driver only — a per-actor driver spent it above, before
-   * the cache read, and charging it twice would halve the quota an operator configured.
+  /*
+   * The per-user quota was spent at 1b, above the cache read, and is deliberately NOT spent
+   * again here: charging it twice would halve the number an operator configured. What that
+   * means for the column is written into `connectors.per_user_quota`'s own documentation —
+   * it counts a reader's READS of a source, of which only the misses become outbound calls.
+   * The global ceiling immediately above still counts outbound calls, which is what a
+   * fair-use argument with an upstream needs it to count.
    */
-  if (!driver.perActor) {
-    const perUser = await spendQuota(
-      "connector-user",
-      `${connector.slug}:${actor.subject}`,
-      userPolicy,
-    );
-    if (perUser !== "ok") {
-      await auditQuotaDenied();
-      const message =
-        perUser === "denied"
-          ? "You have reached this source's request limit"
-          : "Rate limiting is unavailable";
-      return staleUsable
-        ? degradeToStale(`${message}; showing the last data we have.`)
-        : unavailable(
-            connector.slug,
-            "quota-exhausted",
-            perUser === "denied"
-              ? "You have reached this source's request limit. Try again shortly."
-              : "This live source is temporarily unavailable.",
-            attribution,
-          );
-    }
-  }
 
   /* 4. The call ------------------------------------------------------ */
 

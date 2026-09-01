@@ -105,8 +105,7 @@ export const waybackTimelineDriver: ConnectorDriver<WaybackTimelineParams, Timel
     return { url: url.value.href };
   },
 
-  /** The cache key is the URL the reader typed. Private query — see QV-02. */
-  perActor: true,
+  /** The cache key is the URL the reader typed — a private query. See QV-02. */
   cacheKey: (params) => `timeline|${params.url}`,
 
   async fetch(connector: Connector, params, signal) {
@@ -193,10 +192,10 @@ export const waybackCapturesDriver: ConnectorDriver<WaybackCapturesParams, Captu
   },
 
   /**
-   * The URL and the two capture timestamps the reader chose. The one-hour TTL made this the
-   * longest-lived entry of the six, and therefore the most useful oracle. Private query.
+   * The URL and the two capture timestamps the reader chose. The one-hour TTL makes this the
+   * longest-lived entry of the six, and therefore the most useful oracle if a read of it were
+   * ever free again. Private query.
    */
-  perActor: true,
   cacheKey: (params) => `captures|${params.url}|${params.before}|${params.after}`,
 
   async fetch(_connector: Connector, params, signal) {

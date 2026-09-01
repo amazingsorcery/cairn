@@ -30,6 +30,7 @@ export const RATE_LIMIT_ACTIONS = [
   "workspace-write",
   "note-write",
   "workspace-export",
+  "connector-entry",
   "connector-user",
   "connector-global",
   "map-layer",
@@ -86,6 +87,32 @@ export const RATE_LIMIT_POLICIES: Readonly<Record<RateLimitAction, RateLimitPoli
    * 10/minute is generous for a human exporting their own case file and ruinous for a loop.
    */
   "workspace-export": { limit: 10, windowSeconds: 60 },
+  /**
+   * THE DOOR TO `lib/connectors`, per client. QA finding QV-25.
+   *
+   * The three connector counters are not the same counter and are easy to confuse, so:
+   *
+   *   `connector-entry`  — per CLIENT, across every connector. Consumed on every
+   *                        `runConnector` call before the registry is read. It bounds the
+   *                        work an anonymous stranger can make this box do, including the
+   *                        `SELECT` on `connectors` and the `INSERT` into
+   *                        `connector_requests` that a refusal writes. Ours, not an
+   *                        upstream's.
+   *   `connector-user`   — per client per CONNECTOR, with the limit read from that
+   *                        connector's row. It bounds a reader's reads of one source.
+   *   `connector-global` — per CONNECTOR across all readers, and the only one of the three
+   *                        that counts outbound calls, because that is what a fair-use
+   *                        argument with an operator has to count.
+   *
+   * THE ARITHMETIC. `/live/flights` refreshes on the connector's TTL — 60 s for adsb.lol —
+   * so a reader with the page open is 1/minute; a Toolbench user is a handful of lookups a
+   * minute at typing speed. 120 leaves room for several readers behind one address (an
+   * office range or a shared NAT is one client to us) and for a page whose viewport a reader
+   * is actively moving, and is ruinous for a loop, which does thousands. It is a ceiling on
+   * abuse rather than a throttle on use — the same shape and half the number as `map-layer`,
+   * which polls six layers on a five-second tick.
+   */
+  "connector-entry": { limit: 120, windowSeconds: 60 },
   /** Per-user connector quota. The real numbers come from `connectors` (ADR 0011 rule 3). */
   "connector-user": { limit: 30, windowSeconds: 60 },
   /** Global ceiling so we cannot breach an upstream's fair use even under load. */

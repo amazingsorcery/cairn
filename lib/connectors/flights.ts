@@ -3,9 +3,9 @@ import { z } from "zod";
 import { sourceUserAgent } from "@/lib/sources/http";
 
 import type { Connector } from "@/db/schema";
-import { countOutboundRequest } from "@/lib/net/outbound-tally";
 
-import { parseRetryAfter, UpstreamStatusError } from "./runtime";
+import { UpstreamStatusError } from "./runtime";
+import { hostOf, upstreamGet } from "./upstream";
 import type { ConnectorDriver } from "./types";
 
 /**
@@ -228,18 +228,34 @@ function trim(parsed: z.infer<typeof responseSchema>, params: FlightParams): Fli
 
 export const FLIGHTS_CONNECTOR_SLUG = "adsb-lol";
 
+/**
+ * The only host this driver will send a viewport to, and the pin every redirect hop is
+ * re-checked against.
+ *
+ * Checked against `connector.baseUrl` before the request as well. `runConnector` used to
+ * resolve a registry row by KIND, which once handed a driver another operator's row; it
+ * resolves by slug now, and this check stays so that a future caller which does not cannot
+ * repeat it.
+ */
+const FLIGHTS_HOST = "api.adsb.lol";
+
 export const flightsDriver: ConnectorDriver<FlightParams, FlightsPayload> = {
   kind: "flights",
   slug: FLIGHTS_CONNECTOR_SLUG,
   normalise: quantise,
+
   /**
-   * NOT per-actor, and this is the case ADR 0014 §4 was written for. A viewport is a
-   * question about the world rather than about the reader: every reader looking at the same
-   * patch of sky asks the same thing, the answer is the same for all of them, and one shared
-   * entry is what holds us inside adsb.lol's fair use. `normalise` quantises the coordinates
-   * before they reach the key, so the key is coarser than the view anyway.
+   * One shared cache entry per quantised cell (ADR 0014 §4): two readers watching the same
+   * patch of sky cost the upstream one call, and the key carries no trace of who asked.
+   *
+   * The entry is shared; a READ of it is not free. QA finding QV-02 was reopened on this
+   * driver because the key is about a tenth of a degree — roughly 11 km — and on
+   * `/live/flights` the reader supplies the coordinates, so a free cache read answered
+   * "was somebody here watching aircraft near this point, and exactly when?" from a URL an
+   * attacker can script over a grid. `runConnector` now charges every caller before it
+   * consults the cache and quantises the instant on the way out, for every driver, with no
+   * flag to set wrongly.
    */
-  perActor: false,
   cacheKey: (p) => `${p.lat.toFixed(1)},${p.lon.toFixed(1)},${p.radius}`,
 
   async fetch(connector: Connector, params, signal) {
@@ -250,51 +266,68 @@ export const flightsDriver: ConnectorDriver<FlightParams, FlightsPayload> = {
      * number" is exactly the assumption that stops being true after a refactor.
      */
     const base = connector.baseUrl.replace(/\/+$/, "");
+    /*
+     * BELT AND BRACES ON THE REGISTRY ROW. A driver must never send its payload to a host it
+     * does not recognise, whatever a row says — the same check `overpass.ts` carries, for the
+     * same reason: resolving a row by kind once handed a driver another operator's base URL
+     * and the request went out under the wrong quota and the wrong recorded legal basis.
+     */
+    if (hostOf(base) !== FLIGHTS_HOST) {
+      throw new UpstreamStatusError(502);
+    }
     const url =
       `${base}/v2/lat/${encodeURIComponent(params.lat)}` +
       `/lon/${encodeURIComponent(params.lon)}` +
       `/dist/${encodeURIComponent(params.radius)}`;
 
-    // This driver calls `fetch` directly rather than through `upstreamGet`, so it counts
-    // itself (QV-09). One call per poll today; the counter is what keeps that true.
-    countOutboundRequest();
-    const response = await fetch(url, {
+    /**
+     * THROUGH THE ONE OUTBOUND PRIMITIVE, not through `fetch` (QA finding QV-03, reopened).
+     *
+     * This driver used to call `fetch` itself and read `await response.json()` with no
+     * ceiling: QA measured 513 MiB pulled where the capped path stops at 5. It also sent the
+     * runtime's default `redirect: "follow"` with no host re-pin — one hop of unearned trust
+     * in an aggregator, which is the assumption an SSRF exploits.
+     *
+     * `upstreamGet` pins the host before the request and on every hop, caps the body while it
+     * is still arriving, and counts the request (QV-09) so the driver no longer counts itself.
+     * The pin is the registry row's own host, checked against the module constant first, so
+     * neither an edited row nor a 302 can move this query to another operator.
+     */
+    const response = await upstreamGet({
+      url,
+      pinnedHost: FLIGHTS_HOST,
       signal,
-      // `no-store`: the freshness contract is ours (ADR 0014), and a second cache with its
-      // own clock is the two-clocks-disagreeing failure §5 rejects.
-      cache: "no-store",
-      headers: {
-        accept: "application/json",
-        // Identifying ourselves is the courteous and the safe thing: an operator who needs
-        // to rate-limit or contact us can, rather than blocking an anonymous pattern. It
-        // says nothing about the person viewing the page.
-        // Built from `config/brand.ts` via `sourceUserAgent()`, not written out here. The
-        // literal that used to sit on this line broke the one-file rename contract
-        // (the conventions §4, product-brief §7) — a rename would have left this outbound header
-        // still naming the old product to an upstream operator. It also now carries a real
-        // contact address, which NWS and Nominatim ask for and which is the difference
-        // between being throttled and being blocked without warning.
-        "user-agent": sourceUserAgent(),
-      },
+      // Identifying ourselves is the courteous and the safe thing: an operator who needs to
+      // rate-limit or contact us can, rather than blocking an anonymous pattern. It says
+      // nothing about the person viewing the page. Built from `config/brand.ts` via
+      // `sourceUserAgent()`, not written out here — a rename must not leave this outbound
+      // header naming the old product to an upstream operator (the conventions §4).
+      userAgent: sourceUserAgent(),
+      /**
+       * 4 MiB, the same ceiling the map's adapter applies to this identical endpoint
+       * (`lib/sources/adsb-lol.ts`): a 250 nm circle over London measured 90 KB on
+       * 2026-08-31, and the busiest airspace on earth will not approach this.
+       */
+      maxBytes: 4 * 1024 * 1024,
     });
 
-    if (!response.ok) {
-      /**
-       * `Retry-After` is read on EVERY non-2xx, not only on 429: a 503 may carry one too, and
-       * a header we were given is always better than a constant we chose.
-       *
-       * Measured against adsb.lol on 2026-08-31: it sends no `Retry-After` on either a 200 or
-       * a 429, so in practice this resolves to null here and `runtime.ts` falls back to
-       * `DEFAULT_COOLDOWN_SECONDS`. The parsing exists because the day they start sending one
-       * is the day we should obey it, not the day we notice.
-       */
-      throw new UpstreamStatusError(
-        response.status,
-        parseRetryAfter(response.headers.get("retry-after")),
-      );
+    /**
+     * `Retry-After` is read on EVERY non-2xx by the primitive, not only on 429: a 503 may
+     * carry one too, and a header we were given is always better than a constant we chose.
+     * Measured against adsb.lol on 2026-08-31: it sends none on either a 200 or a 429, so in
+     * practice `runtime.ts` falls back to `DEFAULT_COOLDOWN_SECONDS`. The parsing exists
+     * because the day they start sending one is the day we should obey it, not the day we
+     * notice.
+     */
+    let body: unknown;
+    try {
+      body = JSON.parse(response.text) as unknown;
+    } catch {
+      // A body that is not JSON is a shape change, not zero aircraft. 502: no usable payload
+      // arrived, and the parse error is never logged — it would quote the upstream body.
+      throw new UpstreamStatusError(502);
     }
 
-    const body: unknown = await response.json();
     const parsed = responseSchema.safeParse(body);
     if (!parsed.success) {
       // A shape change is an upstream fault as far as the surface is concerned: the caller

@@ -93,8 +93,7 @@ export const ripeStatDriver: ConnectorDriver<RipeStatParams, IpIntelligence> = {
     return { resource: ip.value.address };
   },
 
-  /** The cache key is the address the reader typed. Private query — see QV-02. */
-  perActor: true,
+  /** The cache key is the address the reader typed — a private query. See QV-02. */
   cacheKey: (params) => params.resource,
 
   async fetch(connector: Connector, params, signal) {

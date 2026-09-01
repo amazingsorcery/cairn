@@ -92,39 +92,36 @@ export type ConnectorDriver<Params, Result> = {
   /** A stable string for the normalised params. Must not encode anything about the caller. */
   cacheKey: (params: Params) => string;
   /**
-   * Does `cacheKey` contain something the CALLER typed? QA finding QV-02.
+   * THERE IS NO `perActor` FLAG, AND ITS ABSENCE IS THE CONTROL. QA finding QV-02, twice.
    *
-   * ADR 0014 section 4 says the payload cache holds one shared entry per connector plus
-   * normalised params and never a per-user one. That reasoning is right for a **live layer**,
-   * where every reader asks the same question about the same world: a bounding box over the
-   * Atlantic is a fact about the Atlantic, and sharing the answer is what keeps us inside the
-   * upstream's fair use and keeps the key from encoding who asked.
+   * ADR 0014 §4 says the payload cache holds one shared entry per connector plus normalised
+   * params and never a per-user one. That is right, and it is unchanged: keying the entry by
+   * actor would make the upstream see one call per reader and would put the interest graph
+   * into the key. What was wrong was that a READ of that entry was free. On the Toolbench the
+   * cache key *is* the reader's question — a domain, an IP, a URL, an Overpass query — so a
+   * stranger could ask this deployment "has anybody here looked up X recently?" and get a
+   * reliable yes/no plus the other reader's fetch instant, leaving no trace. ADR 0013 scrubs
+   * the query from the audit log precisely so a journalist's lookups cannot be reconstructed
+   * from our records; a cache that answers the same question in plaintext undoes that.
    *
-   * It is wrong for a **private query**. On the Toolbench the cache key *is* the reader's
-   * question — a domain, an IP address, a URL, an Overpass query — and the cache read used to
-   * happen before the quota and before the audit row. So a stranger could ask this deployment
-   * "has anybody here looked up X recently?" and get a reliable yes/no plus the other
-   * reader's fetch instant, free and leaving no trace. The audit log is scrubbed of the query
-   * by ADR 0013 precisely so a journalist's lookups cannot be reconstructed from our records;
-   * a cache that answers the same question in plaintext undoes that.
+   * The first fix added `perActor: boolean` to this type so a driver could declare which kind
+   * of question it asks. Seven drivers declared `true`. `flightsDriver` declared `false`,
+   * reasoning that "a viewport is a question about the world rather than about the reader" —
+   * true of `/map`, which does not use that driver, and false of `/live/flights`, which is a
+   * search-by-place surface where the reader types the coordinates. QA measured the result: a
+   * victim's exact millisecond returned to an attacker four times, free, unaudited and
+   * unlimited, from a GET over an 11 km grid.
    *
-   * `true` therefore means two things in `runConnector`:
+   * **Whether a cache key holds caller-supplied input is a fact about the CALL SITE, and a
+   * driver cannot see its call sites.** A boolean here is a claim about every present and
+   * future caller, made in the one file that has no way to check it. So there is nothing to
+   * declare: `runConnector` spends the caller's quota before it reads the cache and quantises
+   * `fetchedAt` down to the connector's cache window on the way out, for every driver and
+   * every surface. A new driver cannot opt out, because there is no opt-out to write.
    *
-   *   1. the per-user quota is consumed BEFORE the cache is consulted, so a hit costs the
-   *      caller a unit and a refusal is audited — the probe is neither free nor untraceable,
-   *      and a spent actor gets the same answer for a cached term as for an unknown one;
-   *   2. `fetchedAt` is quantised down to the connector's cache window on the way out, so the
-   *      timestamp cannot say when another reader asked.
-   *
-   * The cache entry itself stays SHARED. Keying it by actor would make the upstream see one
-   * call per reader and would put the interest graph into the key, which is the thing
-   * ADR 0014 section 4 forbids for good reason. The fix is what a hit costs, not who it is
-   * for.
-   *
-   * There is no default. A new driver has to state which kind of question it asks, because
-   * getting this wrong silently is exactly how the defect arrived.
+   * `tests/security/flights-oracle.test.ts` asserts that this stays true — that no file in
+   * `lib/connectors/` sets such a flag and that the quota is spent above the cache read.
    */
-  perActor: boolean;
   /**
    * Make the call. Receives an `AbortSignal` already armed with the connector's
    * `timeout_ms`. Returns the trimmed payload — ADR 0014 §7: only the fields the surface
