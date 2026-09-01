@@ -20,6 +20,21 @@ import type { ConnectorDriver } from "@/lib/connectors/types";
  * guard that stops the first and not the second is the defect QV-01 was.
  */
 
+/**
+ * A FIXED window boundary, NOT `new Date()`. Integration finding I-20, applied here too.
+ *
+ * `lib/rate-limit.ts` is a fixed window (ADR 0009): `resetAt` is the same instant for every
+ * call inside that window, derived from the caller's own key. A mock that returned
+ * `new Date()` per call made the byte-identity assertion below fail whenever a probe and the
+ * control made microseconds later straddled a millisecond tick — one digit of
+ * `quotaResetsAt`. I-20 fixed exactly that in `tests/security/flights-oracle.test.ts` and
+ * this file kept the defect, so it still failed roughly one run in three.
+ *
+ * The constant is no weaker: the value never depended on any per-subject state, so it could
+ * not have carried the leak these tests hunt. The assertions are untouched.
+ */
+const WINDOW_RESET_AT = new Date("2026-09-01T00:01:00.000Z");
+
 const getConnectorBySlug = vi.fn<(slug: string) => Promise<Connector | null>>();
 const consume = vi.fn();
 const audit = vi.fn();
@@ -146,7 +161,7 @@ describe("QV-01 re-verified: no real driver reaches a socket while its row is no
         getConnectorBySlug.mockResolvedValue(
           overrides === null ? null : row({ ...overrides, slug: testCase.slug }),
         );
-        consume.mockResolvedValue({ ok: true, count: 1, limit: 3, remaining: 2, resetAt: new Date() });
+        consume.mockResolvedValue({ ok: true, count: 1, limit: 3, remaining: 2, resetAt: WINDOW_RESET_AT });
         const envelope = await testCase.run("anonymous");
         expect(envelope.state, `${testCase.slug} served data`).toBe("unavailable");
         expect(envelope.reason, `${testCase.slug} reason`).toBe("disabled");
@@ -219,7 +234,7 @@ describe("QV-02 re-verified: a spent actor cannot tell a cached term from an unk
       budget.set(key, used);
       // Per-user 2/window for the victim and the attacker separately; global is generous.
       const limit = action === "connector-user" ? 2 : 100;
-      return { ok: used <= limit, count: used, limit, remaining: Math.max(0, limit - used), resetAt: new Date() };
+      return { ok: used <= limit, count: used, limit, remaining: Math.max(0, limit - used), resetAt: WINDOW_RESET_AT };
     });
 
     // The victim populates the shared cache.
@@ -240,7 +255,7 @@ describe("QV-02 re-verified: a spent actor cannot tell a cached term from an unk
 
   it("a hit costs a quota unit, so the probe is neither free nor untraceable", async () => {
     const { runConnector, driver } = await harness();
-    consume.mockResolvedValue({ ok: true, count: 1, limit: 2, remaining: 1, resetAt: new Date() });
+    consume.mockResolvedValue({ ok: true, count: 1, limit: 2, remaining: 1, resetAt: WINDOW_RESET_AT });
     await runConnector(driver, { q: "same" }, { subject: "victim" });
     consume.mockClear();
     await runConnector(driver, { q: "same" }, { subject: "attacker" });
@@ -259,7 +274,7 @@ describe("QV-02 re-verified: a spent actor cannot tell a cached term from an unk
     const { runConnector, clearConnectorCache } = await import("@/lib/connectors/runtime");
     clearConnectorCache();
     getConnectorBySlug.mockResolvedValue(liveRow());
-    consume.mockResolvedValue({ ok: true, count: 1, limit: 99, remaining: 98, resetAt: new Date() });
+    consume.mockResolvedValue({ ok: true, count: 1, limit: 99, remaining: 98, resetAt: WINDOW_RESET_AT });
     const driver: ConnectorDriver<{ q: string }, { answer: string }> = {
       kind: "infrastructure",
       slug: "qa-v3",
