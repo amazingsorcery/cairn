@@ -2,7 +2,7 @@ import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
 import { Countdown, RetryAtButton, RetryButton } from "./live-controls";
-import { formatAge, formatClockUtc, type LiveReason } from "./live-format";
+import { formatAge, formatClockUtc, type LiveQuotaScope, type LiveReason } from "./live-format";
 
 /**
  * `/live/flights` when there is nothing recent enough to show. `docs/design/states.md`
@@ -28,10 +28,56 @@ export interface FlightsDegradedProps {
   lastGoodAgeSeconds: number | null;
   /** ISO instant the fixed-window quota clears. Only meaningful for `quota-exhausted`. */
   quotaResetAt: string | null;
-  /** True when it is the reader's own per-viewer quota rather than the shared ceiling. */
-  perViewerQuota: boolean;
+  /**
+   * WHICH counter refused. Null when nothing said — in which case the copy blames nobody.
+   *
+   * This was a boolean, `perViewerQuota`, derived by the surface from the first four words of
+   * the server's message. Three counters can refuse, not two, and the guess defaulted to the
+   * one branch that makes a claim about a named operator (QV-29).
+   */
+  quotaScope: LiveQuotaScope | null;
   perUserLimit: number | null;
   windowSeconds: number | null;
+}
+
+/**
+ * THE SENTENCE FOR EACH COUNTER, CHOSEN BY THE COUNTER (QA finding QV-29).
+ *
+ * Only ONE of the three ceilings has anything to do with an upstream's fair-use limit, and
+ * the shared-ceiling sentence was being shown for all of them — including for the per-client
+ * entry counter, which refuses before a registry row is read and therefore cannot be evidence
+ * of anything about an operator. Telling a reader that a named third party's limit is
+ * exhausted when it is not is the worst copy defect this product has, because not saying
+ * things it cannot support is the entire proposition.
+ *
+ * `null` — nothing said — gets the sentence that is true whichever of our counters refused.
+ * The old default was the one that named an operator.
+ *
+ * NO POSSESSIVE IS BUILT OUT OF THE OPERATOR NAME. `operator` is a registry string and reads
+ * "adsb.lol (community ADS-B aggregator)"; the previous copy rendered
+ * "adsb.lol (community ADS-B aggregator)’s fair-use limit". `components/map/layer-status.tsx`
+ * met the same trap with source names and its tests forbid it.
+ */
+function quotaSentence(
+  scope: LiveQuotaScope | null,
+  operator: string,
+  perUserLimit: number | null,
+  windowSeconds: number | null,
+): string {
+  switch (scope) {
+    case "entry":
+      return `You’ve made too many requests to this site’s live sources in a short window, so we stopped before calling anyone. That counter is ours and it spans every live source here; nothing was asked of ${operator}.`;
+    case "viewer":
+      return perUserLimit !== null && windowSeconds !== null
+        ? `You’ve reached this feed’s per-viewer limit of ${perUserLimit} requests per ${windowLabel(windowSeconds)}. That limit is ours to set, and nothing is wrong at the source’s end.`
+        : `You’ve reached the per-viewer limit we set for this feed. That limit is ours to set, and nothing is wrong at the source’s end.`;
+    case "shared":
+      return `This feed has a request ceiling shared by everyone using this site, set to keep us inside the fair-use limit recorded for ${operator}, and it is currently reached.`;
+    case "unmeasured":
+      return `We could not check our own request counters, so we did not call ${operator} — we stop rather than spend a limit we cannot count. Nothing is wrong at the source’s end.`;
+    case null:
+      return `A request limit we set has been reached, so this feed is paused. The limit is ours, and nothing is wrong at the source’s end.`;
+  }
 }
 
 /** "60 requests per minute" — the window in words, from `connectors.window_seconds`. */
@@ -53,7 +99,7 @@ export function FlightsDegraded({
   lastGoodAt,
   lastGoodAgeSeconds,
   quotaResetAt,
-  perViewerQuota,
+  quotaScope,
   perUserLimit,
   windowSeconds,
 }: FlightsDegradedProps) {
@@ -84,17 +130,7 @@ export function FlightsDegraded({
 
         {reason === "quota-exhausted" ? (
           <p>
-            {perViewerQuota && perUserLimit !== null && windowSeconds !== null ? (
-              <>
-                You&rsquo;ve reached this feed&rsquo;s per-viewer limit of {perUserLimit} requests
-                per {windowLabel(windowSeconds)}.
-              </>
-            ) : (
-              <>
-                This feed has a shared request ceiling so we stay inside {operator}&rsquo;s
-                fair-use limit, and it is currently reached.
-              </>
-            )}{" "}
+            {quotaSentence(quotaScope, operator, perUserLimit, windowSeconds)}{" "}
             {quotaResetAt ? (
               <>
                 It resets at{" "}

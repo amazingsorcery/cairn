@@ -105,8 +105,8 @@ export type SourceResult<T> =
  *
  * `stale` deliberately does NOT live on `SourceResult`: an adapter has just called upstream,
  * so the only honest value it could ever set is `false`. Whether the caller is looking at a
- * cache entry served past its TTL because the upstream is unreachable is known by the worker
- * holding the Redis key, and nowhere else. Putting the field on the adapter's return would
+ * cache entry served past its TTL because the upstream is unreachable is known by the layer
+ * holding the payload cache — `app/(public)/map/sources.ts` — and nowhere else. Putting the field on the adapter's return would
  * have invited six adapters to each lie about it in the same way.
  */
 export interface CachedSourceResult<T> {
@@ -183,17 +183,34 @@ export interface SourceQuery {
 
 /**
  * Everything an adapter needs from the outside world, passed in rather than imported, so an
- * adapter is testable without a running Redis and cannot reach for a global.
+ * adapter is testable with a plain map and cannot reach for a global.
  */
 export interface SourceContext {
   readonly signal: AbortSignal;
-  /** Shared, durable side cache. Survives a worker restart; see `fetch`. */
+  /**
+   * The shared side cache. One entry space for every adapter, namespaced by `cacheKey`.
+   *
+   * NOT DURABLE, and the word used to be here (QA finding QV-31). ADR 0019 planned Redis and
+   * a poller worker; **ADR 0031 removed both** and nothing replaced them, so what ships is a
+   * `Map` in the web process — see `app/(public)/map/sources.ts`. It survives across polls
+   * and across a dev-server hot reload; it does not survive a restart or a deploy and it does
+   * not span processes. Anything an adapter puts here it may have to earn again after a
+   * deploy, so a cache miss must always be a cold start rather than an error.
+   */
   readonly cache: SourceCache;
   /** Reads a required key and returns `notConfigured` upward rather than throwing. */
   readonly env: (name: string) => string | undefined;
 }
 
-/** The narrow slice of a cache an adapter may use. Redis in production, a map in tests. */
+/**
+ * The narrow slice of a cache an adapter may use — two methods, no enumeration and no flush,
+ * so one adapter cannot reach another's entries.
+ *
+ * A `Map` in the web process in production, and a `Map` in tests. It was documented as "Redis
+ * in production" until ADR 0031 removed the container that would have provided it (QV-31).
+ * Kept as an interface anyway: it is the seam a shared store would slot into, and it is what
+ * lets `createMemoryCache()` stand in for one without an adapter noticing.
+ */
 export interface SourceCache {
   get(key: string): Promise<string | null>;
   set(key: string, value: string, ttlSeconds?: number): Promise<void>;

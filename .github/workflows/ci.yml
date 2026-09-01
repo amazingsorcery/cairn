@@ -148,8 +148,17 @@ jobs:
       - name: Lint
         run: pnpm lint
 
-      - name: Unit tests
-        run: pnpm test
+      # WITH COVERAGE, because `vitest.config.ts` carries per-directory coverage thresholds
+      # and a threshold that only runs on a developer's machine is not a floor. The numbers
+      # guard `lib/actions/workspaces.ts`, `lib/queries/workspaces.ts` and the case-file
+      # export route — the code that decides who may read whose case file (QA finding QV-16).
+      #
+      # This step also needs the `postgres` service, and has it: the DB-backed suites create
+      # and migrate their own `app_test_vitest` database beside `app_test`, so they neither
+      # depend on nor disturb the migrate/seed/build/e2e steps that follow. If Postgres is
+      # unreachable, `tests/db/harness.ts` fails the run rather than skipping quietly.
+      - name: Unit tests, with coverage thresholds
+        run: pnpm test:coverage
 
       # The catalogue is the product's credibility. A duplicate slug, a playbook step
       # citing a tool that was omitted during verification, or non-contiguous step

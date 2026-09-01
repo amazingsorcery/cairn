@@ -94,20 +94,6 @@ export default async function LiveFlightsPage({
   const now = new Date();
   const initialAgeSeconds = envelope.fetchedAt ? ageSeconds(envelope.fetchedAt, now.getTime()) : null;
 
-  /*
-   * When a fixed-window quota is what refused the call, the reader can be told exactly when it
-   * clears — the ADR 0009 limiter aligns its windows to the Unix epoch, so the end of the
-   * current window is a real instant and not an estimate.
-   *
-   * Taken from the envelope, which carries the REFUSING COUNTER'S own `resetAt`. This used to
-   * recompute it from `connectors.window_seconds` with a second copy of the epoch-alignment
-   * arithmetic — and that copy is wrong whenever the counter that actually refused is not the
-   * per-user quota. Since QV-25 it often is not: the entry limiter has its own 60-second
-   * window and refuses before the connector row is even read. Two copies of one calculation
-   * is how they come to disagree, which is the failure this audit round is about.
-   */
-  const quotaResetAt = envelope.quotaResetsAt?.toISOString() ?? null;
-
   return (
     <div className="mx-auto w-full max-w-[80rem] px-4 py-10 md:px-6 md:py-14">
       <Breadcrumb items={[{ label: "live", href: "/live" }, { label: "flights" }]} />
@@ -131,12 +117,26 @@ export default async function LiveFlightsPage({
             reason: (envelope.reason as LiveReason | null) ?? null,
             message: envelope.lastError,
             connector: envelope.connectorSlug,
+            /*
+             * BOTH OF THESE TRAVEL IN THE ENVELOPE, not as props beside it (QA finding QV-29).
+             *
+             * `quotaResetsAt` is the REFUSING COUNTER'S own `resetAt`. It used to be recomputed
+             * here from `connectors.window_seconds` with a second copy of the epoch-alignment
+             * arithmetic — wrong whenever the counter that refused was not the per-user quota,
+             * which since QV-25 is most of the time. Then it was passed as a prop, which fixed
+             * the arithmetic and left a second bug: a prop is fixed at server render, so a
+             * refusal arriving on a client refresh had no instant and therefore no control.
+             *
+             * `quotaScope` says WHICH counter refused, so the surface names the right limit
+             * instead of inferring it from the wording of `message`.
+             */
+            quotaResetsAt: envelope.quotaResetsAt?.toISOString() ?? null,
+            quotaScope: envelope.quotaScope,
           }}
           initialAgeSeconds={initialAgeSeconds}
           viewport={viewport}
           refreshSeconds={connector?.cacheTtlSeconds ?? 15}
           operatorName={connector?.operatorName ?? null}
-          quotaResetAt={quotaResetAt}
           perUserLimit={connector?.perUserQuota ?? null}
           windowSeconds={connector?.windowSeconds ?? null}
         />

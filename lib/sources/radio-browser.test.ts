@@ -139,7 +139,7 @@ describe("radio-browser fetch", () => {
     expect(result.observedAt.getTime()).toBeGreaterThanOrEqual(before);
   });
 
-  it("remembers its mirror in the durable cache rather than re-discovering every poll", async () => {
+  it("remembers its mirror in the shared cache rather than re-discovering every poll", async () => {
     const cache = createMemoryCache();
     const spy = vi.spyOn(globalThis, "fetch").mockImplementation((input) =>
       Promise.resolve(

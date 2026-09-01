@@ -57,10 +57,16 @@ import type {
  *     code is not retried forever. A *transport* failure is deliberately NOT cached, or one
  *     bad network moment would blind us to a zone until the entry expired.
  *
- * The cache is the durable one passed in through `SourceContext`, not an in-process map. That
- * matters more than it looks: an in-process map empties on every deploy, and the layer then
- * spends half an hour progressively incomplete — silent incompleteness arriving by a second
- * route, which is the exact failure this adapter was written to prevent.
+ * The cache is the shared one passed in through `SourceContext` rather than a map this
+ * adapter owns. One store instead of two is what lets the whole zone map be resolved once for
+ * the life of the process instead of once per poll.
+ *
+ * IT IS NOT DURABLE, and this comment used to say it was (QA finding QV-31). ADR 0031 removed
+ * the shared store ADR 0019 had planned, so `SourceContext.cache` is a per-process map: a
+ * deploy empties it and this layer is then progressively incomplete for the first few polls
+ * while it re-warms. That is silent incompleteness, which is the failure this adapter was
+ * written to make loud — so it is written down here and in `docs/sources/HANDOFF.md` §4
+ * rather than left for an operator to notice from a thin map after a release.
  */
 
 const ALERTS_URL = "https://api.weather.gov/alerts/active?status=actual";
@@ -156,7 +162,7 @@ const zonePointSchema = z.object({
 type ZonePoint = z.infer<typeof zonePointSchema>;
 
 /**
- * The durable map of UGC code to point, stored as ONE cache entry.
+ * The shared map of UGC code to point, stored as ONE cache entry.
  *
  * One entry rather than one key per zone, deliberately: ~700 zones at roughly 60 bytes each is
  * about 45 KB, which is one GET and an occasional SET per poll instead of seven hundred
@@ -177,10 +183,10 @@ const ZONE_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60;
  * The per-call view of the zone map.
  *
  * `normalise` is synchronous by contract, so it cannot await a cache read. `fetch` loads the
- * durable map once per poll and installs it here before mapping. This is a read-through view
+ * shared map once per poll and installs it here before mapping. This is a read-through view
  * of `SourceContext.cache`, **not** a second source of truth — the distinction that matters,
- * because the previous version's in-process map *was* the source of truth and emptied on
- * every deploy.
+ * because the previous version's adapter-owned map *was* the source of truth, so nothing
+ * outlived one call. Both are emptied by a restart; only one of them is emptied every poll.
  */
 const globalForZones = globalThis as typeof globalThis & { __cairnNwsZones__?: ZoneMap };
 function currentZoneMap(): ZoneMap {
@@ -239,7 +245,8 @@ async function fetchZone(ugc: string, ctx: SourceContext): Promise<ZonePoint | n
 }
 
 /**
- * Load the durable zone map into the per-call view.
+ * Load the shared zone map — `SourceContext.cache`, a per-process store — into the
+ * per-call view.
  *
  * A cache miss or a malformed entry is a cold start, not an error: the warm-up refills it a
  * dozen zones at a time.
@@ -453,7 +460,7 @@ export const nwsAlerts: SourceAdapter<WeatherAlertFeature> = {
     }
 
     /**
-     * Load the durable zone map, then warm a bounded slice of it BEFORE mapping, so zones
+     * Load the shared zone map, then warm a bounded slice of it BEFORE mapping, so zones
      * resolved on this poll place their alerts now rather than next time.
      */
     await loadZoneMap(ctx.cache);

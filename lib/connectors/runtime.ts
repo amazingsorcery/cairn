@@ -6,7 +6,7 @@ import { tallyOutbound } from "@/lib/net/outbound-tally";
 import { consume } from "@/lib/rate-limit";
 import { recordConnectorRequest } from "./audit";
 import { e2eOverride } from "./e2e-override";
-import type { ActorIdentity, ConnectorDriver, ConnectorEnvelope } from "./types";
+import type { ActorIdentity, ConnectorDriver, ConnectorEnvelope, QuotaScope } from "./types";
 
 /**
  * The one path an outbound call takes. ADR 0011 rules 3–6, ADR 0014.
@@ -338,6 +338,13 @@ function unavailable<T>(
    * `Retry-After` is a number we cannot stand behind.
    */
   quotaResetsAt: Date | null = null,
+  /**
+   * WHICH counter refused. Only ever supplied alongside `quota-exhausted`, and it is what
+   * lets a surface name the right limit instead of guessing from the wording of `message`
+   * (QA finding QV-29). Three counters can produce this reason and only one of them has
+   * anything to do with an upstream's fair-use limit.
+   */
+  quotaScope: QuotaScope | null = null,
 ): ConnectorEnvelope<T> {
   return {
     fetchedAt,
@@ -348,6 +355,7 @@ function unavailable<T>(
     lastError: message,
     reason,
     quotaResetsAt,
+    quotaScope,
   };
 }
 
@@ -420,6 +428,14 @@ export async function runConnector<Params, Result>(
       null,
       null,
       entryKnownResetAt,
+      /*
+       * `entry`, and the surface must say so. Nothing was asked of any upstream on this path
+       * — we refused before the registry row was read — so a sentence about an operator's
+       * fair-use limit would be false about a named third party (QV-29). This is also the
+       * counter that bites FIRST under load, which is why the wrong sentence was the one a
+       * reader actually met.
+       */
+      "entry",
     );
   }
 
@@ -662,6 +678,9 @@ export async function runConnector<Params, Result>(
       attribution,
       null,
       quotaResetsAt,
+      // `unmeasurable` is not a quota that bit; it is a counter we could not read. Saying
+      // which limit stands would be a guess, so the surface says we could not count.
+      spent === "denied" ? "viewer" : "unmeasured",
     );
   }
 
@@ -693,6 +712,7 @@ export async function runConnector<Params, Result>(
       lastError: null,
       reason: null,
       quotaResetsAt: null,
+      quotaScope: null,
     };
   }
 
@@ -728,6 +748,7 @@ export async function runConnector<Params, Result>(
       lastError: message,
       reason: "stale",
       quotaResetsAt: null,
+      quotaScope: null,
     };
   };
 
@@ -776,6 +797,7 @@ export async function runConnector<Params, Result>(
           lastError: message,
           reason: "rate-limited",
           quotaResetsAt: null,
+          quotaScope: null,
         }
       : unavailable(
           connector.slug,
@@ -819,6 +841,9 @@ export async function runConnector<Params, Result>(
           attribution,
           null,
           quotaResetsAt,
+          // The one of the three where an upstream's fair-use limit is part of the story:
+          // this ceiling exists to keep every reader combined inside it (ADR 0011 rule 3).
+          global === "denied" ? "shared" : "unmeasured",
         );
   }
 
@@ -883,6 +908,7 @@ export async function runConnector<Params, Result>(
       lastError: null,
       reason: null,
       quotaResetsAt: null,
+      quotaScope: null,
     };
   } catch (error) {
     const durationMs = Date.now() - started;
@@ -947,6 +973,7 @@ export async function runConnector<Params, Result>(
             lastError: message,
             reason: "rate-limited",
             quotaResetsAt: null,
+            quotaScope: null,
           }
         : unavailable(
             connector.slug,

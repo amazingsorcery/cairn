@@ -3,18 +3,108 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import type { SourceFailure } from "@/lib/sources/types";
+import { FAILURE_KINDS } from "./payload";
 import { LayerStatus, failureSentence } from "./layer-status";
 import type { LayerPayloadDto } from "./registry";
 
 /**
  * The degraded states. Carried over from `/live/flights` (ADR 0011 rule 5, ADR 0014) and
- * extended to the six failure kinds `SourceAdapter` actually has.
+ * extended to every failure kind `SourceAdapter` actually has.
  *
  * These are tested rather than trusted because they are the states nobody sees during
  * development. QA should be able to break one upstream and find a designed screen, not a
  * blank region — and the specific rules below (no retry after a rate limit, distinct copy per
  * kind) are the ones a later refactor collapses into one generic error box.
+ *
+ * ## THE CASES ARE DERIVED FROM THE UNION. QA finding QV-30.
+ *
+ * This file used to open with a hand-written array of six failures and a docstring calling it
+ * "the six failure kinds SourceAdapter actually has". The union had eight. `quotaExhausted`
+ * and `redirected` were both added by earlier fix rounds — which is precisely when a
+ * hand-maintained list stops matching — and neither appeared in any case here, so two real
+ * operational states were rendered by no test. QA has now found this shape twice; the second
+ * time it is a pattern, not an oversight, and the answer is to stop writing the list.
+ *
+ * Two mechanisms, in opposite directions, so neither can be satisfied on its own:
+ *
+ *  1. `Readonly<Record<SourceFailure["kind"], Case>>` — the CONTRACT forces a case. A ninth
+ *     kind in `lib/sources/types.ts` is a compile error in this file, next to the compile
+ *     errors it already causes in `layer-status.tsx`.
+ *  2. `expect(Object.keys(CASES)).toEqual(FAILURE_KINDS)` — the WIRE SCHEMA and the cases must
+ *     agree. `FAILURE_KINDS` is read off the `z.discriminatedUnion` in `payload.ts`, so a kind
+ *     the contract has and the schema does not — which reaches a reader as "our parser is
+ *     broken" rather than as itself — fails here too.
  */
+
+/**
+ * One case per failure kind: the value, whether a retry is offered, and one phrase the
+ * sentence must contain. The phrase is written out rather than derived from the component,
+ * because a test that asks the component what it says asserts nothing.
+ */
+interface FailureCase {
+  readonly failure: SourceFailure;
+  /** Whether a control is offered. Independent of `FAILURE_RETRYABLE`, on purpose. */
+  readonly offersRetry: boolean;
+  /** A phrase the reader must actually see, distinctive to this kind. */
+  readonly says: RegExp;
+}
+
+const CASES: Readonly<Record<SourceFailure["kind"], FailureCase>> = {
+  upstreamError: {
+    failure: { kind: "upstreamError", status: 503, message: "Service Unavailable" },
+    offersRetry: true,
+    says: /answered with HTTP 503/,
+  },
+  rateLimited: {
+    // Not an honesty question but a conduct one: a retry control is an invitation to keep
+    // calling a service that has just asked us to stop (product-brief §3.2 constraint 5).
+    failure: { kind: "rateLimited", retryAfterSeconds: 30 },
+    offersRetry: false,
+    says: /asked us to slow down/,
+  },
+  quotaExhausted: {
+    /*
+     * ADDED BY A FIX ROUND AND TESTED BY NOTHING UNTIL NOW (QV-05, then QV-30). It is OUR
+     * budget, not theirs, and the sentence has to say so: a reader who cannot tell the two
+     * apart concludes the source is unreliable when we are the ones who stopped.
+     */
+    failure: { kind: "quotaExhausted", resetsAt: new Date("2026-09-01T09:00:00.000Z") },
+    offersRetry: false,
+    says: /the limit is ours/i,
+  },
+  redirected: {
+    /*
+     * ALSO ADDED BY A FIX ROUND AND TESTED BY NOTHING (QV-18, then QV-30). Retryable — a
+     * redirect can be a maintenance window as easily as a permanent move — and it must never
+     * name the destination host, which is upstream-controlled text.
+     */
+    failure: { kind: "redirected" },
+    offersRetry: true,
+    says: /redirecting us to another host/,
+  },
+  schemaChanged: {
+    failure: { kind: "schemaChanged", message: "expected number, received string" },
+    offersRetry: false,
+    says: /our parser to fix/,
+  },
+  timeout: {
+    failure: { kind: "timeout", afterMs: 8000 },
+    offersRetry: true,
+    says: /did not answer within 8 seconds/,
+  },
+  notConfigured: {
+    failure: { kind: "notConfigured", missingEnvVar: "USGS_FEED_URL" },
+    offersRetry: false,
+    says: /no request was made/,
+  },
+  disabled: {
+    failure: { kind: "disabled", reason: "the terms are under review." },
+    offersRetry: false,
+    says: /a decision on our side/,
+  },
+};
+
+const FAILURES: readonly SourceFailure[] = FAILURE_KINDS.map((kind) => CASES[kind].failure);
 
 const SOURCE = {
   slug: "usgs-earthquakes",
@@ -27,15 +117,6 @@ const SOURCE = {
   },
   ttlSeconds: 60,
 };
-
-const FAILURES: readonly SourceFailure[] = [
-  { kind: "upstreamError", status: 503, message: "Service Unavailable" },
-  { kind: "rateLimited", retryAfterSeconds: 30 },
-  { kind: "schemaChanged", message: "expected number, received string" },
-  { kind: "timeout", afterMs: 8000 },
-  { kind: "notConfigured", missingEnvVar: "USGS_FEED_URL" },
-  { kind: "disabled", reason: "the terms are under review." },
-];
 
 function failed(failure: SourceFailure): LayerPayloadDto {
   return { layerId: "test", source: SOURCE, ok: false, failure, lastGoodAt: null };
@@ -57,10 +138,29 @@ function renderStatus(payload: LayerPayloadDto, cadence: "live" | "registry" = "
   return { onRetry };
 }
 
+describe("the case table covers the union", () => {
+  it("has a case for every kind the wire schema accepts, and invents none", () => {
+    /*
+     * The runtime half of QV-30. The `Record` above already fails to compile if the CONTRACT
+     * grows a kind; this fails if the SCHEMA and the cases drift apart in either direction —
+     * which is the state that reaches a reader as `schemaChanged`, a sentence blaming our
+     * parser for an operational condition that is not a bug at all.
+     */
+    expect([...Object.keys(CASES)].sort()).toEqual([...FAILURE_KINDS].sort());
+  });
+
+  it("exercises the two kinds that fix rounds added and the old list never mentioned", () => {
+    // Named explicitly so the regression cannot pass by an empty table.
+    expect(FAILURE_KINDS).toContain("quotaExhausted");
+    expect(FAILURE_KINDS).toContain("redirected");
+    expect(FAILURES.length).toBeGreaterThanOrEqual(8);
+  });
+});
+
 describe("failureSentence", () => {
   it("gives every failure kind its own sentence", () => {
-    // "It broke" is not a state. Four different things going wrong need four different
-    // sentences, and six kinds need six.
+    // "It broke" is not a state. Eight different things going wrong need eight different
+    // sentences, and every one of them is on the list because the list is derived.
     const sentences = FAILURES.map((failure) => failureSentence(failure, "USGS"));
     expect(new Set(sentences).size).toBe(FAILURES.length);
     for (const sentence of sentences) {
@@ -68,6 +168,20 @@ describe("failureSentence", () => {
       expect(sentence.toLowerCase()).not.toContain("something went wrong");
       expect(sentence.toLowerCase()).not.toContain("sorry");
     }
+  });
+
+  it("says the thing each kind exists to say", () => {
+    for (const kind of FAILURE_KINDS) {
+      const sentence = failureSentence(CASES[kind].failure, "USGS");
+      expect(sentence, `${kind}: ${sentence}`).toMatch(CASES[kind].says);
+    }
+  });
+
+  it("never names the host of a refused redirect", () => {
+    // The destination is upstream-controlled text and this string is rendered. An operator
+    // reads the host in the structured log; a reader never does (QV-18).
+    const sentence = failureSentence({ kind: "redirected" }, "USGS");
+    expect(sentence).not.toMatch(/https?:\/\//);
   });
 
   it("blames our parser, not the upstream, when the schema changed", () => {
@@ -129,25 +243,55 @@ describe("LayerStatus", () => {
     expect(screen.queryByRole("button", { name: /retry/i })).not.toBeInTheDocument();
   });
 
-  it("offers no retry for a switched-off layer, a missing config or a schema change", () => {
-    for (const failure of FAILURES.filter(
-      (f) => f.kind === "disabled" || f.kind === "notConfigured" || f.kind === "schemaChanged",
-    )) {
+  it("offers a retry exactly where one can help, for every kind in the union", () => {
+    /*
+     * Driven by the derived list, so a new kind arrives here with an explicit answer rather
+     * than an accidental one. The three `false` answers are three different arguments: a
+     * rate limit is a conduct question (never invite a reader to keep calling a service that
+     * said stop), a spent quota and a switched-off layer cannot be helped by retrying, and a
+     * schema change needs a deploy the reader cannot make.
+     */
+    for (const kind of FAILURE_KINDS) {
       const { unmount } = render(
         <LayerStatus
           label="Earthquakes"
           unavailableTitle="Earthquakes unavailable"
-          payload={failed(failure)}
+          payload={failed(CASES[kind].failure)}
           cadence="live"
           refreshing={false}
           initialAgeSeconds={null}
           onRetry={vi.fn()}
         />,
       );
-      expect(
-        screen.queryByRole("button", { name: /retry/i }),
-        `${failure.kind} must not offer a retry`,
-      ).not.toBeInTheDocument();
+      const button = screen.queryByRole("button", { name: /retry/i });
+      if (CASES[kind].offersRetry) {
+        expect(button, `${kind} must offer a retry`).toBeInTheDocument();
+      } else {
+        expect(button, `${kind} must not offer a retry`).not.toBeInTheDocument();
+      }
+      unmount();
+    }
+  });
+
+  it("renders every kind as a designed region rather than a blank one", () => {
+    for (const kind of FAILURE_KINDS) {
+      const { container, unmount } = render(
+        <LayerStatus
+          label="Earthquakes"
+          unavailableTitle="Earthquakes unavailable"
+          payload={failed(CASES[kind].failure)}
+          cadence="live"
+          refreshing={false}
+          initialAgeSeconds={null}
+          onRetry={vi.fn()}
+        />,
+      );
+      // The title, a sentence, and an icon. A blank row is the failure mode this whole
+      // component exists to prevent, and it is what an unhandled kind produces.
+      expect(container.textContent ?? "", `${kind} rendered nothing`).toContain(
+        "Earthquakes unavailable",
+      );
+      expect(container.querySelector("svg"), `${kind} has no icon`).not.toBeNull();
       unmount();
     }
   });

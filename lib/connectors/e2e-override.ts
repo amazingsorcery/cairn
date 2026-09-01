@@ -126,8 +126,10 @@ export function e2eOverride<T>(
       lastError: forced.reason === "stale" ? (forced.message ?? DEFAULT_MESSAGE.stale) : null,
       reason: forced.reason === "stale" ? "stale" : null,
       // A forced state stands in for the whole call, so no counter was consulted and there is
-      // no reset instant to report — not even for a forced `quota-exhausted`.
+      // no reset instant to report — not even for a forced `quota-exhausted`. Nor a scope:
+      // naming a counter that was never read would be the fabrication QV-29 was about.
       quotaResetsAt: null,
+      quotaScope: null,
     };
   }
 
@@ -140,7 +142,9 @@ export function e2eOverride<T>(
     attribution,
     lastError: forced.message ?? DEFAULT_MESSAGE[reason],
     reason,
-    // See above: nothing was counted, so there is nothing to say about when it resets.
+    // See above: nothing was counted, so there is nothing to say about when it resets or
+    // about which counter did it.
     quotaResetsAt: null,
+    quotaScope: null,
   };
 }

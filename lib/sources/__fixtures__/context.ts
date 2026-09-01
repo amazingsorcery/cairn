@@ -2,7 +2,7 @@ import { createMemoryCache } from "../cache";
 import type { SourceCache, SourceContext } from "../types";
 
 /**
- * Test support: a `SourceContext` with no Redis and no `process.env`.
+ * Test support: a `SourceContext` with its own cache and no `process.env`.
  *
  * The whole point of the revised contract is that an adapter takes its cache and its
  * environment as arguments, so a test can hand it a plain map and an object literal. Nothing

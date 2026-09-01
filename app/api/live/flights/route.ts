@@ -93,6 +93,15 @@ export async function GET(request: Request): Promise<Response> {
        * would otherwise never read. Null unless a quota refused this caller.
        */
       quotaResetsAt: refused ? (envelope.quotaResetsAt?.toISOString() ?? null) : null,
+      /**
+       * WHICH of our counters refused, so the surface can name the right limit instead of
+       * inferring it from the wording of `message` (QA finding QV-29). The client was
+       * matching `"You have reached"` and the entry limiter says `"You have made"`, so every
+       * refusal from the counter that bites first was rendered as "we are at the operator's
+       * fair-use ceiling" — a false statement about a named third party, on a path where
+       * nothing had been asked of them at all.
+       */
+      quotaScope: refused ? envelope.quotaScope : null,
     },
     {
       status: refused ? 429 : 200,

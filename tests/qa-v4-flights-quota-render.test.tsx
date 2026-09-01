@@ -2,6 +2,22 @@ import * as React from "react";
 import { act, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+/*
+ * ADDED BY THE FIX, and it is the fix showing up: the retry control now renders on this path,
+ * `RetryAtButton` calls `useRouter`, and jsdom has no App Router mounted. Before the fix this
+ * file needed no stub because no control was ever rendered — which was the finding.
+ */
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({
+    refresh: () => {},
+    push: () => {},
+    replace: () => {},
+    back: () => {},
+    forward: () => {},
+    prefetch: () => {},
+  }),
+}));
+
 import { FlightsSurface } from "@/components/live/flights-surface";
 
 /**
@@ -14,11 +30,18 @@ import { FlightsSurface } from "@/components/live/flights-surface";
  *    rather than a bare count, and so the client is not made to parse a header it would
  *    otherwise never read."
  *
- * The surface does not read it. `FlightsEnvelopeDto` has no field for it, `parseEnvelope`
- * drops it, and `quotaResetAt` is a PROP fixed at server render. A reader who meets the
- * refusal mid-session — the only way a reader already on the page can meet it — loses the
- * reset time and the retry control entirely, and is told the cause is the operator's shared
- * fair-use ceiling when it is our own per-client counter.
+ * The surface did not read it. `FlightsEnvelopeDto` had no field for it, `parseEnvelope`
+ * dropped it, and `quotaResetAt` was a PROP fixed at server render. A reader who met the
+ * refusal mid-session — the only way a reader already on the page can meet it — lost the
+ * reset time and the retry control entirely, and was told the cause was the operator's shared
+ * fair-use ceiling when it was our own per-client counter.
+ *
+ * FIXED 2026-09-01 (frontend-engineer). `quotaResetsAt` and a new `quotaScope` now travel on
+ * the envelope, `parseEnvelope` narrows both, and the `quotaResetAt` prop is gone — one
+ * source for the instant instead of two. The two `it.fails` below are inverted, and this file
+ * is otherwise untouched apart from the fixture, which gains `quotaScope` and drops the
+ * removed prop, and a `next/navigation` stub the retry control now requires. The engineer-owned regression test is
+ * `components/live/flights-quota.test.tsx`, which shares no fixture with this file.
  *
  * Measured live, dev server, one client, one 60 s window: 120 x 200, 10 x 429, body
  * `{"reason":"quota-exhausted","message":"You have made too many requests to our live
@@ -43,6 +66,9 @@ const REFUSAL_BODY = {
   message: "You have made too many requests to our live sources. Try again shortly.",
   connector: "adsb-lol",
   quotaResetsAt: "2026-09-01T13:14:00.000Z",
+  // Added by the fix: which of the three counters refused. `entry` is the per-client door
+  // limiter in front of `runConnector`, which is what the measurement above hit.
+  quotaScope: "entry",
 };
 
 async function refuseMidSession(): Promise<string> {
@@ -65,13 +91,16 @@ async function refuseMidSession(): Promise<string> {
         reason: null,
         message: null,
         connector: "adsb-lol",
+        quotaResetsAt: null,
+        quotaScope: null,
       }}
       initialAgeSeconds={5}
       viewport={{ lat: 51.5, lon: -0.1, radius: 50 }}
       refreshSeconds={5}
       operatorName="adsb.lol"
       // Null because the page rendered healthy. This is the case the finding is about.
-      quotaResetAt={null}
+      // The prop is gone: the instant travels in the envelope, which is the fix. The refusal
+      // below still arrives with no instant known at server render, which was the case.
       perUserLimit={6}
       windowSeconds={60}
     />,
@@ -89,13 +118,13 @@ describe("QA-V4-01: a 429 that arrives on a refresh", () => {
     expect(body).toMatch(/Aircraft positions paused/i);
   }, 20000);
 
-  /* DEFECT (QA-V4-01). Invert these two when the client carries `quotaResetsAt`. */
-  it.fails("renders the reset instant the route went to the trouble of sending", async () => {
+  /* FIXED (QA-V4-01), inverted in the fix commit. */
+  it("renders the reset instant the route went to the trouble of sending", async () => {
     const body = await refuseMidSession();
     expect(body).toMatch(/resets at/i);
   }, 20000);
 
-  it.fails("does not blame the operator's shared ceiling for our own per-client counter", async () => {
+  it("does not blame the operator's shared ceiling for our own per-client counter", async () => {
     const body = await refuseMidSession();
     expect(body).not.toMatch(/shared request ceiling/i);
   }, 20000);

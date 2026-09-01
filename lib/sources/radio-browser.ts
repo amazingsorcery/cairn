@@ -256,7 +256,7 @@ const MIRROR_CACHE_KEY = cacheKey(RADIO_BROWSER_SLUG, "mirror");
 const mirrorSchema = z.string().regex(HOST_PATTERN);
 
 /**
- * Discover a mirror, remembering the choice in the durable cache.
+ * Discover a mirror, remembering the choice in `SourceContext.cache`.
  *
  * Cached rather than re-discovered every poll, because the docs ask callers not to hammer the
  * discovery endpoint either — and because a worker restart should not cost an extra round trip

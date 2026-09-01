@@ -30,8 +30,15 @@ import type { Attribution, SourceFeature, SourceKind } from "@/lib/sources/types
  * a second web process would not see the first one's entries. A reader who leaves the save
  * picker open across a deploy gets "no longer available" rather than a wrong record. That is
  * the correct failure — ADR 0025 rejects re-fetching precisely because a re-fetch returns
- * the aircraft's *current* position under the original timestamp: not old, but wrong. When
- * ADR 0019's Redis lands, this file reads that key instead of holding its own map.
+ * the aircraft's *current* position under the original timestamp: not old, but wrong.
+ *
+ * **This is the shipped arrangement, not a stop-gap.** This comment used to end "when ADR
+ * 0019's Redis lands, this file reads that key instead of holding its own map"; ADR 0031
+ * removed the `redis` and `worker` containers and recorded the condition under which they
+ * would come back, so there is nothing pending (QA finding QV-31). If a shared store ever
+ * does land, this file is one of its readers — but a comment promising it, next to code that
+ * never gets it, is how a reviewer concludes the restart behaviour above is temporary and
+ * stops designing for it.
  */
 
 /** One layer's payload, as the last governed poll produced it. */

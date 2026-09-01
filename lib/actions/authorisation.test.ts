@@ -7,20 +7,31 @@ import { describe, expect, it } from "vitest";
  *
  * WHY THIS IS A SOURCE-SHAPE TEST AND NOT A BEHAVIOURAL ONE.
  *
- * `lib/actions/**` carries every write in the product and, measured with
- * `vitest run --coverage`, has 0.14% statement coverage. A behavioural test needs a real
- * Postgres and a Next request scope; the Vitest environment has neither (`vitest.config.ts`
- * pins a fake `DATABASE_URL`). The behavioural gap is filed in `docs/qa/coverage.md` and is
- * an engineer's to close in Playwright.
- *
- * What CAN be asserted here, deterministically and with no database, is the property the
- * whole authorisation model rests on: **a Server Action is a public HTTP endpoint, and its
- * first act must be to establish who is calling.** Every regression in this class looks the
- * same — a new action written by copying a neighbour and dropping the guard line, which
- * typechecks, lints, renders and ships.
+ * `lib/actions/**` carries every write in the product. The property asserted here,
+ * deterministically and with no database, is the one the whole authorisation model rests on:
+ * **a Server Action is a public HTTP endpoint, and its first act must be to establish who is
+ * calling.** Every regression in this class looks the same — a new action written by copying
+ * a neighbour and dropping the guard line, which typechecks, lints, renders and ships.
  *
  * These tests read the source. That is the point: they fail on the shape of the code before
- * anyone has to reproduce the exploit.
+ * anyone has to reproduce the exploit. They also cover all five action modules, which no
+ * behavioural suite yet does.
+ *
+ * THE BEHAVIOURAL HALF NOW EXISTS, for workspaces, and this note is amended rather than left
+ * standing because it said something that has stopped being true. The original wording was:
+ * "A behavioural test needs a real Postgres and a Next request scope; the Vitest environment
+ * has neither (`vitest.config.ts` pins a fake `DATABASE_URL`)." The first half was a correct
+ * reading of the config and the second half turned out to be a solvable problem, not a fixed
+ * one — see `tests/db/provision.ts`, which creates an isolated `_vitest` database from
+ * whatever server `.env.local` or CI already names, and `tests/db/session.ts`, which doubles
+ * the session store rather than the guards.
+ *
+ * `lib/actions/workspaces.authorisation.test.ts` and
+ * `lib/queries/workspaces.authorisation.test.ts` are that half (QA finding QV-16). The two
+ * kinds of test catch different regressions and neither replaces the other: a shape test
+ * cannot see a guard that is present and ineffective, and a behavioural test cannot see a
+ * new action nobody wired a case for. Both are derived from the module's exports so that
+ * neither depends on somebody remembering.
  */
 
 const ROOT = resolve(__dirname, "..", "..");

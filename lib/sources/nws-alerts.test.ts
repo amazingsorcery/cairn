@@ -143,8 +143,8 @@ describe("nws-alerts zone warm-up", () => {
   });
 });
 
-describe("nws-alerts durable zone cache", () => {
-  it("writes resolved zones to the context cache so they survive a restart", async () => {
+describe("nws-alerts shared zone cache", () => {
+  it("writes resolved zones to the context cache rather than to a map of its own", async () => {
     const cache = createMemoryCache();
     vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
       const url = String(input);
@@ -157,7 +157,7 @@ describe("nws-alerts durable zone cache", () => {
     expect(await cache.get("source:nws-alerts:zone-points")).toContain("AZZ004");
   });
 
-  it("re-warms from the cache after a restart instead of starting cold", async () => {
+  it("re-warms from the context cache instead of starting cold when its own view is lost", async () => {
     const cache = createMemoryCache();
     const spy = vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
       const url = String(input);
@@ -171,21 +171,26 @@ describe("nws-alerts durable zone cache", () => {
     // The per-poll cap, doing its job on a cold start.
     expect(firstPollCalls).toBe(12);
 
-    // Simulate a worker restart: the in-process view is gone, the durable cache is not.
+    /*
+     * The adapter's own per-call view is dropped while the passed-in cache is kept — which
+     * is what happens between polls, not what happens across a restart. `SourceContext.cache`
+     * is a per-process map (ADR 0031 removed the shared store), so a real restart empties
+     * both and the layer re-warms over several polls. See docs/sources/HANDOFF.md §4.
+     */
     clearZoneCache();
     expect(zoneCacheSize()).toBe(0);
 
     await nwsAlerts.fetch({}, testContext({ cache }));
     const restartCalls = zoneCalls() - firstPollCalls;
 
-    // THE POINT OF THE DURABLE CACHE. A restart must not re-resolve what was already
+    // THE POINT OF THE SHARED CACHE. A poll must not re-resolve what was already
     // resolved. The one remaining call is the warm-up continuing to the 13th zone the
     // fixture names — progress, not repetition.
     expect(restartCalls).toBeLessThanOrEqual(1);
     expect(zoneCacheSize()).toBeGreaterThanOrEqual(12);
   });
 
-  it("would start cold again without the durable cache — the failure this fixes", async () => {
+  it("starts cold with a fresh cache — which is what every restart costs", async () => {
     const spy = vi.spyOn(globalThis, "fetch").mockImplementation((input) =>
       Promise.resolve(
         jsonResponse(String(input).includes("/zones/") ? zoneFixture : alertsFixture),
@@ -193,7 +198,8 @@ describe("nws-alerts durable zone cache", () => {
     );
     const zoneCalls = () => spy.mock.calls.filter((c) => String(c[0]).includes("/zones/")).length;
 
-    // A fresh cache each poll is exactly what an in-process map gave us across a deploy.
+    // A fresh cache each poll is what a deploy gives us, and what an adapter-owned map gave
+    // us every poll before the cache was passed in.
     await nwsAlerts.fetch({}, testContext({ cache: createMemoryCache() }));
     const firstPollCalls = zoneCalls();
     clearZoneCache();

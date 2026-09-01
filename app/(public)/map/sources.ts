@@ -42,9 +42,11 @@ import { devStressSource } from "./dev-stress-source";
  * `slug:unscoped`, which is what ADR 0014 §4 is actually about.
  *
  * §6 of the same ADR: the payload rests only here, for a bounded time, and never in a table.
- * A module-level `Map` satisfies all of that. What it does not do is survive more than one
- * process — ADR 0019 puts Redis and a poller worker in the stack for exactly that, and when
- * they exist this file reads their key instead of holding its own.
+ * A module-level `Map` satisfies all of that. What it does not do is survive a restart or span
+ * processes: ADR 0019 put Redis and a poller worker in the stack for exactly that, **ADR 0031
+ * removed both**, and nothing replaced them. So this is the shipped cache rather than a stand-
+ * in for one — a deploy empties it and the next reader pays a cold poll, which is a real
+ * property an operator should know (QA finding QV-31, and see `docs/sources/HANDOFF.md` §4).
  */
 
 /* ------------------------------------------------------------------ *
@@ -201,9 +203,12 @@ function cacheKeyFor(adapter: SourceAdapter<SourceFeature>, query: SourceQuery):
 }
 
 /**
- * The narrow `get`/`set` slice the contract hands to every adapter. This is Redis's seat,
- * occupied by a `Map` until the worker container exists. An adapter that could enumerate or
- * flush the cache would be able to reach data that is not its own.
+ * The narrow `get`/`set` slice the contract hands to every adapter, over the same process-local
+ * store as the payload cache above. Two methods and no more: an adapter that could enumerate
+ * or flush the cache would be able to reach data that is not its own.
+ *
+ * It is not durable and no longer claims to be (QV-31). An entry written here is gone at the
+ * next restart, so every adapter must treat a miss as a cold start rather than an error.
  */
 const cache: SourceCache = {
   async get(key: string): Promise<string | null> {

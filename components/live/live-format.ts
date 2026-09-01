@@ -1,5 +1,5 @@
 import type { Aircraft, FlightsPayload } from "@/lib/connectors/flights";
-import type { ConnectorState, DegradedReason } from "@/lib/connectors/types";
+import type { ConnectorState, DegradedReason, QuotaScope } from "@/lib/connectors/types";
 
 /**
  * Shared vocabulary and formatting for the Live surfaces.
@@ -24,6 +24,35 @@ import type { ConnectorState, DegradedReason } from "@/lib/connectors/types";
  */
 export type LiveState = ConnectorState;
 export type LiveReason = DegradedReason;
+/**
+ * Which counter refused, when `reason` is `quota-exhausted`. Aliased for the same reason as
+ * the two above: the server owns the vocabulary and a member added there must be a compile
+ * error in every `Record<LiveQuotaScope, …>` here, rather than a wire value the client
+ * quietly drops back to a default sentence.
+ */
+export type LiveQuotaScope = QuotaScope;
+
+/**
+ * Every scope, as a value, so a wire string can be narrowed to one.
+ *
+ * The `Record` is the mechanism, not the array: a fifth scope on the server fails to compile
+ * here, which is where a missing sentence should surface. Written out rather than derived
+ * from a runtime import because `lib/connectors/` is server-only by design — the type import
+ * above is erased, a value import would not be.
+ */
+const QUOTA_SCOPES: Readonly<Record<LiveQuotaScope, true>> = {
+  entry: true,
+  viewer: true,
+  shared: true,
+  unmeasured: true,
+};
+
+/** Narrows a value off the wire. Anything unrecognised is `null`, never a guess. */
+export function asQuotaScope(value: unknown): LiveQuotaScope | null {
+  return typeof value === "string" && Object.hasOwn(QUOTA_SCOPES, value)
+    ? (value as LiveQuotaScope)
+    : null;
+}
 
 /**
  * The connector envelope as it crosses the server/client boundary. It is the envelope from
@@ -37,9 +66,27 @@ export type FlightsEnvelopeDto = {
   data: FlightsPayload | null;
   attribution: string | null;
   reason: LiveReason | null;
-  /** One sentence fit to render. Never an upstream error body. */
+  /**
+   * One sentence fit to render. Never an upstream error body.
+   *
+   * IT IS PROSE, AND NOTHING MAY BRANCH ON IT. `flights-surface.tsx` used to decide which of
+   * our three quotas had refused by matching the first four words of this string, and the
+   * counter that bites first wrote different words — so a reader was told a named operator's
+   * fair-use limit was exhausted when nothing had been asked of that operator (QV-29). The
+   * discriminator is `quotaScope`; this field is for reading, not for parsing.
+   */
   message: string | null;
   connector: string;
+  /**
+   * ISO instant the refusing counter clears, when one refused. `/api/live/flights` sends it
+   * in the body as well as in `Retry-After` precisely so the surface can say "it resets at
+   * 13:42" — and it is on the ENVELOPE rather than a prop fixed at server render, because a
+   * refusal that arrives on a refresh is the only way a reader already on the page can meet
+   * one, and that path had no instant and therefore no control at all.
+   */
+  quotaResetsAt: string | null;
+  /** Which of our counters refused. Null for every reason other than `quota-exhausted`. */
+  quotaScope: LiveQuotaScope | null;
 };
 
 export type { Aircraft, FlightsPayload };

@@ -34,7 +34,7 @@ import type { LayerPayloadDto } from "./registry";
  *
  * What is not shared is the vocabulary. `FreshnessBar` speaks `ConnectorState` and
  * `DegradedReason` from `lib/connectors/types.ts`; a map layer speaks `SourceFailure` from
- * `lib/sources/types.ts`, which has six kinds and only two of them in common. Mapping one
+ * `lib/sources/types.ts`, which has eight kinds and only two of them in common. Mapping one
  * onto the other would have required inventing a `LiveReason` for `schemaChanged` and
  * `notConfigured`, which is how a UI ends up rendering "upstream is down" for a bug in our
  * own parser. Two vocabularies, one set of rules, no translation layer.
@@ -47,16 +47,20 @@ import type { LayerPayloadDto } from "./registry";
  * 2. **The age is computed from the observation instant on every tick**, never from a timer
  *    started at mount. The second number is the age of the page, which is a different thing.
  * 3. **Different failures get different sentences.** "It broke" is not a state. Each of the
- *    six says what is wrong, and two of them say plainly that there is nothing to retry.
+ *    eight says what is wrong, and five of them say plainly that there is nothing to retry.
  * 4. **A dead source degrades ITS OWN LAYER.** This component renders inside one layer's
  *    row; nothing about it can affect another layer or the map.
  */
 
 /**
  * Every failure kind, exhaustively. `Record<SourceFailure["kind"], …>` is doing real work:
- * a seventh kind added to `lib/sources/types.ts` is a compile error here, which is exactly
+ * a ninth kind added to `lib/sources/types.ts` is a compile error here, which is exactly
  * where a missing icon and a missing sentence should surface — rather than in production as
  * a blank row. `components/live/live-format.ts` learned this the hard way (QA finding Q-02).
+ *
+ * The compiler forces a MAP ENTRY; it cannot force a TEST. Two kinds sat here correctly typed
+ * and rendered by no test for two fix rounds, which is QV-30 — so `layer-status.test.tsx`
+ * derives its cases from the union rather than listing them.
  */
 const FAILURE_ICON: Record<SourceFailure["kind"], LucideIcon> = {
   upstreamError: CloudOff,

@@ -11,6 +11,7 @@ import { FlightsTable, sortDescription, type FlightSort } from "./flights-table"
 import { AircraftPanel } from "./aircraft-panel";
 import { FreshnessBar } from "./freshness-bar";
 import {
+  asQuotaScope,
   formatAge,
   formatClockUtc,
   formatNumber,
@@ -53,8 +54,12 @@ export interface FlightsSurfaceProps {
   /** `connectors.cache_ttl_seconds` — the shared cadence, not a per-viewer preference. */
   refreshSeconds: number;
   operatorName: string | null;
-  /** ISO instant the fixed-window quota clears, when one is exhausted. */
-  quotaResetAt: string | null;
+  /**
+   * `connectors.per_user_quota` and `connectors.window_seconds` — the operator's configured
+   * numbers, for the one sentence that quotes them. They are registry facts rather than
+   * envelope facts, which is why they are still props; the reset instant is not, and used to
+   * be (QV-29).
+   */
   perUserLimit: number | null;
   windowSeconds: number | null;
 }
@@ -93,6 +98,20 @@ function parseEnvelope(value: unknown, fallback: FlightsEnvelopeDto): FlightsEnv
         : null,
     message: typeof record.message === "string" ? record.message : null,
     connector: typeof record.connector === "string" ? record.connector : fallback.connector,
+    /*
+     * BOTH OF THESE WERE DROPPED HERE, AND THAT WAS THE WHOLE OF QV-29 ON THE CLIENT.
+     *
+     * The route answers 429 with the refusing counter's own reset instant and, since the same
+     * fix, which counter it was. Narrowing the envelope without carrying them meant a refusal
+     * that arrived on a refresh lost its instant — so the degraded state rendered no retry
+     * control at all — and lost its discriminator, so the surface fell back to guessing from
+     * the prose of `message` and guessed wrong in the most common case.
+     *
+     * Unrecognised values become null rather than a default: a wrong sentence about a third
+     * party is worse than the neutral one.
+     */
+    quotaResetsAt: typeof record.quotaResetsAt === "string" ? record.quotaResetsAt : null,
+    quotaScope: asQuotaScope(record.quotaScope),
   };
 }
 
@@ -102,7 +121,6 @@ export function FlightsSurface({
   viewport,
   refreshSeconds,
   operatorName,
-  quotaResetAt,
   perUserLimit,
   windowSeconds,
 }: FlightsSurfaceProps) {
@@ -229,8 +247,8 @@ export function FlightsSurface({
           operatorName={operatorName}
           lastGoodAt={envelope.fetchedAt}
           lastGoodAgeSeconds={age}
-          quotaResetAt={quotaResetAt}
-          perViewerQuota={isPerViewerQuota(envelope.message)}
+          quotaResetAt={envelope.quotaResetsAt}
+          quotaScope={envelope.quotaScope}
           perUserLimit={perUserLimit}
           windowSeconds={windowSeconds}
         />
@@ -334,16 +352,19 @@ const UNAVAILABLE_TITLE = {
   "bad-request": "That view could not be read",
 } as const;
 
-/**
- * Which of the two quotas refused the call.
+/*
+ * WHAT USED TO BE HERE, AND WHY IT IS NOT COMING BACK (QA finding QV-29).
  *
- * The envelope does not carry a discriminator, so this reads the sentence `runConnector`
- * put in `lastError` — the two strings are written in `lib/connectors/runtime.ts` and are
- * the only sentences that reach here for a quota refusal. It is a coupling to a message and
- * it is recorded as such in `docs/frontend/HANDOFF-live.md`: the right fix is a field on
- * `DegradedReason`, which is the backend's to add. Until then this defaults to the SHARED
- * ceiling, which is the reading that blames us rather than the reader.
+ * `isPerViewerQuota(message)` decided which of our quotas had refused by testing
+ * `message.startsWith("You have reached")`, because the envelope carried no discriminator.
+ * Three counters produce `quota-exhausted` and the one that bites first — the per-client
+ * entry limiter in front of `runConnector` — writes "You have made". So the test failed, the
+ * surface took the other branch, and a reader was told:
+ *
+ *   "This feed has a shared request ceiling so we stay inside adsb.lol's fair-use limit,
+ *    and it is currently reached."
+ *
+ * on a path where the registry row had not even been read and nothing had been asked of
+ * adsb.lol. Matching a different prefix would be the identical mechanism one word later.
+ * `quotaScope` now travels on the envelope and this surface branches on data, never on prose.
  */
-function isPerViewerQuota(message: string | null): boolean {
-  return message?.startsWith("You have reached") ?? false;
-}

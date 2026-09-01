@@ -54,11 +54,15 @@ const SOURCE = {
 
 describe("QA-V4: every SourceFailure kind reaches a reader", () => {
   /*
-   * DEFECT (QA-V4-02), open at the time of writing. `it.fails` rather than a red suite, which
-   * is this repository's convention for an asserted defect (see tests/security/kill-switch.test.ts).
-   * Invert it in the same commit that extends `FAILURES`.
+   * FIXED (QA-V4-02, QV-30), inverted in the fix commit — the only edit made to this file.
+   *
+   * `components/map/layer-status.test.tsx` no longer has a hand-written array to fall behind:
+   * its cases are a `Record<SourceFailure["kind"], …>`, which is a compile error when the
+   * contract grows a kind, and they are cross-checked at runtime against the kinds read off
+   * the `z.discriminatedUnion` in `components/map/payload.ts`. This assertion is kept as it
+   * was written, because it measures the outcome from outside and does not care how.
    */
-  it.fails("the engineer-owned FAILURES array covers the union, or names what it is missing", () => {
+  it("the engineer-owned FAILURES array covers the union, or names what it is missing", () => {
     const source = readFileSync(
       join(process.cwd(), "components/map/layer-status.test.tsx"),
       "utf8",

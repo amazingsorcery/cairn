@@ -52,7 +52,43 @@ export type ConnectorEnvelope<T> = {
    * identical for every caller in that window.
    */
   quotaResetsAt: Date | null;
+  /**
+   * WHICH counter refused, alongside `quota-exhausted`. Null for every other reason.
+   *
+   * QA finding QV-29. `reason` says a quota refused the call and three different quotas can
+   * be the one that did; the surface has to name the right one, because the sentences are
+   * not interchangeable. "The shared ceiling that keeps us inside an operator's fair use is
+   * reached" is a claim about a NAMED THIRD PARTY, and it was being rendered for refusals
+   * that came from our own per-client door counter, before the registry row was even read
+   * and with nothing asked of the operator at all.
+   *
+   * The client used to recover this by matching the first four words of `lastError`
+   * (`message.startsWith("You have reached")`). That is a coupling to prose: the entry
+   * limiter says "You have made", so every entry refusal fell through to the branch that
+   * blames the operator. Matching a different prefix would be the same defect one word
+   * later, so the discriminator travels as data.
+   */
+  quotaScope: QuotaScope | null;
 };
+
+/**
+ * The three counters in front of an upstream, plus the state where we could not read one.
+ *
+ * They are genuinely different facts and they lead a reader — and an operator — to different
+ * conclusions, which is why they are not collapsed:
+ *
+ *  - `entry`      — OUR per-client door counter (`connector-entry`), spanning every live
+ *                   source. It refuses before the registry read, so no request was made and
+ *                   no upstream was involved in any way.
+ *  - `viewer`     — this caller's own quota for this connector (`connector-user`), the number
+ *                   an operator sets in `connectors.per_user_quota`.
+ *  - `shared`     — the connector's global ceiling (`connector-global`), which exists to keep
+ *                   every reader combined inside the upstream's fair-use limit. This is the
+ *                   ONLY one of the three where an upstream's limit is even part of the story.
+ *  - `unmeasured` — a counter could not be read and we refused fail-closed. We do not know
+ *                   which limit stands or when it clears, and saying either would be a guess.
+ */
+export type QuotaScope = "entry" | "viewer" | "shared" | "unmeasured";
 
 export type ConnectorState = "fresh" | "stale" | "unavailable";
 

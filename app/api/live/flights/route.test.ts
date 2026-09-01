@@ -41,6 +41,9 @@ function envelope(overrides: Partial<ConnectorEnvelope<unknown>> = {}): Connecto
     lastError: "You have made too many requests to our live sources. Try again shortly.",
     reason: "quota-exhausted",
     quotaResetsAt: null,
+    // The default fixture is the ENTRY limiter's refusal, which is the one a reader meets
+    // first under load and the one QV-29 was rendering as the operator's fair-use ceiling.
+    quotaScope: "entry",
     ...overrides,
   };
 }
@@ -68,6 +71,10 @@ describe("GET /api/live/flights", () => {
     const response = await GET(request());
     expect(response.status).toBe(200);
     expect(response.headers.get("retry-after")).toBeNull();
+    // No counter refused, so there is no counter to name. A scope on a healthy envelope would
+    // be a limit reported to a reader who is not subject to one.
+    const parsed = (await response.json()) as Record<string, unknown>;
+    expect(parsed.quotaScope).toBeNull();
   });
 
   it("answers 200 for a source that is switched off — that is a decision, not a limit", async () => {
@@ -101,6 +108,16 @@ describe("GET /api/live/flights", () => {
     expect(parsed.state).toBe("unavailable");
     expect(parsed.message).toContain("too many requests");
     expect(parsed.attribution).toContain("adsb.lol");
+
+    /*
+     * AND WHICH COUNTER REFUSED (QA finding QV-29). Without this the client is left to infer
+     * it from the wording of `message`, which is what it did: it matched "You have reached",
+     * the entry limiter writes "You have made", and so every refusal from the counter that
+     * bites first was rendered as "we are at adsb.lol's fair-use ceiling" — a false statement
+     * about a named third party on a path where nothing was asked of them.
+     */
+    expect(parsed.quotaScope).toBe("entry");
+    expect(parsed.quotaResetsAt).toBe("2026-09-01T08:26:00.000Z");
   });
 
   it("still answers 429 when the reset instant is unknown, without inventing a Retry-After", async () => {

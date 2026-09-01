@@ -5,8 +5,9 @@ import type { SourceCache } from "./types";
 /**
  * Helpers over the `SourceCache` handed to an adapter in `SourceContext`.
  *
- * The cache is deliberately narrow — `get`/`set` on strings — so an adapter cannot reach past
- * it into Redis, and so a test can hand over a plain map. These helpers add the two things
+ * The cache is deliberately narrow — `get`/`set` on strings — so an adapter cannot enumerate
+ * or flush entries that are not its own, and so a test can hand over a plain map. These
+ * helpers add the two things
  * every caller would otherwise reimplement: JSON round-tripping validated by a schema, and a
  * namespaced key so two sources cannot collide.
  *
@@ -67,11 +68,16 @@ export async function setJson(
 /**
  * An in-process `SourceCache`.
  *
- * For tests, for a healthcheck run from a CLI, and as the fallback when no Redis is
- * configured. It is explicitly NOT the production path — everything the durable cache exists
- * to fix (a worker restart re-warming NWS zone centroids over half an hour, with a
- * progressively incomplete weather layer in the meantime) comes straight back if this is used
- * in the worker.
+ * For tests and for a healthcheck run from a CLI. **A per-process map is also what production
+ * uses** — `app/(public)/map/sources.ts` builds an equivalent one over its own `Map` — and
+ * this comment used to say the opposite: "explicitly NOT the production path... the fallback
+ * when no Redis is configured". ADR 0031 removed the `redis` container and QV-31 records the
+ * sentences that outlived it.
+ *
+ * What that costs is real and belongs next to the code rather than in a runbook: nothing here
+ * survives a restart, so after a deploy the NWS zone centroids are re-resolved over several
+ * polls and the weather layer is briefly missing some warnings. It is bounded by TTL only,
+ * which is why the map route wraps its own store with an entry ceiling and eviction.
  */
 export function createMemoryCache(): SourceCache & { readonly size: () => number } {
   const store = new Map<string, { value: string; expiresAt: number | null }>();

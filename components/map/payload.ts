@@ -60,6 +60,29 @@ const failureSchema = z.discriminatedUnion("kind", [
 ]);
 
 /**
+ * EVERY FAILURE KIND, AS A VALUE, DERIVED FROM THE UNION ABOVE RATHER THAN RETYPED.
+ *
+ * QA finding QV-30, which is QV-26's shape a second time. `layer-status.test.tsx` drove a
+ * hand-written array of six against a union of eight: `quotaExhausted` and `redirected` — the
+ * two kinds ADDED BY EARLIER FIX ROUNDS, which is exactly when a hand-written list goes stale
+ * — appeared in no case, so their sentence, icon, tone and retry affordance were rendered by
+ * no test at all.
+ *
+ * A list cannot be maintained by good intentions, so it is not a list: it is read off the
+ * discriminated union that already has to be exhaustive for the wire to work, the same way
+ * `registry.test.ts` iterates `MAP_LAYERS` instead of naming layers. A kind added to
+ * `lib/sources/types.ts` fails to compile in `layer-status.tsx`'s `Record` maps and in this
+ * schema, and the moment it is added here it appears in the test's case table — where a
+ * missing case is a compile error rather than a silent gap.
+ */
+export const FAILURE_KINDS: readonly SourceFailureKind[] = failureSchema.options.map(
+  (option) => option.shape.kind.value,
+);
+
+/** The kinds this schema accepts. Identical to `SourceFailure["kind"]`; asserted in the test. */
+export type SourceFailureKind = z.infer<typeof failureSchema>["kind"];
+
+/**
  * A feature's property bag.
  *
  * `z.union` rather than `z.any()`: the contract types this as
