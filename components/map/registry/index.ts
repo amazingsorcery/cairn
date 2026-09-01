@@ -1,8 +1,12 @@
 import type { PositionalPrecision, SourceFeature, SourceQuery } from "@/lib/sources/types";
 import type { MapLayerDefinition, MapViewport } from "./types";
+import { aircraftLayer } from "./aircraft";
+import { camerasLayer } from "./cameras";
 import { earthquakesLayer } from "./earthquakes";
+import { radioLayer } from "./radio";
 import { stressLayer } from "./stress";
 import { weatherAlertsLayer } from "./weather";
+import { wildfiresLayer } from "./wildfires";
 
 export type {
   DeckKit,
@@ -39,8 +43,20 @@ export type {
  * table a genuine equivalent rather than a fallback.
  */
 const ALL_LAYERS: readonly MapLayerDefinition[] = [
-  earthquakesLayer,
+  /*
+   * Densest first, sparsest last, because this is the deck.gl draw order and later entries
+   * paint over earlier ones. A global day of FIRMS detections and a busy patch of airspace can
+   * be tens of thousands of dots between them; there are ten cameras and a few dozen
+   * earthquakes. Drawing the sparse layers last keeps the features a reader is most likely to
+   * want to open on top of the ones they are most likely to be looking through — and picking
+   * follows the same order, so a camera under a fire detection is still clickable.
+   */
+  wildfiresLayer,
+  aircraftLayer,
+  radioLayer,
   weatherAlertsLayer,
+  earthquakesLayer,
+  camerasLayer,
   stressLayer,
 ];
 
