@@ -17,6 +17,7 @@ import { earthquakesLayer } from "./earthquakes";
 import { radioLayer } from "./radio";
 import { weatherAlertsLayer } from "./weather";
 import { wildfiresLayer } from "./wildfires";
+import { mediaClassFromUrl } from "../media/media-kind";
 import { MAP_LAYERS, featurePrecision, resolveMedia } from "./index";
 import { layerPayloadSchema } from "../payload";
 
@@ -343,10 +344,21 @@ describe("the radio layer reads what its adapter writes", () => {
 
     for (const feature of secure) {
       const media = resolveMedia(radioLayer, feature);
-      expect(media?.kind, `${feature.id}`).toBe("audio");
+      /*
+       * `audio` for a progressive stream, `stream` for HLS — one in fifteen of the catalogue.
+       * They are not interchangeable: an <audio> element handed an `.m3u8` plays nothing at
+       * all outside Safari and raises no error, which is the silent failure the `stream` kind
+       * was added to end. `resolveMedia` refuses a record that gets this the wrong way round.
+       */
+      const expected = feature.properties.isHls === true ? "stream" : "audio";
+      expect(media?.kind, `${feature.id}`).toBe(expected);
       expect(media?.url).toBe(feature.properties.streamUrl);
       expect(media?.disclosure).toContain(media?.host ?? "");
     }
+
+    // Both branches are actually exercised by the captured page, not just the common one.
+    const hls = secure.filter((f) => f.properties.isHls === true);
+    expect(hls.length, "the fixture carries no HLS station, so this asserts nothing").toBeGreaterThan(0);
     for (const feature of insecure) {
       const media = resolveMedia(radioLayer, feature);
       /*
@@ -406,14 +418,46 @@ describe("the cameras layer reads what its adapter writes", () => {
     }
   });
 
-  it("offers every camera's own image, from the operator's host and not ours", () => {
+  it("offers every camera's own view, from the operator's host and not ours", () => {
     for (const feature of features) {
       const media = resolveMedia(camerasLayer, feature);
-      expect(media, `${feature.id} offers no image`).not.toBeNull();
-      expect(media?.kind).toBe("image");
-      expect(media?.url).toBe(feature.properties.embedUrl);
-      // https only. A plain-http image is blocked as mixed content and fails silently.
+      expect(media, `${feature.id} offers no view`).not.toBeNull();
+      /*
+       * The kind is derived from what the registry records rather than fixed at "image", so
+       * the day `content/cameras/` carries TfL's MP4 clip this keeps passing and the panel
+       * plays it instead of drawing a broken-image glyph.
+       *
+       * `resolveMedia` refuses a record whose kind contradicts its own URL, so a null here is
+       * that contradiction and not a missing field — which is exactly why this assertion is a
+       * CI failure rather than something a reader discovers as a control that vanished.
+       */
+      expect(["image", "video", "stream"], `${feature.id}`).toContain(media?.kind);
+
+      /*
+       * The adapter publishes each form separately. The panel embeds the most informative one
+       * a camera has, and the kind follows the field the URL came out of rather than a guess.
+       */
+      const { streamUrl, videoUrl, stillUrl, embedUrl } = feature.properties;
+      const expectedUrl = streamUrl ?? videoUrl ?? stillUrl ?? embedUrl;
+      const expectedKind = streamUrl ? "stream" : videoUrl ? "video" : "image";
+      expect(media?.url, `${feature.id}`).toBe(expectedUrl);
+      expect(media?.kind, `${feature.id}`).toBe(expectedKind);
+
+      // https only. A plain-http view is blocked as mixed content and fails silently.
       expect(media?.url.startsWith("https://")).toBe(true);
+    }
+  });
+
+  it("never calls a periodically replaced clip a live stream", () => {
+    /*
+     * THE ASSERTION THE `video`/`stream` SPLIT EXISTS FOR. An investigator looking at an empty
+     * road on a clip labelled "live" would draw a conclusion about the road as it is now. A
+     * `stream` claim is only allowed where the URL is genuinely an HLS manifest.
+     */
+    for (const feature of features) {
+      const media = resolveMedia(camerasLayer, feature);
+      if (media?.kind !== "stream") continue;
+      expect(mediaClassFromUrl(media.url), `${feature.id}`).toBe("stream");
     }
   });
 

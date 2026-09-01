@@ -1,4 +1,5 @@
 import type { PositionalPrecision, SourceFeature, SourceQuery } from "@/lib/sources/types";
+import { mediaClassFromUrl } from "../media/media-kind";
 import type { LayerMedia, MapLayerDefinition, MapViewport } from "./types";
 import { aircraftLayer } from "./aircraft";
 import { camerasLayer } from "./cameras";
@@ -119,11 +120,11 @@ export function featurePrecision<F extends SourceFeature>(
 /**
  * The media a feature offers, **validated**, or null.
  *
- * `feature-detail.tsx` calls this and never `layer.media` directly, because two of the three
+ * `feature-detail.tsx` calls this and never `layer.media` directly, because three of the four
  * checks below cannot be left to the layer that produced the record.
  *
- * 1. **The URL must parse and carry a protocol we will actually render.** `image` and `audio`
- *    are `https:` only — a plain-http subresource is blocked as mixed content by any browser on
+ * 1. **The URL must parse and carry a protocol we will actually render.** Everything embedded
+ *    is `https:` only — a plain-http subresource is blocked as mixed content by any browser on
  *    this page, so rendering one would produce a control that fails silently, which is the
  *    exact failure the `link` kind exists to avoid. `link` accepts `http:` too, because there
  *    it is a top-level navigation the browser will honour. Nothing else is accepted at all:
@@ -133,7 +134,18 @@ export function featurePrecision<F extends SourceFeature>(
  *    control's own label repeats it. If the two could drift, this product would be telling
  *    someone they are about to contact one operator while their browser contacts another —
  *    a specific false assurance, which is worse than saying nothing.
- * 3. A layer that throws while building a record disables its own media rather than the panel.
+ * 3. **`kind` must not contradict what the URL plainly serves.** The same rule as (2), applied
+ *    to the second claim a record makes to the reader. An `<img>` pointed at an `.mp4` draws a
+ *    broken-image glyph; an `<audio>` pointed at an `.m3u8` plays nothing outside Safari and
+ *    says nothing anywhere; a periodically replaced clip declared `stream` tells an
+ *    investigator that a five-minute-old picture is the road as it is now. `mediaClassFromUrl`
+ *    only ever contradicts — an extensionless or unfamiliar URL establishes nothing and the
+ *    declared kind stands. `link` is exempt, because a link may legitimately point at anything.
+ * 4. A layer that throws while building a record disables its own media rather than the panel.
+ *
+ * **A refusal is a build-time failure, not a reader-facing one.** `contract.test.ts` asserts
+ * that every camera and every playable station still yields media, so a record that starts
+ * contradicting itself fails CI rather than quietly losing its control on a live page.
  *
  * Returning null is a normal outcome, not an error: most features have no media at all.
  */
@@ -155,6 +167,11 @@ export function resolveMedia<F extends SourceFeature>(
   if (!allowed.includes(parsed.protocol)) return null;
   if (parsed.host !== media.host) return null;
   if (media.disclosure.trim().length === 0) return null;
+
+  if (media.kind !== "link") {
+    const served = mediaClassFromUrl(media.url);
+    if (served !== null && served !== media.kind) return null;
+  }
 
   return media;
 }

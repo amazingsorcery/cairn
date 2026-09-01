@@ -190,6 +190,45 @@ function radioMedia(feature: SourceFeature): LayerMedia | null {
     };
   }
 
+  /*
+   * HLS IS NOT A PROGRESSIVE STREAM AND AN <audio> ELEMENT CANNOT PLAY IT.
+   *
+   * Thirteen of the two hundred stations in the captured catalogue page publish an `.m3u8`
+   * manifest — roughly one in fifteen. Safari and iOS play those natively; Chrome and Firefox
+   * do not, and they fail in the worst possible way: the element accepts the URL, nothing
+   * plays, and no error is raised anywhere. Until this kind existed, those stations had a play
+   * button that silently did nothing on most browsers — the same defect as the plain-http
+   * stations above, arrived at by a different route.
+   *
+   * `kind: "stream"` routes them through the HLS player, which uses the browser's own
+   * implementation where there is one and dynamically loads a library where there is not, and
+   * which says so out loud when it can do neither. `medium: "audio"` because a radio station's
+   * manifest carries no pictures; an `.m3u8` alone cannot tell anyone that.
+   *
+   * **This path needs `connect-src` for the broadcaster's origin in production.** The library
+   * fetches manifest and segments over XHR rather than as media, so today's policy blocks it
+   * outside Safari — and the catalogue's stream hosts are an open, community-edited set that
+   * cannot be allow-listed. That is a ruling for `docs/frontend/HANDOFF-map.md` §2.3, not a
+   * decision this file may take. Meanwhile the reader gets the honest "we cannot play this
+   * here" state with a link out, which is strictly better than the silence they get today.
+   */
+  const kind = boolProp(feature, "isHls") === true ? "stream" : "audio";
+
+  if (kind === "stream") {
+    return {
+      kind: "stream",
+      url,
+      host,
+      medium: "audio",
+      disclosure:
+        `This station publishes a live HLS stream. Opening it connects your browser directly ` +
+        `to ${host}, the broadcaster's own host rather than ours, and it will see your IP ` +
+        `address for as long as the player is open. We never relay the audio, and we do not ` +
+        `report to the catalogue which stations you open.`,
+      credit: null,
+    };
+  }
+
   return {
     kind: "audio",
     url,

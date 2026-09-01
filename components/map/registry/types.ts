@@ -210,23 +210,11 @@ export type FeaturePrecision = PositionalPrecision;
  *   is, not in a footer. `null` means the licence genuinely asks for nothing — Radio Browser's
  *   public-domain dedication — rather than "we did not bother".
  */
-export interface LayerMedia {
+interface LayerMediaBase {
   /**
-   * `image` and `audio` load in place, behind the reader's explicit press.
-   *
-   * `link` is the third state and it is not a fallback: it is what "we may not embed this" and
-   * "your browser cannot play this" both look like. About a fifth of Radio Browser's stations
-   * publish a plain `http:` stream, which a browser on an HTTPS page blocks as mixed content
-   * and fails **silently** — the reader presses play, nothing happens, and concludes the tool
-   * is broken. Those get a link out, labelled, rather than a button that cannot work. Hiding
-   * them instead would be the silent-incompleteness failure this codebase has now met three
-   * times (NWS geometry, adsb.lol corners, and this).
-   */
-  readonly kind: "image" | "audio" | "link";
-  /**
-   * Absolute URL the CLIENT loads. `https:` for `image` and `audio` — anything else is blocked
-   * as mixed content anyway; `http:` is allowed only for `link`, where it is a top-level
-   * navigation the browser will honour.
+   * Absolute URL the CLIENT loads. `https:` for everything that is embedded — anything else is
+   * blocked as mixed content anyway; `http:` is allowed only for `link`, where it is a
+   * top-level navigation the browser will honour.
    */
   readonly url: string;
   /** Host from that URL. Named in the disclosure and in the control's own label. */
@@ -240,6 +228,67 @@ export interface LayerMedia {
   /** The credit the licence requires beside the media, or null when none is required. */
   readonly credit: string | null;
 }
+
+/**
+ * A discriminated union rather than one interface with a `kind` field, because two of the five
+ * kinds carry an obligation the author must not be able to forget:
+ *
+ * - **`video` must state its refresh, or state that there is none.** `refreshNote: null` is a
+ *   deliberate act. It is the whole reason `video` and `stream` are separate.
+ * - **`stream` must say whether it is audio or video.** An HLS radio station and an HLS camera
+ *   are the same protocol and different elements, and guessing from the URL is not possible —
+ *   an `.m3u8` says nothing about what is inside it.
+ *
+ * A single optional field on a shared interface would have made both of those a comment.
+ */
+export type LayerMedia =
+  /** A still frame. Loads in place, behind the reader's explicit press. */
+  | (LayerMediaBase & { readonly kind: "image" })
+  /** A progressive audio stream — Icecast, SHOUTcast, a plain MP3. Not HLS; see `stream`. */
+  | (LayerMediaBase & { readonly kind: "audio" })
+  /**
+   * A VIDEO FILE, and the distinction from `stream` is the point of this kind existing.
+   *
+   * TfL publishes a short MP4 per JamCam beside the still, replaced by the operator every few
+   * minutes. A `<video controls>` plays it directly and it needs no library and no CSP change.
+   * What it is **not** is live: it is whatever the operator last uploaded, it does not advance
+   * while the reader watches, and calling it live would be telling an investigator that a clip
+   * of an empty road is the road as it is now. The UI says "a video file, not a live stream"
+   * in those words.
+   */
+  | (LayerMediaBase & {
+      readonly kind: "video";
+      /**
+       * What the OPERATOR publishes about how often they replace the file, in their words, or
+       * `null` where they publish nothing. Never our estimate: a cadence we measured once and
+       * presented as the operator's is a fabricated fact under product-brief §6.
+       */
+      readonly refreshNote: string | null;
+    })
+  /**
+   * GENUINELY LIVE HLS — an `.m3u8` manifest whose segments keep arriving while it is open.
+   *
+   * Safari and iOS play it natively. Chrome and Firefox need hls.js, loaded dynamically at the
+   * moment the reader opens it (`components/map/media/hls.ts`), and the segments travel over
+   * `connect-src` rather than `media-src`. Where that cannot be granted for a source's open set
+   * of hosts, the layer emits `link` instead — never a play button that cannot work.
+   */
+  | (LayerMediaBase & {
+      readonly kind: "stream";
+      /** Which element to render. An `.m3u8` alone cannot tell us. */
+      readonly medium: "audio" | "video";
+    })
+  /**
+   * NOT A FALLBACK. It is what "we may not embed this", "your browser will block this" and
+   * "we cannot allow-list this host" all look like.
+   *
+   * About a fifth of Radio Browser's stations publish a plain `http:` stream, which a browser
+   * on an HTTPS page blocks as mixed content and fails **silently** — the reader presses play,
+   * nothing happens, and concludes the tool is broken. Those get a link out, labelled, rather
+   * than a button that cannot work. Hiding them instead would be the silent-incompleteness
+   * failure this codebase has now met three times (NWS geometry, adsb.lol corners, and this).
+   */
+  | (LayerMediaBase & { readonly kind: "link" });
 
 /** The legend entry. Shape is carried as well as colour: colour is never the only signal. */
 export interface LegendEntry {

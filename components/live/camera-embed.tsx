@@ -6,6 +6,9 @@ import { ExternalLink, Eye, TriangleAlert } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { MediaPanel } from "@/components/map/media/media-panel";
+import { mediaClassFromUrl } from "@/components/map/media/media-kind";
+import type { LayerMedia } from "@/components/map/registry/types";
 import { formatClockUtc } from "./live-format";
 
 /**
@@ -54,7 +57,69 @@ export interface CameraEmbedProps {
 
 type EmbedState = "idle" | "loading" | "shown" | "failed";
 
-export function CameraEmbed({
+/**
+ * A CAMERA'S `embedUrl` IS NOT NECESSARILY A PICTURE, AND HAS NOT BEEN FOR A WHILE.
+ *
+ * The adapter's own contract describes the field as "the image **or video** URL the CLIENT
+ * loads", and TfL publishes a short MP4 for every JamCam beside the still. An `<Image>` handed
+ * an `.mp4` renders a broken-image glyph and an `onError` — a silent-looking failure on the one
+ * page whose entire job is showing the camera.
+ *
+ * So the kind is read off the URL and a clip or a live stream is handed to the same
+ * `MediaPanel` the map's feature detail uses. That is deliberate rather than convenient: the
+ * two surfaces would otherwise drift on the wording that distinguishes a periodically replaced
+ * file from a genuinely live stream, and that distinction is the whole point of having two
+ * kinds. Stills keep the `next/image` path below, which has its own reasons (see the note on
+ * `unoptimized`) and its own Playwright network assertions.
+ */
+export function CameraEmbed(props: CameraEmbedProps) {
+  const served = mediaClassFromUrl(props.embedUrl);
+  if (served === "video" || served === "stream") {
+    return (
+      <MediaPanel
+        key={props.embedUrl}
+        media={movingPictureMedia(props, served)}
+        subjectLabel={props.cameraName}
+        /* Where a reader whose browser cannot play HLS is sent: the operator's own page. */
+        fallbackUrl={props.sourceUrl}
+      />
+    );
+  }
+  return <CameraStill {...props} />;
+}
+
+/**
+ * The `LayerMedia` record for a clip or a live stream on this page.
+ *
+ * `refreshNote` is `null` because the camera registry does not record one yet. It is
+ * deliberately not filled with "refreshed every few minutes": an operator cadence we inferred
+ * and printed as theirs is a fabricated fact under product-brief §6, and it is exactly the kind
+ * of plausible sentence that gets quoted back as though somebody had published it. When the
+ * registry carries the operator's own words, they come through here.
+ */
+function movingPictureMedia(
+  props: CameraEmbedProps,
+  served: "video" | "stream",
+): LayerMedia {
+  const host = new URL(props.embedUrl).host;
+  const base = {
+    url: props.embedUrl,
+    host,
+    /* The same sentence the map panel shows, for the same reason: ADR 0015 point 2. */
+    disclosure:
+      `Opening this view connects your browser directly to ${host}, which is ` +
+      `${props.operatorName}'s host rather than ours. They will see your IP address and which ` +
+      `camera you asked for. We never fetch or re-host it, so nothing passes through us — and ` +
+      `we do not record that you looked.`,
+    credit: props.attribution,
+  };
+
+  return served === "stream"
+    ? { ...base, kind: "stream", medium: "video" }
+    : { ...base, kind: "video", refreshNote: null };
+}
+
+function CameraStill({
   embedUrl,
   operatorName,
   cameraName,

@@ -137,7 +137,27 @@ function build(): string {
     // stream is blocked. `https:` rather than an allowlist because the station list is
     // community-maintained and changes daily; an allowlist would be stale within a week and
     // the alternative is proxying audio, which §2b forbids for good reason.
-    "media-src 'self' https:",
+    // `blob:` is required by Media Source Extensions, which is how hls.js feeds a live
+    // stream to a <video>. Measured, not assumed: with `media-src 'self' https:` alone the
+    // browser refuses the MSE object URL with "Loading media from 'blob:null/…' violates
+    // media-src". It is a narrow addition — a blob URL is minted by our own page and cannot
+    // name a remote host.
+    //
+    // `connect-src` is deliberately NOT widened to `https:` to match. hls.js also fetches
+    // the manifest and segments over XHR, which is connect-src, so HLS through the library
+    // will not work until a specific origin is allowlisted. That is the intended trade:
+    // media-src governs what may be PLAYED, connect-src governs what may be TALKED TO, and
+    // on a deployment still carrying `script-src 'unsafe-inline'` a blanket connect-src
+    // https: turns any injection into a general exfiltration channel. Widening the thing
+    // that plays audio is not the same concession as widening the thing that can post data
+    // anywhere, and they should not be waved through together.
+    //
+    // The practical cost is small and it degrades honestly: HLS plays NATIVELY on Safari and
+    // on current Chrome (both measured), so the library path is Firefox-only, and a reader
+    // there is told the player could not be loaded and given a link to the operator. No
+    // camera provider currently publishes HLS at all. When one does, its origin is a closed
+    // committed set and belongs in connect-src via this generator — not a blanket rule.
+    "media-src 'self' blob: https:",
     "manifest-src 'self'",
     "upgrade-insecure-requests",
   ].join("; ");
