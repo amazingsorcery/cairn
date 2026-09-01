@@ -304,3 +304,121 @@ describe("§4.5 opacity is not a colour strategy", () => {
     expect(contrast("#62676E", token("dark", "--background"))).toBeLessThan(4.5);
   });
 });
+
+/*
+ * QV-26. The matrix was internally consistent and did not have to be COMPLETE.
+ *
+ * QA added `--qa-callout-surface: var(--slate-450)` to both theme blocks — a pairing at
+ * 2.15:1 light and 1.19:1 dark, the worst in the palette — and all 229 assertions stayed
+ * green. Every documented number was still true. Nothing checked that the matrix described
+ * the palette it was written for.
+ *
+ * That is QV-06's own defect one level up, living inside the file written to prevent it: a
+ * document is only a guard when it must grow as the thing it guards grows.
+ *
+ * So: every semantic token is either in the matrix, or explicitly classified below as
+ * something text never sits on. A new token belongs to neither set until somebody decides,
+ * and until then this fails. That is the point — the decision is cheap, and skipping it is
+ * what produced both QV-06 and QV-26.
+ */
+const NOT_A_TEXT_SURFACE = new Set([
+  // Inks. They sit ON surfaces; §4.1 measures them as foregrounds.
+  "--foreground",
+  "--foreground-secondary",
+  "--foreground-faint",
+  "--muted-foreground",
+  "--card-foreground",
+  "--popover-foreground",
+  "--accent-foreground",
+  "--secondary-foreground",
+  "--primary-foreground",
+  "--destructive-foreground",
+  "--info-foreground",
+  "--warning-foreground",
+  "--success-foreground",
+  "--confidence-verified-foreground",
+  "--confidence-high-foreground",
+  "--confidence-medium-foreground",
+  "--confidence-review-foreground",
+  // Lines, rings and fills. Non-text; §4.3 holds them to 3:1, not 4.5:1.
+  "--border",
+  "--input",
+  "--ring",
+  "--confidence-track",
+  "--overlay-scrim",
+  // Accent hues used as chip fills and icon strokes, each with its own -surface and
+  // -foreground pair measured in §4.1. The bare hue never carries body text.
+  "--primary",
+  "--destructive",
+  "--info",
+  "--warning",
+  "--success",
+  "--confidence-verified",
+  "--confidence-high",
+  "--confidence-medium",
+  "--confidence-review",
+  /*
+   * A component fill, not a text-ramp surface, and this is the evidence rather than a
+   * convenience: `bg-secondary` has exactly six call sites — `badge.tsx`, `button.tsx`, and
+   * four `file:bg-secondary` upload buttons — and every one pairs it with
+   * `--secondary-foreground` or inherited `--foreground`. Both measure **6.53 dark / 15.23
+   * light**, comfortably AA.
+   *
+   * It is excluded because the muted ramp is never rendered on it, NOT because it would
+   * fail: `--foreground-secondary` gives 3.87 and `--muted-foreground` 2.56 in dark, both
+   * below AA. Those numbers are in §4.4 as forbidden pairs so the exclusion is a recorded
+   * decision rather than a silence. Put muted ink on this surface and §4.4 is the answer.
+   *
+   * Found by this file's own coverage test on its first run — the matrix had never described
+   * this surface at all.
+   */
+  "--secondary",
+  // Button-fill variants of --primary. Each carries --primary-foreground, never the ramp.
+  "--primary-hover",
+  "--primary-solid",
+]);
+
+/** Semantic tokens declared in the theme blocks, ignoring the raw palette and the Tailwind bridge. */
+function semanticTokenNames(): string[] {
+  const names = new Set<string>();
+  for (const match of source.matchAll(/^\s+(--[a-z0-9-]+)\s*:/gm)) {
+    const name = match[1];
+    if (!name) continue;
+    // `--color-*` is the Tailwind `@theme inline` bridge, not a colour decision.
+    if (name.startsWith("--color-")) continue;
+    // Raw palette primitives are inputs to semantic tokens, never used directly.
+    if (/^--[a-z]+-\d+$/.test(name)) continue;
+    // Non-colour tokens: spacing, radii, motion, z-index, fonts.
+    if (/^--(space|radius|shadow|duration|ease|z|font|text|leading|tracking)-/.test(name)) continue;
+    // Non-colour tokens without a namespace prefix, plus Tailwind v4's own defaults.
+    if (/^--(radius|spacing|default-)/.test(name)) continue;
+    names.add(name);
+  }
+  return [...names].sort();
+}
+
+describe("§4 coverage — the matrix must describe the whole palette", () => {
+  it("classifies every semantic colour token as a text surface or explicitly not one", () => {
+    const documented = new Set(textRows().map((row) => row.surface));
+    const unclassified = semanticTokenNames().filter(
+      (name) => !documented.has(name) && !NOT_A_TEXT_SURFACE.has(name),
+    );
+
+    expect(
+      unclassified,
+      `These tokens are in app/tokens.css and in neither §4.1 nor NOT_A_TEXT_SURFACE. ` +
+        `Add each to the pairing matrix with its measured ratios, or classify it as something ` +
+        `text never sits on. A token that is in neither set is one nobody has checked — which ` +
+        `is exactly how --muted-foreground came to be documented against three of the thirteen ` +
+        `surfaces it actually renders on.`,
+    ).toEqual([]);
+  });
+
+  it("does not classify a token that no longer exists", () => {
+    // The other direction: a stale entry in either list is a claim about a token that is gone,
+    // and a matrix describing a palette that has moved is how the original defect started.
+    const live = new Set(semanticTokenNames());
+    const stale = [...NOT_A_TEXT_SURFACE].filter((name) => !live.has(name));
+    expect(stale, "NOT_A_TEXT_SURFACE names tokens that are no longer in tokens.css").toEqual([]);
+  });
+});

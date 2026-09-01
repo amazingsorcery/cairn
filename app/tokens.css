@@ -412,10 +412,19 @@
  *       `--foreground-secondary` (6.09 / 10.28). `--accent` cannot be darkened without
  *       making it invisible on `--popover` (see docs/design/tokens.md §2), and no
  *       primitive between `--slate-400` and `--slate-300` exists, so the muted step
- *       genuinely does not exist on this surface. ONE SHIPPED VIOLATION:
- *       components/directory/search-field.tsx:249.
+ *       genuinely does not exist on this surface. NO SHIPPED VIOLATIONS — the one that
+ *       existed, components/directory/search-field.tsx:249, was fixed in the same commit
+ *       that wrote this section, and this line said otherwise until QA re-read it (QV-27).
+ *       A matrix that names a violation which no longer exists is the same failure as one
+ *       that misses a violation which does: both are the document disagreeing with the code.
  *   --foreground-secondary on --secondary       3.87 / 9.71   dark fails.
  *   --muted-foreground on --secondary           2.56 / 6.17   dark fails badly.
+ *       `--secondary` is a component fill — badge, button, four file-upload buttons — and
+ *       all six call sites pair it with `--secondary-foreground` or inherited
+ *       `--foreground`, both 6.53 / 15.23. It is therefore absent from 4.1 by decision, and
+ *       `app/tokens.contrast.test.ts` now REQUIRES that decision: every semantic token must
+ *       appear in 4.1 or be classified as a non-text surface. It was found missing from
+ *       both on that test's first run.
  *       `--secondary` is a FILL, not a surface: the only ink permitted on it is
  *       `--secondary-foreground` (6.53 / 15.23). Same for `--primary`, `--destructive`,
  *       `--success`, `--warning`, `--info` and every `--confidence-*` — each takes only
