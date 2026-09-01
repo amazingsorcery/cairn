@@ -28,8 +28,23 @@ import { SessionProvider } from "next-auth/react";
  * uses database sessions precisely so revocation is immediate where it counts.
  *
  * `{children}` stays a Server Component tree: this file only opens a context boundary.
+ *
+ * WHEN `enabled` IS FALSE THE PROVIDER IS NOT MOUNTED AT ALL. That is public-only mode
+ * (ADR 0032): no sign-in method is configured, so no session can exist, and the only two
+ * components that read one are not rendered. Mounting it anyway would cost one
+ * `/api/auth/session` request per page view for an answer that is always "nobody" — on the
+ * VPS this runs on, that is the whole reason ADR 0006 weighs this provider's cost at all.
+ * The children are returned untouched, so the tree is otherwise identical.
  */
-export function HeaderSessionProvider({ children }: { children: React.ReactNode }) {
+export function HeaderSessionProvider({
+  children,
+  enabled,
+}: {
+  children: React.ReactNode;
+  enabled: boolean;
+}) {
+  if (!enabled) return <>{children}</>;
+
   return (
     <SessionProvider refetchOnWindowFocus={false} refetchInterval={0}>
       {children}

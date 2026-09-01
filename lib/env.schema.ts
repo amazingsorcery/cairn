@@ -135,16 +135,26 @@ const serverSchema = z
       });
     }
 
-    const hasGithub = github.every(Boolean);
-    const hasSmtp = smtp.every((v) => v !== undefined);
-    if (env.NODE_ENV === "production" && !hasGithub && !hasSmtp) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["AUTH_SECRET"],
-        message:
-          "No sign-in method is configured. Production needs GitHub OAuth, SMTP magic link, or both — otherwise nobody can log in.",
-      });
-    }
+    /*
+     * THERE IS DELIBERATELY NO "PRODUCTION NEEDS A SIGN-IN METHOD" CHECK HERE ANY MORE.
+     *
+     * It used to refuse to boot with: "No sign-in method is configured. Production needs
+     * GitHub OAuth, SMTP magic link, or both — otherwise nobody can log in." That is right
+     * about sign-in and wrong about the product. Most of what this ships is public: the map,
+     * fifteen Toolbench tools, the directory, the playbooks, search, live, the legal pages.
+     * Only case workspaces need a session. Refusing to serve any of it because nobody can
+     * save a case stops a working product from going live over a feature the operator has
+     * not asked for yet.
+     *
+     * So a deployment with no provider now boots in **public-only mode**: the signed-in
+     * surface is absent rather than broken, and one startup line says so and says what to
+     * set. `lib/auth-mode.ts` derives it; ADR 0032 records the decision and what it costs.
+     *
+     * THE TWO HALF-CONFIGURED CHECKS ABOVE ARE UNTOUCHED, and that distinction is the whole
+     * design: "no provider" is a choice, "four of the five SMTP variables" is a mistake that
+     * drops every sign-in email silently. The first is served; the second still refuses to
+     * boot.
+     */
   });
 
 export type ServerEnv = z.infer<typeof serverSchema>;
@@ -158,9 +168,11 @@ export type ServerEnv = z.infer<typeof serverSchema>;
  * `build` exists because `docker build` deliberately carries no secrets — an ARG is visible
  * in `docker history` — while Next imports every route module (and therefore this one) to
  * collect page data. The shape rules below still apply to anything that IS present; what is
- * relaxed is the requirement that secrets exist at all, and the cross-field production
- * checks, which ask "can a user log into this deployment?" — a question about a running
- * server, not about a compiled artefact.
+ * relaxed is the requirement that secrets exist at all.
+ *
+ * Note that the two half-configured-provider checks are NOT relaxed: they are about the
+ * shape of what was supplied, not about whether it was supplied, so a build carrying four of
+ * the five SMTP variables fails at build time exactly as it would at boot.
  */
 export type EnvPhase = "runtime" | "build";
 
@@ -188,10 +200,14 @@ export function parseEnv(source: NodeJS.ProcessEnv, phase: EnvPhase = "runtime")
           ...Object.fromEntries(
             Object.entries(BUILD_PLACEHOLDERS).filter(([key]) => !source[key]),
           ),
-          // The cross-field check "production needs a sign-in method" is about a running
-          // server. Presenting the build as non-production skips it without weakening
-          // anything that runs.
-          NODE_ENV: "development",
+          /*
+           * `NODE_ENV` is NOT overridden here any more. It used to be forced to
+           * `development` for one reason: to skip the cross-field check "production needs a
+           * sign-in method", which asked a question about a running server rather than about
+           * a compiled artefact. That check is gone (see the superRefine above and ADR 0032),
+           * so the override had become a line that changed nothing while appearing to. No
+           * remaining rule in this schema branches on NODE_ENV.
+           */
         }
       : source;
 

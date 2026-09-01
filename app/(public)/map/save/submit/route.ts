@@ -1,5 +1,6 @@
 import { addWorkspaceItem } from "@/lib/actions/workspaces";
 import { logger } from "@/lib/logger";
+import { requireSignInEnabled } from "@/lib/session-surface";
 
 /**
  * `POST /map/save/submit` — the map save picker's form target.
@@ -57,6 +58,13 @@ function sameOrigin(request: Request): boolean {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  /*
+   * PUBLIC-ONLY MODE: no sign-in, so no cases, so nothing to write into. 404 before the body
+   * is even read — an unauthenticated caller must not learn whether their payload was
+   * well-formed on a surface this deployment does not offer. ADR 0032.
+   */
+  requireSignInEnabled();
+
   const form = await request.formData().catch(() => null);
   const workspaceId = form ? String(form.get("workspaceId") ?? "") : "";
   const sourceSlug = form ? String(form.get("source") ?? "") : "";

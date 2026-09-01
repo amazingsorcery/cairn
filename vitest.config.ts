@@ -31,6 +31,21 @@ export default defineConfig({
       RATE_LIMIT_SECRET: "test-rate-limit-secret-not-real-0123456789",
       DATABASE_URL: testDatabase?.url ?? "postgresql://test:test@localhost:5432/test",
       LOG_LEVEL: "silent",
+      /*
+       * A CONFIGURED SIGN-IN IS THE DEFAULT FOR THE SUITE, because it is the deployment with
+       * the most surface to get wrong: every workspace, export and authorisation test is
+       * about a product where accounts exist.
+       *
+       * Without this the suite would run in public-only mode (ADR 0032) — no provider set
+       * means no signed-in surface — and `requireSignInEnabled()` would 404 the very handlers
+       * those tests exist to exercise, turning real authorisation coverage into a green run
+       * that asserted nothing. The tests that are ABOUT public-only mode clear or mock these
+       * explicitly: see `middleware.test.ts` and `lib/session-surface.test.ts`.
+       *
+       * Obviously not real credentials; nothing here reaches GitHub.
+       */
+      AUTH_GITHUB_ID: "test-github-client-id-not-real",
+      AUTH_GITHUB_SECRET: "test-github-client-secret-not-real",
     },
     globals: true,
     setupFiles: ["./tests/setup.ts"],

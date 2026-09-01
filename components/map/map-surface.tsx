@@ -90,6 +90,13 @@ export interface MapSurfaceProps {
   /** Layer ids visible on first paint, from the registry's own defaults. */
   initialVisible: readonly string[];
   initialView: { longitude: number; latitude: number; zoom: number };
+  /**
+   * Whether this deployment has case workspaces at all. Passed in from the page because only
+   * the server can read the environment, and drilled to `FeatureDetail` rather than read from
+   * a context: one boolean, one owner, no provider to forget to mount. In public-only mode
+   * `/map/save` answers 404 (ADR 0032), so the control that posts to it must not render.
+   */
+  signInEnabled: boolean;
 }
 
 export function MapSurface({
@@ -97,6 +104,7 @@ export function MapSurface({
   initialAges,
   initialVisible,
   initialView,
+  signInEnabled,
 }: MapSurfaceProps) {
   const theme = useResolvedTheme();
   const reducedMotion = useReducedMotion();
@@ -545,6 +553,7 @@ export function MapSurface({
           feature={selectedFeature}
           payload={selectedPayload}
           onClose={closeDetail}
+          signInEnabled={signInEnabled}
         />
       ) : null}
 

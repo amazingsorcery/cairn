@@ -5,6 +5,7 @@ import { Github, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { authProviders } from "@/lib/env";
 import { pageMetadata } from "@/lib/metadata";
+import { metadataUnlessPublicOnly, requireSignInEnabled } from "@/lib/session-surface";
 import { resolveCallbackUrl } from "../callback";
 import { continueWithGithub } from "../actions";
 import { SIGNIN_ADDRESS_COOKIE } from "../signin-state";
@@ -33,12 +34,14 @@ import { formatLinkLifetime } from "../link-lifetime";
 
 export const dynamic = "force-dynamic";
 
-export const metadata = pageMetadata({
-  title: "Sign-in problem",
-  description: "That sign-in attempt did not complete. Request a new link, or try again.",
-  path: "/signin/error",
-  index: false,
-});
+export const metadata = metadataUnlessPublicOnly(
+  pageMetadata({
+    title: "Sign-in problem",
+    description: "That sign-in attempt did not complete. Request a new link, or try again.",
+    path: "/signin/error",
+    index: false,
+  }),
+);
 
 type Variant = "expired" | "linkUsed" | "notCreated" | "githubDenied" | "githubUnreachable";
 
@@ -71,6 +74,13 @@ export default async function SignInErrorPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
+  /*
+   * PUBLIC-ONLY MODE. With no provider configured this route cannot do its job, so it is not
+   * served at all rather than served broken — and the controls that lead here are not
+   * rendered either. See `lib/session-surface.ts` and ADR 0032.
+   */
+  requireSignInEnabled();
+
   const params = await searchParams;
   const variant = variantFor(params.error);
   const callbackUrl = resolveCallbackUrl(params.callbackUrl);

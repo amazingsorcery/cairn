@@ -61,6 +61,11 @@ export interface FeatureDetailProps<F extends SourceFeature = SourceFeature> {
   /** The layer's payload, for the source line and the observation instant. */
   payload: Extract<LayerPayloadDto, { ok: true }>;
   onClose: () => void;
+  /**
+   * Whether this deployment has case workspaces. Required, not defaulted: a new call site
+   * must decide, because the wrong default is a button that 404s (ADR 0032).
+   */
+  signInEnabled: boolean;
 }
 
 export function FeatureDetail<F extends SourceFeature>({
@@ -68,6 +73,7 @@ export function FeatureDetail<F extends SourceFeature>({
   feature,
   payload,
   onClose,
+  signInEnabled,
 }: FeatureDetailProps<F>) {
   const headingRef = React.useRef<HTMLHeadingElement | null>(null);
 
@@ -178,7 +184,12 @@ export function FeatureDetail<F extends SourceFeature>({
         calling a Server Action, and why nothing but the source slug and the feature id
         crosses the wire.
       */}
-      <SaveFeature layer={layer} feature={feature} />
+      {/*
+        SAVE TO A CASE. Rendered for signed-out readers too — the picker handles that state and
+        sends them to sign-in and back. Not rendered when this deployment has no sign-in at
+        all: `/map/save` is not served then, and the reader has nowhere to be sent.
+      */}
+      {signInEnabled ? <SaveFeature layer={layer} feature={feature} /> : null}
 
       <div className="mt-4 border-t border-border pt-3 text-sm text-foreground-secondary">
         <p className="tabular">

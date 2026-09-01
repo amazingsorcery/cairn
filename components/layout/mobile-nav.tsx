@@ -19,7 +19,7 @@ import { SiteNavStacked } from "./site-nav";
  * sheet on its own, and a menu still covering the page the reader just asked for is the
  * commonest bug in this component.
  */
-export function MobileNav() {
+export function MobileNav({ signInEnabled }: { signInEnabled: boolean }) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -37,10 +37,15 @@ export function MobileNav() {
         aria-describedby={undefined}
       >
         <SheetTitle>menu</SheetTitle>
-        <SiteNavStacked onNavigate={() => setOpen(false)} />
-        <Separator className="my-4" />
+        <SiteNavStacked onNavigate={() => setOpen(false)} signInEnabled={signInEnabled} />
+        {/*
+          The separator belongs to the account control. In public-only mode that control
+          renders nothing, and a rule under the last link with nothing after it is a visible
+          hole where a reader expects something.
+        */}
+        {signInEnabled ? <Separator className="my-4" /> : null}
         {/* The theme toggle is not repeated here; it is in the header bar at every width. */}
-        <AccountMenu />
+        <AccountMenu signInEnabled={signInEnabled} />
       </SheetContent>
     </Sheet>
   );

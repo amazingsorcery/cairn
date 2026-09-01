@@ -8,6 +8,7 @@ import { currentUser } from "@/lib/auth";
 import { pageMetadata } from "@/lib/metadata";
 import { listWorkspaces } from "@/lib/queries/workspaces";
 import { getToolBySlug } from "@/lib/queries/tools";
+import { metadataUnlessPublicOnly, requireSignInEnabled } from "@/lib/session-surface";
 import { cn } from "@/lib/utils";
 
 /**
@@ -78,16 +79,25 @@ function one(value: string | string[] | undefined): string | undefined {
 export async function generateMetadata({ params }: SavePageProps) {
   const { slug } = await params;
   const tool = await getToolBySlug(slug);
-  return pageMetadata({
-    title: tool ? `Save ${tool.name}` : "Save",
-    description: "Save this catalogue entry into one of your cases.",
-    path: `/tools/${slug}/save`,
-    // Session-dependent and private to one reader. Nothing here belongs in an index.
-    index: false,
-  });
+  return metadataUnlessPublicOnly(
+    pageMetadata({
+      title: tool ? `Save ${tool.name}` : "Save",
+      description: "Save this catalogue entry into one of your cases.",
+      path: `/tools/${slug}/save`,
+      // Session-dependent and private to one reader. Nothing here belongs in an index.
+      index: false,
+    }),
+  );
 }
 
 export default async function SaveToolPage({ params, searchParams }: SavePageProps) {
+  /*
+   * PUBLIC-ONLY MODE. With no sign-in method configured there are no cases to save into and
+   * no sign-in to offer, so this picker is not served — and neither is the control that
+   * leads here. ADR 0032, `lib/session-surface.ts`.
+   */
+  requireSignInEnabled();
+
   const { slug } = await params;
   const query = await searchParams;
 

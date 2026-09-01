@@ -4,6 +4,7 @@ import { Mail } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { pageMetadata } from "@/lib/metadata";
+import { metadataUnlessPublicOnly, requireSignInEnabled } from "@/lib/session-surface";
 import { SIGNIN_ADDRESS_COOKIE } from "../signin-state";
 import { formatLinkLifetime } from "../link-lifetime";
 
@@ -25,14 +26,23 @@ import { formatLinkLifetime } from "../link-lifetime";
 
 export const dynamic = "force-dynamic";
 
-export const metadata = pageMetadata({
-  title: "Check your email",
-  description: "A sign-in link has been sent. It works once and can be opened in any browser.",
-  path: "/signin/check-email",
-  index: false,
-});
+export const metadata = metadataUnlessPublicOnly(
+  pageMetadata({
+    title: "Check your email",
+    description: "A sign-in link has been sent. It works once and can be opened in any browser.",
+    path: "/signin/check-email",
+    index: false,
+  }),
+);
 
 export default async function CheckEmailPage() {
+  /*
+   * PUBLIC-ONLY MODE. With no provider configured this route cannot do its job, so it is not
+   * served at all rather than served broken — and the controls that lead here are not
+   * rendered either. See `lib/session-surface.ts` and ADR 0032.
+   */
+  requireSignInEnabled();
+
   const address = (await cookies()).get(SIGNIN_ADDRESS_COOKIE)?.value ?? null;
   const lifetime = formatLinkLifetime();
 

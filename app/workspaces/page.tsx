@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { pageMetadata } from "@/lib/metadata";
 import { listWorkspaces } from "@/lib/queries/workspaces";
+import { metadataUnlessPublicOnly, requireSignInEnabled } from "@/lib/session-surface";
 import { requireSession } from "./session";
 
 /**
@@ -32,15 +33,34 @@ import { requireSession } from "./session";
 
 export const dynamic = "force-dynamic";
 
-export const metadata = pageMetadata({
-  title: "Your cases",
-  description: "Case workspaces: a checklist from a playbook, saved tools, and timestamped notes.",
-  path: "/workspaces",
-  index: false,
-});
+/*
+ * The title follows the route. In public-only mode this page 404s inside `requireSession`,
+ * and a static `metadata` export resolves anyway — so without this the reader gets a 404 body
+ * under `<title>Your cases</title>`, which reads as broken rather than absent.
+ */
+export const metadata = metadataUnlessPublicOnly(
+  pageMetadata({
+    title: "Your cases",
+    description:
+      "Case workspaces: a checklist from a playbook, saved tools, and timestamped notes.",
+    path: "/workspaces",
+    index: false,
+  }),
+);
 
 /** The heading and lead. Synchronous, no database read, so it paints immediately. */
 export default function WorkspacesPage() {
+  /*
+   * PUBLIC-ONLY MODE, CHECKED HERE AND NOT ONLY IN `CaseList`.
+   *
+   * `requireSession` inside the suspended child would 404 too late: this page streams its
+   * heading before the boundary resolves, so the status line has already been sent as 200 and
+   * `notFound()` could only swap the body — the same mechanism as QA finding I-15, one layer
+   * in. Throwing here, synchronously, before any JSX is returned, is what makes `/workspaces`
+   * a real 404 in a deployment that has no sign-in (ADR 0032).
+   */
+  requireSignInEnabled();
+
   return (
     <div className="mx-auto w-full max-w-[80rem] px-4 py-10 md:px-6 md:py-14">
       <div>

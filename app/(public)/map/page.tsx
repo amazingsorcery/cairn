@@ -10,6 +10,7 @@ import {
 } from "@/components/map/registry";
 import { ageSeconds } from "@/components/live/live-format";
 import { pageMetadata } from "@/lib/metadata";
+import { isSignInEnabled } from "@/lib/session-surface";
 import { clientSubjectFromHeaders, consumeSafely } from "@/lib/rate-limit";
 import { buildLayerPayload } from "./payloads";
 
@@ -140,6 +141,7 @@ export default async function MapPage() {
           initialAges={ages}
           initialVisible={defaultVisibleLayerIds()}
           initialView={INITIAL_VIEW}
+          signInEnabled={isSignInEnabled()}
         />
       </div>
 

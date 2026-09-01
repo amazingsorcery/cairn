@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { BroadcastTool } from "@/components/toolbench/broadcast-tool";
 import { ToolPage } from "@/components/toolbench/tool-page";
 import { pageMetadata } from "@/lib/metadata";
+import { isSignInEnabled } from "@/lib/session-surface";
 import { findTool } from "@/lib/toolbench/registry";
 
 const entry = findTool("broadcast-finder");
@@ -118,13 +119,26 @@ export default function BroadcastFinderPage() {
               Listening is not evidence until you record what you heard.
             </strong>{" "}
             A stream leaves no artefact. Note the station, the exact time in UTC, and what was
-            said, in your{" "}
-            <Link
-              href="/workspaces"
-              className="font-medium text-primary underline underline-offset-4"
-            >
-              workspace
-            </Link>{" "}
+            said,{" "}
+            {/*
+              The link is to a route that only exists where somebody can sign in. In
+              public-only mode `/workspaces` answers 404 (ADR 0032), so the sentence keeps its
+              instruction — which is the part that matters to the reader — and drops the
+              pointer to a page that is not served.
+            */}
+            {isSignInEnabled() ? (
+              <>
+                in your{" "}
+                <Link
+                  href="/workspaces"
+                  className="font-medium text-primary underline underline-offset-4"
+                >
+                  workspace
+                </Link>{" "}
+              </>
+            ) : (
+              <>in your notes </>
+            )}
             as you listen — a claim about a broadcast you cannot timestamp is not a citation.
           </p>
         </>

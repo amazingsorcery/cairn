@@ -4,6 +4,7 @@ import { NewCaseForm } from "@/components/workspaces/new-case-form";
 import { PlaybookMeta } from "@/components/playbooks/playbook-meta";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
 import { pageMetadata } from "@/lib/metadata";
+import { metadataUnlessPublicOnly } from "@/lib/session-surface";
 import { getPlaybookBySlug } from "@/lib/queries/playbooks";
 import { requireSession } from "../session";
 
@@ -29,12 +30,14 @@ import { requireSession } from "../session";
 
 export const dynamic = "force-dynamic";
 
-export const metadata = pageMetadata({
-  title: "New case",
-  description: "Start a case workspace, optionally from a playbook.",
-  path: "/workspaces/new",
-  index: false,
-});
+export const metadata = metadataUnlessPublicOnly(
+  pageMetadata({
+    title: "New case",
+    description: "Start a case workspace, optionally from a playbook.",
+    path: "/workspaces/new",
+    index: false,
+  }),
+);
 
 export default async function NewWorkspacePage({
   searchParams,

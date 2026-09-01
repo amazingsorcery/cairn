@@ -36,6 +36,13 @@ import type { MapLayerDefinition } from "./registry";
  * itself. Hiding the control until a reader signs in means they never learn the feature
  * exists; showing them a dead one means they learn it does not work.
  *
+ * ## But not where there is no sign-in at all
+ *
+ * That is a different state, and `FeatureDetail` decides it rather than this component: in
+ * public-only mode (ADR 0032) no provider is configured, `/map/save` is not served, and the
+ * reader cannot sign in even if they want to. "Signed out" is one click from a case; "this
+ * deployment has no accounts" has nowhere to go, so the control is not rendered.
+ *
  * ## What crosses the wire
  *
  * The layer's `sourceSlug` and the feature's own id. Nothing else — not the coordinates, not

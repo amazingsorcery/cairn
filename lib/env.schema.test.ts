@@ -82,8 +82,15 @@ describe("parseEnv", () => {
     expect(parseEnv({ ...base, ...smtp }).SMTP_PORT).toBe(587);
   });
 
-  it("refuses production with no sign-in method at all", () => {
-    expect(() => parseEnv({ ...base, NODE_ENV: "production" })).toThrow(/nobody can log in/);
+  /**
+   * PUBLIC-ONLY MODE. Most of this product is readable with no account: the map, the
+   * Toolbench, the directory, the playbooks, search, live and the legal pages. Only case
+   * workspaces need a session. Refusing to boot the whole site because nobody can save a
+   * case stopped a working product from shipping, so the refusal is gone and the signed-in
+   * surface is withheld instead — see `lib/auth-mode.ts` and ADR 0032.
+   */
+  it("boots in production with no sign-in method at all", () => {
+    expect(() => parseEnv({ ...base, NODE_ENV: "production" })).not.toThrow();
   });
 
   it("allows production when at least one sign-in method is configured", () => {
@@ -96,6 +103,24 @@ describe("parseEnv", () => {
         AUTH_GITHUB_SECRET: "def",
       }),
     ).not.toThrow();
+  });
+
+  /**
+   * The half-configured checks are NOT relaxed by public-only mode, and this is the pair of
+   * assertions that says so. "No provider" is a deployment choice; "four of the five SMTP
+   * variables" is a mistake that silently drops every sign-in email, which is the failure
+   * the boot-time refusal exists for.
+   */
+  it("still refuses half-configured SMTP in production", () => {
+    expect(() =>
+      parseEnv({ ...base, NODE_ENV: "production", ...smtp, SMTP_PASSWORD: undefined }),
+    ).toThrow(/half-configured/);
+  });
+
+  it("still refuses half-configured GitHub OAuth in production", () => {
+    expect(() =>
+      parseEnv({ ...base, NODE_ENV: "production", AUTH_GITHUB_ID: "abc" }),
+    ).toThrow(/half-configured/);
   });
 
   it("reports every problem at once rather than one at a time", () => {

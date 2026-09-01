@@ -22,6 +22,7 @@ import { Breadcrumb } from "@/components/ui/breadcrumb";
 import { Button } from "@/components/ui/button";
 import { getToolBySlug, listPublishedToolSlugs, type ToolDetail } from "@/lib/queries/tools";
 import { pageMetadata } from "@/lib/metadata";
+import { isSignInEnabled } from "@/lib/session-surface";
 import { cn, displayHost } from "@/lib/utils";
 import { staticParamsOrEmpty } from "@/lib/static-params";
 
@@ -267,6 +268,13 @@ export default async function ToolPage({ params }: ToolPageProps) {
               it, which is the same reasoning `sitemap.md` §2 gives for the equivalent control
               on `/playbooks/[slug]`.
 
+              THE ONE EXCEPTION IS PUBLIC-ONLY MODE, where no sign-in method is configured, so
+              there are no cases to save into and `/tools/[slug]/save` answers 404 (ADR 0032).
+              That is not the "signed out" state — signing in is not an option in this
+              deployment — and a control whose destination does not exist is the dead link the
+              brief forbids. `isSignInEnabled()` reads a constant derived at boot, so this stays
+              an ISR page: it reads no cookie, no header and no session.
+
               A plain GET form, not a client dialog, and that is deliberate: this route is
               ISR:3600 and `sitemap.md` §10.1 forbids a public route reading the session. The
               picker lives at `/tools/[slug]/save`, a `force-dynamic` child segment that can
@@ -274,12 +282,14 @@ export default async function ToolPage({ params }: ToolPageProps) {
               therefore costs this page no JavaScript at all and still works with the bundle
               removed.
             */}
-            <form method="get" action={`${toolHref}/save`}>
-              <Button type="submit" size="lg" className="w-full">
-                <FolderPlus aria-hidden="true" />
-                save to a case
-              </Button>
-            </form>
+            {isSignInEnabled() ? (
+              <form method="get" action={`${toolHref}/save`}>
+                <Button type="submit" size="lg" className="w-full">
+                  <FolderPlus aria-hidden="true" />
+                  save to a case
+                </Button>
+              </form>
+            ) : null}
 
             <Button asChild variant="outline" size="lg" className="w-full">
               <a href={tool.url} target="_blank" rel="noopener noreferrer">

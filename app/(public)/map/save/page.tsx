@@ -8,6 +8,7 @@ import { currentUser } from "@/lib/auth";
 import { findCachedFeature, type ResolvedLiveFeature } from "@/lib/live/feature-cache";
 import { pageMetadata } from "@/lib/metadata";
 import { listWorkspaces } from "@/lib/queries/workspaces";
+import { metadataUnlessPublicOnly, requireSignInEnabled } from "@/lib/session-surface";
 import { cn } from "@/lib/utils";
 
 /**
@@ -54,13 +55,15 @@ import { cn } from "@/lib/utils";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export const metadata = pageMetadata({
-  title: "Save a map feature",
-  description: "Keep a live map feature in one of your cases.",
-  path: "/map/save",
-  // Session-dependent and private to one reader. Nothing here belongs in an index.
-  index: false,
-});
+export const metadata = metadataUnlessPublicOnly(
+  pageMetadata({
+    title: "Save a map feature",
+    description: "Keep a live map feature in one of your cases.",
+    path: "/map/save",
+    // Session-dependent and private to one reader. Nothing here belongs in an index.
+    index: false,
+  }),
+);
 
 /** What the last attempt did, echoed back by the POST handler's redirect. */
 type Outcome = "saved" | "already" | "busy" | "gone" | "failed" | "invalid" | "signedout";
@@ -84,6 +87,13 @@ export default async function SaveMapFeaturePage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
+  /*
+   * PUBLIC-ONLY MODE. With no sign-in method configured there are no cases to save into and
+   * no sign-in to offer, so this picker is not served — and neither is the control that
+   * leads here. ADR 0032, `lib/session-surface.ts`.
+   */
+  requireSignInEnabled();
+
   const query = await searchParams;
   const sourceSlug = one(query.source);
   const featureRef = one(query.feature);

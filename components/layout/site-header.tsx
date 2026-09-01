@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { brand } from "@/config/brand";
+import { isSignInEnabled } from "@/lib/session-surface";
 import { AccountMenu } from "./account-menu";
 import { HeaderSearch, HeaderSearchLink } from "./header-search";
 import { BrandLockup } from "./logo";
@@ -16,12 +17,21 @@ import { ThemeToggle } from "./theme-toggle";
  * 56px tall at 375px (`docs/design/wireframes/01-home.txt`), 64px from `md` where the nav
  * moves inline. This component is a Server Component; only the four leaves that genuinely
  * need the browser — nav (current path), mobile sheet, account, theme — are clients.
+ *
+ * IT IS ALSO WHERE THE DEPLOYMENT MODE ENTERS THE CLIENT TREE. `isSignInEnabled()` reads the
+ * environment, which only the server can do; the boolean is passed down as a prop rather than
+ * read again in each leaf. In public-only mode (ADR 0032) there is no account, no
+ * `/workspaces` and no `/signin`, so neither the session nav entry nor the account control
+ * renders — and, because the leaves are split so that `useSession` is never called, the root
+ * layout drops the session provider too.
  */
 export function SiteHeader() {
+  const signInEnabled = isSignInEnabled();
+
   return (
     <header className="sticky top-0 z-[var(--z-sticky)] border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
       <div className="mx-auto flex h-14 w-full max-w-[80rem] items-center gap-2 px-4 md:h-16 md:gap-4 md:px-6">
-        <MobileNav />
+        <MobileNav signInEnabled={signInEnabled} />
 
         {/*
           The lockup renders the product name as visible text, so the link already has an
@@ -34,7 +44,7 @@ export function SiteHeader() {
           <span className="sr-only">{` — ${brand.tagline}. Home`}</span>
         </Link>
 
-        <SiteNav className="hidden md:ml-2 md:block" />
+        <SiteNav className="hidden md:ml-2 md:block" signInEnabled={signInEnabled} />
 
         <div className="ml-auto flex items-center gap-1 md:gap-2">
           <HeaderSearch />
@@ -48,9 +58,11 @@ export function SiteHeader() {
             puts it and where there is room for a real 44px target beside a label.
           */}
           <ThemeToggle />
-          <div className="hidden md:block">
-            <AccountMenu />
-          </div>
+          {signInEnabled ? (
+            <div className="hidden md:block">
+              <AccountMenu signInEnabled />
+            </div>
+          ) : null}
         </div>
       </div>
     </header>

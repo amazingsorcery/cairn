@@ -42,9 +42,20 @@ function payloadFor(layer: MapLayerDefinition): Extract<LayerPayloadDto, { ok: t
   };
 }
 
-function renderDetail(layer: MapLayerDefinition, feature: SourceFeature) {
+/** `signInEnabled` defaults to true: the product as a deployment with accounts sees it. */
+function renderDetail(
+  layer: MapLayerDefinition,
+  feature: SourceFeature,
+  signInEnabled = true,
+) {
   return render(
-    <FeatureDetail layer={layer} feature={feature} payload={payloadFor(layer)} onClose={vi.fn()} />,
+    <FeatureDetail
+      layer={layer}
+      feature={feature}
+      payload={payloadFor(layer)}
+      onClose={vi.fn()}
+      signInEnabled={signInEnabled}
+    />,
   );
 }
 
@@ -208,6 +219,7 @@ describe("selecting a different feature", () => {
         feature={second}
         payload={payloadFor(camerasLayer)}
         onClose={vi.fn()}
+        signInEnabled
       />,
     );
     // Without the key on the media block React would keep "open", and the reader's browser
@@ -273,6 +285,16 @@ describe("saving a feature into a case", () => {
     expect(names).not.toContain("latitude");
   });
 
+  it("offers nothing to save into when the deployment has no sign-in at all", () => {
+    // Public-only mode (ADR 0032): `/map/save` is not served, so the control that posts to it
+    // would be a dead button. This is NOT the signed-out state — a signed-out reader can sign
+    // in and come back, and still gets the control.
+    if (!camera) return;
+    renderDetail(camerasLayer, camera, false);
+    expect(screen.queryByRole("button", { name: /save to a case/i })).not.toBeInTheDocument();
+    expect(document.querySelector('form[action="/map/save"]')).toBeNull();
+  });
+
   it("does not offer to save a synthetic development layer", () => {
     // The stress harness generates its points in this process. One of them in a case file
     // would be fabricated content in the artefact the reader keeps (product-brief 6).
@@ -284,6 +306,7 @@ describe("saving a feature into a case", () => {
         feature={camera}
         payload={payloadFor(devLayer)}
         onClose={vi.fn()}
+        signInEnabled
       />,
     );
     expect(screen.queryByRole("button", { name: /save to a case/i })).not.toBeInTheDocument();

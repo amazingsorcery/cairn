@@ -11,6 +11,7 @@ import { SavedTools } from "@/components/workspaces/saved-tools";
 import { WorkspaceHeader } from "@/components/workspaces/workspace-header";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
 import { pageMetadata } from "@/lib/metadata";
+import { metadataUnlessPublicOnly } from "@/lib/session-surface";
 import { getWorkspace, type NoteView } from "@/lib/queries/workspaces";
 import { requireSession } from "../session";
 import { toolFactsFor } from "./tool-facts";
@@ -39,13 +40,15 @@ import { toolFactsFor } from "./tool-facts";
 
 export const dynamic = "force-dynamic";
 
-export const metadata = pageMetadata({
-  title: "Case",
-  description:
-    "A case workspace: checklist, saved tools, features saved from the map, and timestamped notes.",
-  path: "/workspaces",
-  index: false,
-});
+export const metadata = metadataUnlessPublicOnly(
+  pageMetadata({
+    title: "Case",
+    description:
+      "A case workspace: checklist, saved tools, features saved from the map, and timestamped notes.",
+    path: "/workspaces",
+    index: false,
+  }),
+);
 
 export default async function WorkspaceDetailPage({
   params,

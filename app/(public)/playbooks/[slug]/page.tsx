@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { VerificationDate } from "@/components/verification-date";
 import { Markdown } from "@/components/content/markdown";
 import { pageMetadata } from "@/lib/metadata";
+import { isSignInEnabled } from "@/lib/session-surface";
 import { getPlaybookBySlug, listPublishedPlaybookSlugs } from "@/lib/queries/playbooks";
 import { staticParamsOrEmpty } from "@/lib/static-params";
 
@@ -30,6 +31,13 @@ import { staticParamsOrEmpty } from "@/lib/static-params";
  * signed-out reader through `/signin` carrying that destination as its `callbackUrl` — so
  * the intent survives the round trip rather than dropping the reader back on a bare page
  * (`docs/design/flows.md` ⚠ W0). See `docs/frontend/HANDOFF-workspaces.md` §3.
+ *
+ * EXCEPT IN PUBLIC-ONLY MODE, where no sign-in method is configured and `/workspaces/**`
+ * answers 404 (ADR 0032). "Signed out" and "there are no accounts here" are different
+ * states: the first is one click from a case, the second has nowhere to go, and offering the
+ * control anyway would be a dead link. The playbook itself is unaffected — every step is
+ * readable without an account, which is what the page says and has always been true.
+ * `isSignInEnabled()` reads a boot-time constant, so this route stays ISR.
  */
 
 /** A Markdown body's own leading title, which the route already renders as its `h1`. */
@@ -143,11 +151,13 @@ export default async function PlaybookDetailPage({
             account.
           </p>
 
-          <Button asChild size="lg" className="mt-6 w-full sm:w-auto">
-            <Link href={`/workspaces/new?playbook=${encodeURIComponent(playbook.slug)}`}>
-              start a case from this playbook
-            </Link>
-          </Button>
+          {isSignInEnabled() ? (
+            <Button asChild size="lg" className="mt-6 w-full sm:w-auto">
+              <Link href={`/workspaces/new?playbook=${encodeURIComponent(playbook.slug)}`}>
+                start a case from this playbook
+              </Link>
+            </Button>
+          ) : null}
 
           {overview ? (
             <div className="mt-8 max-w-[68ch] border-t border-border pt-8">
@@ -159,11 +169,13 @@ export default async function PlaybookDetailPage({
         <div className="mt-8 md:col-start-1 md:row-span-2 md:row-start-1 md:mt-0 md:self-start">
           <div className="md:sticky md:top-20 md:max-h-[calc(100dvh-6rem)] md:overflow-y-auto">
             <StepNavigator steps={steps} />
-            <Button asChild variant="outline" className="mt-4 hidden w-full md:inline-flex">
-              <Link href={`/workspaces/new?playbook=${encodeURIComponent(playbook.slug)}`}>
-                start a case
-              </Link>
-            </Button>
+            {isSignInEnabled() ? (
+              <Button asChild variant="outline" className="mt-4 hidden w-full md:inline-flex">
+                <Link href={`/workspaces/new?playbook=${encodeURIComponent(playbook.slug)}`}>
+                  start a case
+                </Link>
+              </Button>
+            ) : null}
           </div>
         </div>
 

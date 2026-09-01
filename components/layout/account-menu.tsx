@@ -29,8 +29,21 @@ import {
  *
  * Sign-out goes through `signOut()`, which POSTs with a CSRF token. A GET sign-out is
  * triggerable from any page that can embed an image (`docs/architecture/sitemap.md` §6).
+ *
+ * ## `signInEnabled`
+ *
+ * In public-only mode (ADR 0032) there is no account to have and `/signin` is not served, so
+ * this renders nothing at all. A "sign in" button leading to a 404 tells the reader the
+ * product is broken; its absence tells them, correctly, that this deployment is a public
+ * reference. The wrapper below returns before `useSession` is reached, so no session request
+ * is made either — see `site-nav.tsx` for the same split and the reason for it.
  */
-export function AccountMenu() {
+export function AccountMenu({ signInEnabled }: { signInEnabled: boolean }) {
+  if (!signInEnabled) return null;
+  return <SignedInAccountMenu />;
+}
+
+function SignedInAccountMenu() {
   const { data: session, status } = useSession();
   const pathname = usePathname();
 

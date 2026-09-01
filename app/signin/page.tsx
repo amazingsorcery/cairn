@@ -1,11 +1,11 @@
 import Link from "next/link";
-import { Github, Info } from "lucide-react";
+import { Github } from "lucide-react";
 
 import { Monogram } from "@/components/layout/logo";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { authProviders } from "@/lib/env";
+import { metadataUnlessPublicOnly, requireSignInEnabled } from "@/lib/session-surface";
 import { pageMetadata } from "@/lib/metadata";
 import { continueWithGithub } from "./actions";
 import { SignInForm } from "./signin-form";
@@ -17,8 +17,14 @@ import { resolveCallbackUrl, signInContextLine } from "./callback";
  * BOTH PROVIDERS ARE CONDITIONAL on what the environment actually configures
  * (`authProviders` in `lib/env.ts`). A button for an unconfigured provider is a button that
  * fails on click, and the env schema already refuses to boot on a half-set provider — this
- * is the second half of the same rule: what is not configured is not offered. When neither
- * is configured the page says so plainly rather than rendering an empty box.
+ * is the second half of the same rule: what is not configured is not offered.
+ *
+ * WHEN NEITHER IS CONFIGURED THIS ROUTE IS NOT SERVED. The page used to render an
+ * explanatory "no sign-in method is configured" panel; it could not, because the env schema
+ * refused to boot production in that state, and it should not, because a sign-in page that
+ * explains it cannot sign anyone in is still a sign-in page in the nav, the sitemap and the
+ * reader's mental model. In public-only mode the whole signed-in surface is absent instead
+ * (ADR 0032), so the only branch left here is one-provider versus two.
  *
  * Dynamic because it reads `searchParams` (sitemap.md §6). It is `noindex`: a sign-in page
  * in a search result is noise, and this one carries a `callbackUrl`.
@@ -30,24 +36,31 @@ import { resolveCallbackUrl, signInContextLine } from "./callback";
 
 export const dynamic = "force-dynamic";
 
-export const metadata = pageMetadata({
-  title: "Sign in",
-  description:
-    "Sign in to open a case workspace. The directory, the playbooks and the live views are readable without an account.",
-  path: "/signin",
-  index: false,
-});
+export const metadata = metadataUnlessPublicOnly(
+  pageMetadata({
+    title: "Sign in",
+    description:
+      "Sign in to open a case workspace. The directory, the playbooks and the live views are readable without an account.",
+    path: "/signin",
+    index: false,
+  }),
+);
 
 export default async function SignInPage({
   searchParams,
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
+  /*
+   * PUBLIC-ONLY MODE. With no provider configured this route cannot do its job, so it is not
+   * served at all rather than served broken — and the controls that lead here are not
+   * rendered either. See `lib/session-surface.ts` and ADR 0032.
+   */
+  requireSignInEnabled();
+
   const params = await searchParams;
   const callbackUrl = resolveCallbackUrl(params.callbackUrl);
   const contextLine = signInContextLine(callbackUrl);
-
-  const anyProvider = authProviders.email || authProviders.github;
 
   return (
     <div className="mx-auto w-full max-w-[80rem] px-4 py-10 md:px-6 md:py-14">
@@ -64,30 +77,6 @@ export default async function SignInPage({
           <p className="mt-4 rounded-md border border-border bg-muted px-3 py-2 text-sm text-foreground">
             {contextLine}
           </p>
-        ) : null}
-
-        {!anyProvider ? (
-          <div className="mt-6">
-            <Alert variant="info">
-              <Info aria-hidden="true" />
-              <AlertTitle>No sign-in method is configured</AlertTitle>
-              <AlertDescription>
-                <p>
-                  This deployment has neither the email link nor GitHub set up, so no account
-                  can be created or used here. Everything except case workspaces is readable
-                  without one.
-                </p>
-              </AlertDescription>
-            </Alert>
-            <div className="mt-4 flex flex-wrap gap-3">
-              <Button asChild size="lg">
-                <Link href="/directory">browse the directory</Link>
-              </Button>
-              <Button asChild variant="outline" size="lg">
-                <Link href="/playbooks">read the playbooks</Link>
-              </Button>
-            </div>
-          </div>
         ) : null}
 
         {authProviders.email ? <SignInForm callbackUrl={callbackUrl} /> : null}

@@ -1,5 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
+import { deriveSignInMode } from "@/lib/auth-mode";
+
 /**
  * Middleware. Deliberately tiny, because it runs on every matched request.
  *
@@ -11,6 +13,9 @@ import { NextResponse, type NextRequest } from "next/server";
  *    authorisation; it is a redirect convenience." Every page and every Server Action
  *    re-checks the session and the role against the database, and every workspace query
  *    carries `user_id = $session` in SQL.
+ *
+ *    **Except in public-only mode**, where `/signin` is not served either and the convenience
+ *    would be a redirect into a 404. See the block that decides it below, and ADR 0032.
  *
  * 2. **`Cache-Control: private, no-store`** on the signed-in prefixes (`caching.md` §7,
  *    which permits either the route handler or middleware to set it). Setting it in one
@@ -47,7 +52,25 @@ export function middleware(request: NextRequest): NextResponse {
 
   const hasSessionCookie = SESSION_COOKIES.some((name) => request.cookies.has(name));
 
-  if (!hasSessionCookie) {
+  /*
+   * PUBLIC-ONLY MODE: no redirect, because there is nowhere to redirect to.
+   *
+   * With no GitHub OAuth and no SMTP configured, `/signin` is not served either (see
+   * `lib/session-surface.ts`). Sending a signed-out visitor there would replace a clean 404
+   * with a redirect to a 404, and would tell them on the way that an account is possible
+   * here. The route guards answer instead, and this file gets out of the way — while still
+   * setting the headers below, because the 404 is per-request and must not be indexed.
+   *
+   * WHY `process.env` IS READ HERE rather than `lib/env`: this runs in the Edge sandbox,
+   * which has no `pg` and no Node built-ins but IS handed a snapshot of the real
+   * `process.env` at request time. Only `NEXT_PUBLIC_*` values are inlined at build time
+   * (`next/dist/lib/static-env.js`), so this is a runtime read — which is what makes it
+   * correct for an image built without secrets and given them at `docker run`.
+   * `deriveSignInMode` is the same function `lib/env.ts` uses, so the two cannot drift.
+   */
+  const signInEnabled = deriveSignInMode(process.env).enabled;
+
+  if (!hasSessionCookie && signInEnabled) {
     const signIn = new URL("/signin", request.nextUrl.origin);
     // Only the path and query from THIS request — never a value read from a query string,
     // which is how a sign-in redirect becomes an open redirect. `lib/auth-redirect.ts`

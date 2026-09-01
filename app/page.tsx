@@ -10,6 +10,7 @@ import { listPlaybooks } from "@/lib/queries/playbooks";
 import { listCategories } from "@/lib/queries/taxonomy";
 import { listRecentTools, listTools } from "@/lib/queries/tools";
 import { logger } from "@/lib/logger";
+import { isSignInEnabled } from "@/lib/session-surface";
 import { cn } from "@/lib/utils";
 
 /**
@@ -226,13 +227,21 @@ export default async function HomePage() {
             metric={liveMetric}
             cta="see what is published"
           />
-          <Pillar
-            title="workspaces"
-            href="/workspaces"
-            description="Your own case file: a checklist from a playbook, saved tools, timestamped notes, and an export."
-            metric={null}
-            cta="sign in to start a case"
-          />
+          {/*
+            The fourth pillar exists only where somebody can sign in. In public-only mode no
+            provider is configured, `/workspaces` answers 404, and this card would be both a
+            dead link and a promise the deployment cannot keep (ADR 0032). The other three
+            pillars are the product either way, and the grid reflows to them.
+          */}
+          {isSignInEnabled() ? (
+            <Pillar
+              title="workspaces"
+              href="/workspaces"
+              description="Your own case file: a checklist from a playbook, saved tools, timestamped notes, and an export."
+              metric={null}
+              cta="sign in to start a case"
+            />
+          ) : null}
         </ul>
       </section>
 

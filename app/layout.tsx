@@ -7,6 +7,7 @@ import { HeaderSessionProvider } from "@/components/layout/session-provider";
 import { SkipLink } from "@/components/layout/skip-link";
 import { THEME_INIT_SCRIPT } from "@/components/layout/theme";
 import { rootMetadata } from "@/lib/metadata";
+import { isSignInEnabled } from "@/lib/session-surface";
 
 import "./globals.css";
 
@@ -90,7 +91,20 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         */}
         <script>{THEME_INIT_SCRIPT}</script>
 
-        <HeaderSessionProvider>
+        {/*
+          THE SESSION PROVIDER IS CONDITIONAL, and this is the one place the deployment mode
+          reaches the whole tree.
+
+          In public-only mode (ADR 0032) no provider is configured, so no session can exist.
+          The two leaves that read one — the nav's session links and the account control —
+          are not rendered at all in that mode, so mounting the provider would buy nothing
+          and cost one `/api/auth/session` request per page view for an answer that is
+          always "nobody". `components/layout/site-nav.tsx` and `account-menu.tsx` are split
+          so that `useSession` is never called rather than merely ignored, which is what
+          makes dropping it safe: `useSession` throws outside a provider, and their tests
+          render them without one.
+        */}
+        <HeaderSessionProvider enabled={isSignInEnabled()}>
           <SkipLink />
           <SiteHeader />
           {/*

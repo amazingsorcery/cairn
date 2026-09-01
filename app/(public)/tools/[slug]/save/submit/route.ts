@@ -1,6 +1,7 @@
 import { addWorkspaceItem } from "@/lib/actions/workspaces";
 import { logger } from "@/lib/logger";
 import { getToolBySlug } from "@/lib/queries/tools";
+import { requireSignInEnabled } from "@/lib/session-surface";
 
 /**
  * `POST /tools/[slug]/save/submit` — the save picker's form target.
@@ -68,6 +69,13 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ slug: string }> },
 ): Promise<Response> {
+  /*
+   * PUBLIC-ONLY MODE: no sign-in, so no cases, so nothing to write into. 404 before the body
+   * is even read — an unauthenticated caller must not learn whether their payload was
+   * well-formed on a surface this deployment does not offer. ADR 0032.
+   */
+  requireSignInEnabled();
+
   const { slug } = await params;
   /**
    * A RELATIVE `Location`, which browsers resolve against the address they used. An absolute

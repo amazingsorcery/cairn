@@ -1,3 +1,4 @@
+import { deriveSignInMode, type SignInMode } from "./auth-mode";
 import { parseEnv, type EnvPhase, type ServerEnv } from "./env.schema";
 
 /**
@@ -25,11 +26,19 @@ export const isBuildPhase = phase === "build";
 
 export type { ServerEnv };
 
-/** Which sign-in methods are actually usable with the current configuration. */
-export const authProviders = {
-  github: Boolean(env.AUTH_GITHUB_ID && env.AUTH_GITHUB_SECRET),
-  email: Boolean(env.SMTP_HOST && env.SMTP_FROM),
-} as const;
+/**
+ * Which sign-in methods are actually usable with the current configuration — and, when the
+ * answer is "none", the fact that this deployment has no signed-in surface at all.
+ *
+ * Derived by `lib/auth-mode.ts`, which `middleware.ts` also calls against raw `process.env`
+ * in the Edge runtime. One function, one answer, in both places.
+ */
+export const authProviders: SignInMode = deriveSignInMode({
+  AUTH_GITHUB_ID: env.AUTH_GITHUB_ID,
+  AUTH_GITHUB_SECRET: env.AUTH_GITHUB_SECRET,
+  SMTP_HOST: env.SMTP_HOST,
+  SMTP_FROM: env.SMTP_FROM,
+});
 
 /** Emails granted the admin role on first sign-in. Lower-cased and de-duplicated. */
 export const adminEmails: readonly string[] = Array.from(

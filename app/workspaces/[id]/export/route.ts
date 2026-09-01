@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { currentUser } from "@/lib/auth";
 import { logger } from "@/lib/logger";
 import { consumeSafely } from "@/lib/rate-limit";
+import { requireSignInEnabled } from "@/lib/session-surface";
 import { getWorkspaceForExport } from "@/lib/queries/workspaces";
 import { exportFormatSchema } from "@/lib/validation/workspaces";
 import { toolFactsFor } from "../tool-facts";
@@ -51,6 +52,14 @@ export async function GET(
   context: { params: Promise<{ id: string }> },
 ): Promise<Response> {
   const { id } = await context.params;
+
+  /*
+   * 0. Is there a signed-in surface at all? In public-only mode there is no sign-in to
+   *    redirect to, so this download is not served — the same 404 the rest of `/workspaces`
+   *    gives (ADR 0032). It is checked before the session so a leftover cookie cannot open
+   *    an export path whose sign-out is no longer served.
+   */
+  requireSignInEnabled();
 
   // 1. Session. Signed out is a redirect to sign-in, per the route-level invariant in
   //    sitemap.md 10.2 — the same answer every other `/workspaces/**` path gives.
