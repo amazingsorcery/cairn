@@ -245,7 +245,19 @@ export function SearchField({ initialQuery }: { initialQuery: string }) {
                   )}
                 >
                   <span className="truncate">{suggestion.name}</span>
-                  <span className="shrink-0 text-xs text-muted-foreground">tool</span>
+                  {/*
+                    `--foreground-secondary`, not `--muted-foreground`. On the ACTIVE row the
+                    background is `--accent`, and muted ink measures 4.02:1 there in the dark
+                    theme — below AA. axe cannot reach it: the row is only styled that way
+                    while a suggestion is highlighted, so a static page scan never sees it.
+                    Found by typing into the field and hovering.
+
+                    The tokens cannot fix this one. `--accent` cannot be darkened without
+                    vanishing against `--popover`, and no primitive exists between
+                    `--slate-400` and `--slate-300`, so on that surface the muted step
+                    genuinely does not exist. See `app/tokens.css` §4.4.
+                  */}
+                  <span className="shrink-0 text-xs text-foreground-secondary">tool</span>
                 </li>
               ))
             )}

@@ -374,15 +374,15 @@
  * an alpha tint that lands on a `--card` differs from one on a `--background`, which is
  * two unnamed surfaces per intent instead of one named one.
  *
- *   composite                     rendered D / L      --foreground   --fg-secondary  --muted-fg
- *   bg-info/10 on --background    #16212B / #E1EBF2   13.70 / 15.88   8.12 / 10.13   5.36 / 6.43
- *   bg-info/10 on --card          #1B2936 / #E8F1F6   12.44 / 16.78   7.37 / 10.70   4.87 / 6.79
- *   bg-success/10 on --background #172422 / #E1EDE8   13.43 / 15.99   7.96 / 10.20   5.26 / 6.48
- *   bg-success/10 on --card       #1D2C2D / #E9F2EB   12.15 / 16.80   7.20 / 10.71   4.76 / 6.80
- *   bg-warning/10 on --background #22221F / #EDEAE4   13.39 / 16.00   7.94 / 10.20   5.24 / 6.48
- *   bg-warning/10 on --card       #282A2A / #F4F0E7   12.11 / 16.89   7.18 / 10.77   4.74 / 6.84
- *   bg-destructive/10 on --backgr #231D21 / #F0E5E5   13.89 / 15.59   8.23 /  9.94   5.44 / 6.31
- *   bg-destructive/10 on --card   #29252C / #F7EAE9   12.63 / 16.37   7.49 / 10.44   4.95 / 6.63
+ *   composite                          rendered D / L      --foreground   --fg-secondary  --muted-fg
+ *   bg-info/10 on --background         #16212B / #E1EBF2   13.70 / 15.88   8.12 / 10.13   5.36 /  6.43
+ *   bg-info/10 on --card               #1B2936 / #E8F1F6   12.44 / 16.78   7.37 / 10.70   4.87 /  6.79
+ *   bg-success/10 on --background      #172422 / #E1EDE8   13.43 / 15.99   7.96 / 10.20   5.26 /  6.48
+ *   bg-success/10 on --card            #1D2C2D / #E9F2EB   12.15 / 16.80   7.20 / 10.71   4.76 /  6.80
+ *   bg-warning/10 on --background      #22221F / #EDEAE4   13.39 / 16.00   7.94 / 10.20   5.24 /  6.48
+ *   bg-warning/10 on --card            #282A2A / #F4F0E7   12.11 / 16.89   7.18 / 10.77   4.74 /  6.84
+ *   bg-destructive/10 on --background  #231D21 / #F0E5E5   13.89 / 15.59   8.23 /  9.94   5.44 /  6.31
+ *   bg-destructive/10 on --card        #29252C / #F7EAE9   12.63 / 16.37   7.49 / 10.44   4.95 /  6.63
  *
  * The light `--muted-fg` column is where QV-06 lived: it read 4.46 / 4.49 / 4.49 / 4.37
  * before §3 changed the token.
