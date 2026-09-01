@@ -2,9 +2,18 @@
 
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 
-import { notes, playbookSteps, playbooks, tools, workspaceItems, workspaces } from "@/db/schema";
+import {
+  notes,
+  playbookSteps,
+  playbooks,
+  tools,
+  workspaceFeatureSnapshots,
+  workspaceItems,
+  workspaces,
+} from "@/db/schema";
 import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { findCachedFeature } from "@/lib/live/feature-cache";
 import {
   assertOwnsItem,
   assertOwnsNote,
@@ -17,8 +26,10 @@ import {
   createNoteSchema,
   createWorkspaceSchema,
   deleteNoteSchema,
+  packSnapshotProperties,
   removeWorkspaceItemSchema,
   reorderWorkspaceItemsSchema,
+  savedFeatureSchema,
   toggleWorkspaceItemSchema,
   updateNoteSchema,
   updateWorkspaceSchema,
@@ -189,6 +200,21 @@ export async function deleteWorkspace(input: unknown): Promise<ActionResult<{ id
  * Items
  * ------------------------------------------------------------------ */
 
+/**
+ * Raised inside the transaction when the snapshot's unique index already holds this feature.
+ *
+ * It has to unwind rather than return, because by then the `workspace_items` row is already
+ * inserted and committing would leave a `mapFeature` item with no snapshot — an item that
+ * renders as nothing at all. Throwing rolls the whole thing back; the catch outside turns it
+ * into the ordinary "already saved" answer rather than a failure.
+ */
+class FeatureAlreadySaved extends Error {
+  constructor() {
+    super("feature already saved in this workspace");
+    this.name = "FeatureAlreadySaved";
+  }
+}
+
 export async function addWorkspaceItem(input: unknown): Promise<ActionResult<{ id: string }>> {
   return guard("workspace.item.add", async () => {
     const user = await requireUser();
@@ -199,63 +225,171 @@ export async function addWorkspaceItem(input: unknown): Promise<ActionResult<{ i
     const limit = await consumeSafely("workspace-write", user.id);
     if (!limit.ok) return fail("conflict", TOO_FAST);
 
-    const { workspaceId, kind, toolId, stepId } = parsed.data;
+    const { workspaceId, kind, toolId, stepId, feature } = parsed.data;
 
-    return db.transaction(async (tx) => {
-      if (!(await assertOwnsWorkspace(workspaceId, user.id, tx))) {
-        return fail("notFound", NOT_FOUND);
+    /**
+     * A LIVE FEATURE IS RESOLVED BEFORE THE TRANSACTION OPENS, AND FROM OUR OWN CACHE.
+     *
+     * ADR 0025 Consequences, and QA finding QV-14. The request names a source and a feature;
+     * everything that is written — the coordinates, the observation instant, the source name,
+     * the attribution, the licence, the title — comes from `lib/live/feature-cache.ts`, which
+     * holds what the last governed poll actually returned. This is the same rule the tool
+     * branch below follows by reading `tools.name` from the database, applied to a referent
+     * that has no row: a snapshot assembled from a request body is a record of what the
+     * client claimed, and this table exists to be citable evidence.
+     *
+     * It resolves OUTSIDE the transaction because it is an in-memory read that cannot fail
+     * partway, and holding a row lock across it would buy nothing.
+     *
+     * FAIL, DO NOT FETCH. If the cache no longer holds the feature the save is refused. ADR
+     * 0025 rejects re-fetching outright: adsb.lol keeps no history, so a re-fetch returns the
+     * aircraft's *current* position under the original timestamp — not old, but wrong.
+     */
+    let snapshot: ReturnType<typeof savedFeatureSchema.parse> | null = null;
+    if (kind === "mapFeature" && feature) {
+      const resolved = findCachedFeature(feature.sourceSlug, feature.featureRef);
+      if (!resolved) {
+        return fail(
+          "notFound",
+          "That feature is no longer available to save. Live sources keep no history, so it cannot be recovered.",
+        );
       }
 
-      /**
-       * The snapshot title is READ FROM THE DATABASE, never taken from the client
-       * (ADR 0008). It records what the entry said when the user saved it; a client-supplied
-       * title would record what the client claimed.
-       *
-       * A tool must be published to be saved — otherwise a guessed uuid would pull an
-       * unpublished draft's name into a user's case file.
+      const candidate = savedFeatureSchema.safeParse({
+        sourceSlug: resolved.sourceSlug,
+        sourceName: resolved.sourceName,
+        sourceKind: resolved.sourceKind,
+        featureRef: resolved.feature.id,
+        label: resolved.feature.label,
+        latitude: resolved.feature.latitude,
+        longitude: resolved.feature.longitude,
+        altitudeMetres: resolved.feature.altitude ?? null,
+        /* The UPSTREAM's instant. Our clock records only `created_at`. */
+        observedAt: resolved.observedAt,
+        sourceUrl: resolved.feature.sourceUrl ?? null,
+        attribution: resolved.attribution.text,
+        licence: resolved.attribution.licence,
+        properties: resolved.feature.properties,
+        precision: resolved.feature.precision ?? null,
+      });
+
+      /*
+       * A source whose adapter returns a blank credit fails the save rather than writing a
+       * row without one. ODbL, CC BY and the TfL terms make the credit a condition of use, so
+       * an uncreditable feature is one we may not put in an exportable case file — the same
+       * fail-closed posture as `connectors_attribution_check`.
        */
-      let title: string | undefined;
-      if (kind === "tool" && toolId) {
-        const row = await tx
-          .select({ name: tools.name })
-          .from(tools)
-          .where(and(eq(tools.id, toolId), eq(tools.status, "published")))
-          .limit(1);
-        title = row[0]?.name;
-      } else if (kind === "checklistStep" && stepId) {
-        const row = await tx
-          .select({ title: playbookSteps.title })
-          .from(playbookSteps)
-          .innerJoin(playbooks, eq(playbooks.id, playbookSteps.playbookId))
-          .where(and(eq(playbookSteps.id, stepId), eq(playbooks.status, "published")))
-          .limit(1);
-        title = row[0]?.title;
+      if (!candidate.success) return fromZodError(candidate.error);
+      snapshot = candidate.data;
+    }
+
+    try {
+      return await db.transaction(async (tx) => {
+        if (!(await assertOwnsWorkspace(workspaceId, user.id, tx))) {
+          return fail("notFound", NOT_FOUND);
+        }
+
+        /**
+         * The snapshot title is READ FROM THE DATABASE, never taken from the client
+         * (ADR 0008). It records what the entry said when the user saved it; a
+         * client-supplied title would record what the client claimed.
+         *
+         * A tool must be published to be saved — otherwise a guessed uuid would pull an
+         * unpublished draft's name into a user's case file.
+         */
+        let title: string | undefined;
+        if (kind === "tool" && toolId) {
+          const row = await tx
+            .select({ name: tools.name })
+            .from(tools)
+            .where(and(eq(tools.id, toolId), eq(tools.status, "published")))
+            .limit(1);
+          title = row[0]?.name;
+        } else if (kind === "checklistStep" && stepId) {
+          const row = await tx
+            .select({ title: playbookSteps.title })
+            .from(playbookSteps)
+            .innerJoin(playbooks, eq(playbooks.id, playbookSteps.playbookId))
+            .where(and(eq(playbookSteps.id, stepId), eq(playbooks.status, "published")))
+            .limit(1);
+          title = row[0]?.title;
+        } else if (kind === "mapFeature" && snapshot) {
+          /* Same rule, different authority: the feature's own label as the server saw it. */
+          title = snapshot.label;
+        }
+
+        if (!title) return fail("notFound", "That entry is no longer available to save.");
+
+        const orderIndex = await nextItemOrderIndex(workspaceId, kind, tx);
+
+        const inserted = await tx
+          .insert(workspaceItems)
+          .values({
+            workspaceId,
+            userId: user.id,
+            kind,
+            toolId: kind === "tool" ? toolId : null,
+            stepId: kind === "checklistStep" ? stepId : null,
+            title,
+            orderIndex,
+          })
+          // A tool is saved into a workspace at most once
+          // (`workspace_items_tool_unique_idx`), and one checklist entry per step. A
+          // `mapFeature` item has no FK to be unique on; its uniqueness lives on the snapshot.
+          .onConflictDoNothing()
+          .returning({ id: workspaceItems.id });
+
+        const row = inserted[0];
+        if (!row) return fail("conflict", "That is already saved in this case.");
+
+        /**
+         * THE ITEM AND ITS SNAPSHOT ARE ONE WRITE.
+         *
+         * `workspace_feature_snapshots`' primary key IS its foreign key to the item
+         * (ADR 0025), so exactly one snapshot per item is structural. What is not structural
+         * is that the item never exists without one: a committed `mapFeature` item with no
+         * snapshot has no coordinates, no source and no credit, and renders as nothing. Both
+         * statements are in this transaction and `FeatureAlreadySaved` unwinds it.
+         *
+         * `onConflictDoNothing` covers `workspace_feature_snapshots_unique_idx` — one save
+         * per feature per workspace. Re-saving reports "already saved" and writes nothing;
+         * ADR 0025 rejects the alternative because a user accumulating positions for the same
+         * aircraft is a flight-track table assembled one click at a time.
+         */
+        if (kind === "mapFeature" && snapshot) {
+          const snapshotRow = await tx
+            .insert(workspaceFeatureSnapshots)
+            .values({
+              workspaceItemId: row.id,
+              workspaceId,
+              userId: user.id,
+              sourceSlug: snapshot.sourceSlug,
+              sourceName: snapshot.sourceName,
+              sourceKind: snapshot.sourceKind,
+              featureRef: snapshot.featureRef,
+              latitude: snapshot.latitude,
+              longitude: snapshot.longitude,
+              altitudeMetres: snapshot.altitudeMetres,
+              observedAt: snapshot.observedAt,
+              sourceUrl: snapshot.sourceUrl,
+              attribution: snapshot.attribution,
+              licence: snapshot.licence,
+              properties: packSnapshotProperties(snapshot.properties, snapshot.precision),
+            })
+            .onConflictDoNothing()
+            .returning({ id: workspaceFeatureSnapshots.workspaceItemId });
+
+          if (!snapshotRow[0]) throw new FeatureAlreadySaved();
+        }
+
+        return ok({ id: row.id });
+      });
+    } catch (error) {
+      if (error instanceof FeatureAlreadySaved) {
+        return fail("conflict", "That is already saved in this case.");
       }
-
-      if (!title) return fail("notFound", "That entry is no longer available to save.");
-
-      const orderIndex = await nextItemOrderIndex(workspaceId, kind, tx);
-
-      const inserted = await tx
-        .insert(workspaceItems)
-        .values({
-          workspaceId,
-          userId: user.id,
-          kind,
-          toolId: kind === "tool" ? toolId : null,
-          stepId: kind === "checklistStep" ? stepId : null,
-          title,
-          orderIndex,
-        })
-        // A tool is saved into a workspace at most once
-        // (`workspace_items_tool_unique_idx`), and one checklist entry per step.
-        .onConflictDoNothing()
-        .returning({ id: workspaceItems.id });
-
-      const row = inserted[0];
-      if (!row) return fail("conflict", "That is already saved in this case.");
-      return ok({ id: row.id });
-    });
+      throw error;
+    }
   });
 }
 

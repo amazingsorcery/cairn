@@ -73,7 +73,12 @@ export interface WorkspaceHeaderProps {
   status: WorkspaceStatus;
   createdAt: Date | string;
   playbook: { slug: string; title: string } | null;
-  counts: { notes: number; tools: number; steps: number };
+  /**
+   * `features` is the count of map features saved into the case (ADR 0025). It is rendered
+   * only when it is non-zero, so the delete confirmation keeps exactly the wording
+   * `states.md` 7.9 specifies for every case that has none.
+   */
+  counts: { notes: number; tools: number; steps: number; features: number };
 }
 
 const STATUS_LABEL: Record<WorkspaceStatus, string> = {
@@ -341,7 +346,11 @@ export function WorkspaceHeader({
             <DialogDescription>
               {saved} · {counts.notes} {counts.notes === 1 ? "note" : "notes"} ·{" "}
               {counts.tools} saved {counts.tools === 1 ? "tool" : "tools"} · {counts.steps}{" "}
-              checklist {counts.steps === 1 ? "step" : "steps"}. This cannot be undone and the
+              checklist {counts.steps === 1 ? "step" : "steps"}
+              {counts.features > 0
+                ? ` · ${counts.features} saved map ${counts.features === 1 ? "feature" : "features"}, which cannot be saved again because the sources keep no history`
+                : ""}
+              . This cannot be undone and the
               notes are not recoverable.
             </DialogDescription>
           </DialogHeader>

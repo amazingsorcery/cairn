@@ -6,10 +6,26 @@ import {
   workspaceItems,
   workspaces,
   type ConfidenceLevel,
+  type SourceKind,
   type WorkspaceItemKind,
   type WorkspaceStatus,
 } from "@/db/schema";
 import { db, type Db } from "@/lib/db";
+import {
+  unpackSnapshotProperties,
+  type SavedPrecision,
+} from "@/lib/validation/workspaces";
+
+/**
+ * `db.execute(sql\`…\`)` returns RAW `pg` rows, which skips the `timestamptz(mode: 'date')`
+ * mapping `db/schema.ts` applies to every Drizzle-built query. A column typed `Date` in the
+ * hand-written row type arrives as a string, and `value.toISOString()` throws at render time
+ * — which is how `components/workspaces/dates.ts` came to exist. Every timestamp this file
+ * reads through `db.execute` goes through here instead of being asserted.
+ */
+function toDate(value: Date | string): Date {
+  return value instanceof Date ? value : new Date(value);
+}
 
 /**
  * The signed-in read layer.
@@ -145,6 +161,46 @@ export type NoteView = {
   playbookStepId: string | null;
 };
 
+/**
+ * A live feature the reader saved into this case — `workspace_items` joined to its snapshot.
+ *
+ * EVERY FIELD IS A COPY TAKEN AT SAVE TIME AND NOTHING HERE IS REFRESHED (ADR 0025). There is
+ * no source to refresh from: adsb.lol keeps no history, the USGS feed is a rolling window,
+ * FIRMS rolls over on the next satellite pass. That is also why `attribution` and `licence`
+ * are on the row rather than joined from `connectors` — the credit is owed by the export
+ * whatever the registry says today, and the connector row may since have been edited away.
+ *
+ * `observedAt` and `savedAt` are two different facts and are never conflated: when the
+ * upstream saw it, and when the reader kept it.
+ */
+export type WorkspaceFeatureView = {
+  /** The `workspace_items` id, so removing one is the same action as removing a saved tool. */
+  id: string;
+  /** Snapshotted from the feature's own label at save (ADR 0008). */
+  title: string;
+  orderIndex: number;
+  /** When the READER saved it. */
+  savedAt: Date;
+  sourceSlug: string;
+  sourceName: string;
+  sourceKind: SourceKind;
+  featureRef: string;
+  latitude: number;
+  longitude: number;
+  altitudeMetres: number | null;
+  /** When the UPSTREAM observed it. */
+  observedAt: Date;
+  sourceUrl: string | null;
+  attribution: string;
+  licence: string;
+  properties: Readonly<Record<string, string | number | boolean | null>>;
+  /**
+   * The caveat, when the coordinate is an approximation. Null means the source's own
+   * position, which needs none — caveating everything is caveating nothing.
+   */
+  precision: SavedPrecision | null;
+};
+
 export type WorkspaceDetail = {
   id: string;
   title: string;
@@ -154,6 +210,7 @@ export type WorkspaceDetail = {
   playbook: { slug: string; title: string } | null;
   checklist: WorkspaceItemView[];
   savedTools: WorkspaceItemView[];
+  savedFeatures: WorkspaceFeatureView[];
   notes: NoteView[];
 };
 
@@ -203,6 +260,18 @@ export async function getWorkspace(
       step_id: string | null;
       step_order_index: number | null;
       playbook_slug: string | null;
+      source_slug: string | null;
+      source_name: string | null;
+      source_kind: SourceKind | null;
+      feature_ref: string | null;
+      latitude: number | null;
+      longitude: number | null;
+      altitude_metres: number | null;
+      observed_at: Date | string | null;
+      source_url: string | null;
+      attribution: string | null;
+      licence: string | null;
+      properties: unknown;
     }>(sql`
       select i.id,
              i.kind,
@@ -219,11 +288,28 @@ export async function getWorkspace(
              case when t.status = 'published' then t.last_verified_at end as tool_last_verified_at,
              i.step_id,
              s.order_index as step_order_index,
-             case when pb.status = 'published' then pb.slug end as playbook_slug
+             case when pb.status = 'published' then pb.slug end as playbook_slug,
+             -- The saved map feature's snapshot. No CASE and no status: nothing upstream can
+             -- unpublish an observation, and there is nothing to re-check it against
+             -- (ADR 0025). Null on every row that is not a mapFeature.
+             fs.source_slug,
+             fs.source_name,
+             fs.source_kind,
+             fs.feature_ref,
+             fs.latitude,
+             fs.longitude,
+             fs.altitude_metres,
+             fs.observed_at,
+             fs.source_url,
+             fs.attribution,
+             fs.licence,
+             fs.properties
       from ${workspaceItems} i
       left join tools t on t.id = i.tool_id
       left join playbook_steps s on s.id = i.step_id
       left join playbooks pb on pb.id = s.playbook_id
+      -- The snapshot's primary key IS this foreign key, so the join can add no rows.
+      left join workspace_feature_snapshots fs on fs.workspace_item_id = i.id
       where i.workspace_id = ${workspaceId} and i.user_id = ${userId}
       order by i.kind, i.order_index, i.created_at
     `),
@@ -240,6 +326,38 @@ export async function getWorkspace(
       .where(and(eq(notes.workspaceId, workspaceId), eq(notes.userId, userId)))
       .orderBy(desc(notes.createdAt)),
   ]);
+
+  /**
+   * A `mapFeature` row with no snapshot cannot happen — `addWorkspaceItem` writes both in one
+   * transaction and rolls back if the second does not land — but it is skipped rather than
+   * rendered half-built, because a saved feature with no coordinates and no credit is not a
+   * thing this product may display.
+   */
+  const savedFeatures: WorkspaceFeatureView[] = items.rows
+    .filter((row) => row.kind === "mapFeature" && row.source_slug !== null)
+    .map((row) => {
+      const { properties, precision } = unpackSnapshotProperties(row.properties);
+      return {
+        id: row.id,
+        title: row.title,
+        orderIndex: row.order_index,
+        savedAt: toDate(row.created_at),
+        sourceSlug: row.source_slug ?? "",
+        sourceName: row.source_name ?? "",
+        sourceKind: (row.source_kind ?? "infrastructure") as SourceKind,
+        featureRef: row.feature_ref ?? "",
+        latitude: Number(row.latitude),
+        longitude: Number(row.longitude),
+        altitudeMetres: row.altitude_metres === null ? null : Number(row.altitude_metres),
+        observedAt: toDate(row.observed_at ?? row.created_at),
+        sourceUrl: row.source_url,
+        attribution: row.attribution ?? "",
+        licence: row.licence ?? "",
+        properties,
+        precision,
+      };
+    })
+    .sort((a, b) => a.orderIndex - b.orderIndex);
 
   const views: WorkspaceItemView[] = items.rows.map((row) => ({
     id: row.id,
@@ -269,6 +387,7 @@ export async function getWorkspace(
       .filter((v) => v.kind === "checklistStep")
       .sort((a, b) => a.orderIndex - b.orderIndex),
     savedTools: views.filter((v) => v.kind === "tool").sort((a, b) => a.orderIndex - b.orderIndex),
+    savedFeatures,
     notes: noteRows,
   };
 }

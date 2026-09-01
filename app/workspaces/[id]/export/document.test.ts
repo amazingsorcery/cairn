@@ -15,7 +15,11 @@ import { renderCaseMarkdown } from "./markdown";
  *      HANDOFF 9.1) — an export that drops them lets the product's central caveat fall out
  *      of the copy the user actually keeps,
  *   3. an entry that has left the catalogue being RECORDED as such rather than dropped
- *      (ADR 0008).
+ *      (ADR 0008),
+ *   4. every saved map feature carrying its attribution, its licence and — where the
+ *      coordinate is an approximation — the caveat saying so (ADR 0025). The export never
+ *      calls the map's renderer, so an omission here is not a missing line on a page, it is
+ *      the caveat ceasing to exist.
  *
  * The regression test at the bottom is for a bug found by running the page, not by reading
  * it: `lib/queries/workspaces.ts` types these timestamps as `Date` and `db.execute` returns
@@ -100,6 +104,52 @@ function fixture(overrides: Partial<WorkspaceDetail> = {}): WorkspaceDetail {
         stepOrderIndex: null,
       },
     ],
+    savedFeatures: [
+      {
+        id: "item-5",
+        title: "M 4.6 — 12 km SW of Petrolia",
+        orderIndex: 0,
+        savedAt: new Date("2026-08-23T10:02:00.000Z"),
+        sourceSlug: "usgs-earthquakes",
+        sourceName: "USGS Earthquake Hazards Program",
+        sourceKind: "earthquakes",
+        featureRef: "us7000abcd",
+        latitude: 40.28417,
+        longitude: -124.4235,
+        altitudeMetres: null,
+        // The upstream's instant, an hour before the reader saved it. Two facts, not one.
+        observedAt: new Date("2026-08-23T09:05:12.000Z"),
+        sourceUrl: "https://earthquake.usgs.gov/earthquakes/eventpage/us7000abcd",
+        attribution: "USGS Earthquake Hazards Program",
+        licence: "public domain (US Government)",
+        properties: { magnitude: 4.6, depthKm: 21.3, tsunamiFlagged: false },
+        precision: null,
+      },
+      {
+        id: "item-6",
+        title: "Flood Warning — Sonoma County",
+        orderIndex: 1,
+        savedAt: new Date("2026-08-23T10:04:00.000Z"),
+        sourceSlug: "nws-alerts",
+        sourceName: "National Weather Service",
+        sourceKind: "weather",
+        featureRef: "urn:oid:2.49.0.1.840.0.abc",
+        latitude: 38.5,
+        longitude: -122.9,
+        altitudeMetres: null,
+        observedAt: new Date("2026-08-23T08:00:00.000Z"),
+        sourceUrl: null,
+        attribution: "National Weather Service",
+        licence: "public domain (US Government)",
+        properties: { event: "Flood Warning" },
+        // The 98.7% case: a UGC zone centroid, possibly tens of km from the weather.
+        precision: {
+          label: "approx · zone centre",
+          note: "This alert names administrative zones rather than a polygon, so the coordinate is the centre of one zone and may be tens of kilometres from the weather.",
+          approximateRadiusMetres: 30000,
+        },
+      },
+    ],
     notes: [
       {
         id: "note-1",
@@ -179,6 +229,33 @@ describe("buildCaseDocument", () => {
     expect(doc.counts.notes).toBe(2);
   });
 
+
+  it("keeps the upstream's observation instant and the save time apart", () => {
+    // ADR 0025: `observed_at` is a claim about a moment, and a moment taken from our own
+    // clock would be a different claim. Both are printed; neither stands in for the other.
+    const doc = buildCaseDocument(fixture(), FACTS, EXPORTED_AT);
+    const quake = doc.features[0];
+    expect(quake?.observedAt).toBe("2026-08-23T09:05:12Z");
+    expect(quake?.savedAt).toBe("2026-08-23T10:02:00Z");
+  });
+
+  it("carries the attribution and licence of every saved feature", () => {
+    // ODbL, CC BY and the TfL terms make the credit a condition of use, and an exported case
+    // file rendering a saved feature is a display.
+    const doc = buildCaseDocument(fixture(), FACTS, EXPORTED_AT);
+    expect(doc.features).toHaveLength(2);
+    for (const feature of doc.features) {
+      expect(feature.attribution.trim()).not.toBe("");
+      expect(feature.licence.trim()).not.toBe("");
+    }
+  });
+
+  it("carries the precision caveat, which nothing else in the export could reconstruct", () => {
+    const doc = buildCaseDocument(fixture(), FACTS, EXPORTED_AT);
+    expect(doc.features[0]?.precisionNote).toBeNull();
+    expect(doc.features[1]?.precisionNote).toContain("administrative zones");
+  });
+
   it("names the file after the case and the export date", () => {
     const doc = buildCaseDocument(fixture(), FACTS, EXPORTED_AT);
     expect(exportBasename(doc)).toBe("case-southbank-ownership-check-2026-08-31");
@@ -254,6 +331,28 @@ describe("renderCaseMarkdown", () => {
     expect(markdown).toContain(
       "Weather record shows overcast. Footage shows hard shadows. Flag.",
     );
+  });
+
+
+  it("prints every saved feature with its credit beside it, not in a footer", () => {
+    expect(markdown).toContain("## Saved from the map — 2");
+    expect(markdown).toContain("### M 4.6 — 12 km SW of Petrolia");
+    expect(markdown).toContain("- Observed: 2026-08-23T09:05:12Z");
+    expect(markdown).toContain("- Position: 40.2842, -124.4235");
+    expect(markdown).toContain("- Attribution: USGS Earthquake Hazards Program");
+    expect(markdown).toContain("- Licence: public domain (US Government)");
+    expect(markdown).toContain("- Saved to this case: 2026-08-23T10:02:00Z");
+    // The upstream's own field names, verbatim, so a value can be matched back to a source.
+    expect(markdown).toContain("- depthKm: 21.3");
+  });
+
+  it("states the coordinate caveat under the coordinate it qualifies", () => {
+    expect(markdown).toContain("- Position: 38.5000, -122.9000");
+    expect(markdown).toContain("  - Approximate position. This alert names administrative zones");
+  });
+
+  it("says a saved feature can never be re-checked", () => {
+    expect(markdown).toContain("Saved map features are snapshots.");
   });
 
   it("carries no date in a non-ISO shape", () => {

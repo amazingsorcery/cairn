@@ -38,7 +38,7 @@ export interface ExportDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   workspaceId: string;
-  counts: { notes: number; tools: number; steps: number };
+  counts: { notes: number; tools: number; steps: number; features: number };
   /**
    * The control that opened this dialog. Focus goes back to it on close.
    *
@@ -86,7 +86,7 @@ export function ExportDialog({
     setPhase({ kind: "choosing" });
   }, [open]);
 
-  const summary = `${counts.notes} ${counts.notes === 1 ? "note" : "notes"} with timestamps, ${counts.tools} saved ${counts.tools === 1 ? "tool" : "tools"} with their confidence and last-verified dates, and ${counts.steps} checklist ${counts.steps === 1 ? "step" : "steps"}.`;
+  const summary = `${counts.notes} ${counts.notes === 1 ? "note" : "notes"} with timestamps, ${counts.tools} saved ${counts.tools === 1 ? "tool" : "tools"} with their confidence and last-verified dates, ${counts.features} saved map ${counts.features === 1 ? "feature" : "features"} with the attribution and licence each one is owed, and ${counts.steps} checklist ${counts.steps === 1 ? "step" : "steps"}.`;
 
   function exportMarkdown() {
     // A navigation, not a fetch: `Content-Disposition: attachment` means the browser saves
@@ -164,7 +164,8 @@ export function ExportDialog({
             <DialogHeader>
               <DialogTitle>Building your PDF</DialogTitle>
               <DialogDescription>
-                {counts.notes} notes, {counts.tools} saved tools, {counts.steps} checklist
+                {counts.notes} notes, {counts.tools} saved tools, {counts.features} saved map
+                features, {counts.steps} checklist
                 steps. This usually takes a few seconds.
               </DialogDescription>
             </DialogHeader>

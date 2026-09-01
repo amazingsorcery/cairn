@@ -4,6 +4,7 @@ import type { GovernanceDeps } from "@/lib/sources";
 import type {
   Attribution,
   CachedSourceResult,
+  PositionalPrecision,
   SourceAdapter,
   SourceCache,
   SourceContext,
@@ -11,6 +12,7 @@ import type {
   SourceQuery,
 } from "@/lib/sources/types";
 import { normaliseSourceQuery, sourceQueryKey } from "@/components/map/query";
+import { dropPayload, readPayload, writePayload } from "@/lib/live/feature-cache";
 import { devStressSource } from "./dev-stress-source";
 
 /**
@@ -159,46 +161,32 @@ function governanceFor(adapter: SourceAdapter<SourceFeature>): Partial<Governanc
  * The shared cache
  * ------------------------------------------------------------------ */
 
-interface CacheEntry {
-  readonly features: readonly SourceFeature[];
-  readonly observedAt: Date;
-  readonly cachedAt: Date;
-  /**
-   * The TTL and credit the **governed poll** returned, cached with the payload.
-   *
-   * Both are the registry row's, not the adapter's constant, and both must survive a cache
-   * hit — otherwise a hit would measure freshness against a number the operator has changed,
-   * and would render a layer without the credit its licence requires.
-   */
-  readonly ttlSeconds: number;
-  readonly attribution: Attribution;
-}
+/**
+ * The payload cache lives in `lib/live/feature-cache.ts` now, not here.
+ *
+ * It moved because it grew a second reader. ADR 0025 makes the SERVER the authority on a
+ * saved feature's attribution, licence, source name and title, and `addWorkspaceItem`
+ * resolves that from this exact cache by `(sourceSlug, featureRef)` — QA finding QV-14 is
+ * what a snapshot assembled from a request body costs. A Server Action cannot import from a
+ * route segment, so the cache sits below both of us and neither owns it.
+ *
+ * Nothing else about it changed: one entry per source AND question (QV-04), the same
+ * whole-degree grid, the same 256-entry ceiling with oldest-first eviction, and the same
+ * `globalThis` handle so a dev-server module reload does not empty it.
+ */
 
 /**
- * Held on `globalThis` rather than in a module binding.
+ * The SIDE cache the adapters get — a different thing from the payload cache above.
  *
- * Next's dev server re-evaluates a module on every edit, so a plain `const cache = new Map()`
- * empties on every save — which turns a 60-second TTL into "every keystroke calls USGS". In
- * production it makes no difference; in development it is the difference between respecting
- * an upstream's cadence and hammering it while you work.
+ * Several adapters need a long-lived store that is not their payload (NWS resolves UGC zone
+ * codes to centroids, Radio Browser discovers a mirror), and without a handle here each would
+ * invent its own in-process map that empties on every deploy.
  */
-const globalForCache = globalThis as typeof globalThis & {
-  __cairnMapSourceCache?: Map<string, CacheEntry>;
+const globalForSideCache = globalThis as typeof globalThis & {
   __cairnMapSideCache?: Map<string, { value: string; expiresAt: number }>;
 };
 
-const payloadCache = (globalForCache.__cairnMapSourceCache ??= new Map());
-const sideCache = (globalForCache.__cairnMapSideCache ??= new Map());
-
-/**
- * Hard ceiling on distinct entries, so a crafted stream of viewport parameters cannot grow
- * this Map without bound on a small VPS. Eviction is oldest-first, and the whole-degree grid
- * in `normaliseSourceQuery` is the first line of defence: it bounds the key space long before
- * this does. Same construction and same number as `lib/connectors/runtime.ts`.
- *
- * It was not needed while the key was one entry per source. It is needed now.
- */
-const MAX_CACHE_ENTRIES = 256;
+const sideCache = (globalForSideCache.__cairnMapSideCache ??= new Map());
 
 /**
  * The cache key: the source, plus the question, normalised.
@@ -212,23 +200,10 @@ function cacheKeyFor(adapter: SourceAdapter<SourceFeature>, query: SourceQuery):
   return `${adapter.slug}:${sourceQueryKey(query)}`;
 }
 
-function writeCache(key: string, entry: CacheEntry): void {
-  if (payloadCache.size >= MAX_CACHE_ENTRIES && !payloadCache.has(key)) {
-    const oldest = payloadCache.keys().next();
-    if (!oldest.done) payloadCache.delete(oldest.value);
-  }
-  payloadCache.set(key, entry);
-}
-
 /**
- * The `SourceCache` the contract hands to every adapter.
- *
- * Several adapters need a long-lived side cache that is not their payload — NWS resolves UGC
- * zone codes to centroids, Radio Browser discovers a mirror — and without a handle here each
- * would invent its own in-process map that empties on every deploy. This is Redis's seat,
- * occupied by a `Map` until the worker container exists. It is deliberately the narrow
- * `get`/`set` slice: an adapter that could enumerate or flush the cache would be able to
- * reach data that is not its own.
+ * The narrow `get`/`set` slice the contract hands to every adapter. This is Redis's seat,
+ * occupied by a `Map` until the worker container exists. An adapter that could enumerate or
+ * flush the cache would be able to reach data that is not its own.
  */
 const cache: SourceCache = {
   async get(key: string): Promise<string | null> {
@@ -289,7 +264,45 @@ export interface MapSourceLoad extends CachedSourceResult<SourceFeature> {
 export async function loadSource(
   adapter: SourceAdapter<SourceFeature>,
   query: SourceQuery,
+  /**
+   * The layer's `precision` fallback, applied to every feature before it is cached.
+   *
+   * ## Why the cache and not the panel
+   *
+   * `PositionalPrecision` belongs on `SourceFeature` and several adapters have not adopted it
+   * yet — `nws-alerts` in particular, whose 98.7% zone-centroid caveat is still computed by
+   * `MapLayerDefinition.precision` in `components/map/registry/weather.ts`. The map panel
+   * papers over that with `featurePrecision(layer, feature)`, which prefers the feature's own
+   * value and falls back to the layer's.
+   *
+   * Nothing outside the map calls that function, and everything outside the map that needs
+   * the caveat reads the FEATURE. So a workspace snapshot of an NWS alert would have carried
+   * a bare coordinate with no caveat at all, and the PDF a reader opens in six months would
+   * have shown an administrative centroid as a position — which is the exact loss
+   * `SourceFeature.precision` was added to prevent, arriving from the other side.
+   *
+   * Applying it here means **the cache holds the feature as the map presents it**, so the
+   * snapshot records what the reader actually saw. When an adapter adopts the field its own
+   * value wins and this becomes a no-op for that source; when every adapter has, the
+   * parameter and `MapLayerDefinition.precision` are deleted together.
+   */
+  precisionFallback?: (feature: SourceFeature) => PositionalPrecision | null,
 ): Promise<MapSourceLoad> {
+  /**
+   * Never overwrites a value the adapter set. `null` from an adapter is a positive claim —
+   * "this coordinate is as exact as the source can make it" — and the 1.3% of NWS alerts that
+   * do carry real geometry matter as much as the rest, because caveating everything is
+   * caveating nothing.
+   */
+  const withPrecision = (features: readonly SourceFeature[]): readonly SourceFeature[] => {
+    if (!precisionFallback) return features;
+    return features.map((feature) =>
+      feature.precision === undefined
+        ? { ...feature, precision: precisionFallback(feature) }
+        : feature,
+    );
+  };
+
   /*
    * NORMALISED ONCE, HERE, AND USED FOR BOTH THE KEY AND THE CALL. Deriving the key from one
    * value and the request from another is QV-04 in miniature, so there is deliberately no
@@ -297,7 +310,7 @@ export async function loadSource(
    */
   const normalised = normaliseSourceQuery(query);
   const key = cacheKeyFor(adapter, normalised);
-  const cached = payloadCache.get(key);
+  const cached = readPayload(key);
   const now = Date.now();
 
   /*
@@ -337,15 +350,33 @@ export async function loadSource(
   );
 
   if (result.ok) {
-    const entry: CacheEntry = {
-      features: result.features,
+    /*
+     * `sourceName` and `sourceKind` are cached WITH the payload, because a second reader
+     * needs them and must not re-derive them: `addWorkspaceItem` writes them into a
+     * `workspace_feature_snapshots` row (ADR 0025), and a snapshot whose source name came
+     * from anywhere other than the poll that produced the feature is a record of what
+     * something else claimed.
+     */
+    const features = withPrecision(result.features);
+    const entry = {
+      sourceSlug: adapter.slug,
+      sourceName: adapter.name,
+      sourceKind: adapter.kind,
+      features,
       observedAt: result.observedAt,
       cachedAt: new Date(),
       ttlSeconds,
       attribution,
     };
-    writeCache(key, entry);
-    return { result, stale: false, cachedAt: entry.cachedAt, ttlSeconds, attribution };
+    writePayload(key, entry);
+    return {
+      /* The DTO carries the same features the cache holds — one shape, not two. */
+      result: { ok: true, features, observedAt: result.observedAt },
+      stale: false,
+      cachedAt: entry.cachedAt,
+      ttlSeconds,
+      attribution,
+    };
   }
 
   /*
@@ -387,7 +418,7 @@ export async function loadSource(
    * ever-growing age label. A cache is not a place to keep data we have decided not to show.
    */
   const lastGoodAt = cached?.observedAt ?? null;
-  payloadCache.delete(key);
+  dropPayload(key);
   return {
     result: { ok: false, failure: result.failure, lastGoodAt },
     stale: false,

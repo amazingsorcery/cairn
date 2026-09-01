@@ -1,4 +1,5 @@
 import type { SourceQuery } from "@/lib/sources/types";
+import { featurePrecision } from "@/components/map/registry";
 import type { LayerPayloadDto, MapLayerDefinition } from "@/components/map/registry";
 import { loadSource, resolveAdapter } from "./sources";
 
@@ -37,7 +38,15 @@ export async function buildLayerPayload(
    * one boundary.
    */
   try {
-    const { result, stale, ttlSeconds, attribution } = await loadSource(adapter, query);
+    /*
+     * THE LAYER'S PRECISION FALLBACK GOES IN WITH THE QUERY, so the cached feature carries
+     * the caveat the panel would have rendered. Several adapters have not adopted
+     * `SourceFeature.precision` yet, and everything outside the map — a workspace snapshot,
+     * an export — reads the feature rather than calling `featurePrecision`. See `loadSource`.
+     */
+    const { result, stale, ttlSeconds, attribution } = await loadSource(adapter, query, (feature) =>
+      featurePrecision(layer, feature),
+    );
 
     /*
      * ATTRIBUTION AND TTL COME FROM THE GOVERNED POLL, not from the adapter constants.

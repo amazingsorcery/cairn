@@ -9,6 +9,7 @@ import type { SourceFeature } from "@/lib/sources/types";
 import { featurePrecision, resolveMedia } from "./registry";
 import type { LayerMedia, LayerPayloadDto, MapLayerDefinition } from "./registry";
 import { SourceLine } from "./layer-status";
+import { SaveFeature } from "./save-feature";
 
 /**
  * One feature, in full. Registry-driven: the rows come from `layer.detail`, so this file
@@ -167,6 +168,17 @@ export function FeatureDetail<F extends SourceFeature>({
           </a>
         </p>
       ) : null}
+
+      {/*
+        SAVE, UNDER THE FACTS AND ABOVE THE SOURCE LINE.
+
+        It sits after everything that describes the feature and before the credit, because a
+        reader decides to keep something once they have read what it is. It is a plain GET
+        form to a session-gated route — see `save-feature.tsx` for why it is not a button
+        calling a Server Action, and why nothing but the source slug and the feature id
+        crosses the wire.
+      */}
+      <SaveFeature layer={layer} feature={feature} />
 
       <div className="mt-4 border-t border-border pt-3 text-sm text-foreground-secondary">
         <p className="tabular">

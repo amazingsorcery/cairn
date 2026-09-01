@@ -215,3 +215,77 @@ describe("selecting a different feature", () => {
     expect(container.querySelector("img")).toBeNull();
   });
 });
+
+/**
+ * QV-13: the map had no control leading into a case, so the Live pillar and the Workspaces
+ * pillar were not joined. QV-14: the design that was written down would have carried the
+ * attribution and licence through the browser.
+ *
+ * The load-bearing assertion is the negative one — that the form carries **only** the source
+ * slug and the feature id. Everything else about the snapshot is resolved server-side from
+ * the same cache the map was drawn from, and a future "just send the coordinates too, it
+ * saves a lookup" change is exactly what this is here to fail.
+ */
+describe("saving a feature into a case", () => {
+  const camera = cameras[0];
+
+  it("offers the control to every reader, signed in or not", () => {
+    if (!camera) return;
+    renderDetail(camerasLayer, camera);
+    const control = screen.getByRole("button", { name: /save to a case/i });
+    expect(control).toBeInTheDocument();
+    // The label names the feature, because a screen-reader user moving by controls hears it
+    // out of context and "save to a case" alone does not say which of them it saves.
+    expect(control.textContent).toContain(camera.label);
+  });
+
+  it("is a native GET form to a session-gated route, not a scripted button", () => {
+    // HANDOFF-directory 1b: a click before hydration does nothing, and a Server Action
+    // submitted as a background fetch loses the save if the reader navigates away. A native
+    // form has neither window and works with the bundle removed.
+    if (!camera) return;
+    const { container } = renderDetail(camerasLayer, camera);
+    const form = container.querySelector<HTMLFormElement>('form[action="/map/save"]');
+    expect(form).not.toBeNull();
+    expect(form?.getAttribute("method")?.toLowerCase()).toBe("get");
+  });
+
+  it("sends the source slug and the feature id, and nothing else", () => {
+    if (!camera) return;
+    const { container } = renderDetail(camerasLayer, camera);
+    const form = container.querySelector<HTMLFormElement>('form[action="/map/save"]');
+    const fields = [...(form?.querySelectorAll("input") ?? [])].map((input) => [
+      input.name,
+      input.value,
+    ]);
+
+    expect(fields).toEqual([
+      ["source", camerasLayer.sourceSlug],
+      ["feature", camera.id],
+    ]);
+
+    // Explicitly: none of the fields a licence obligation could be blanked through.
+    const names = fields.map(([name]) => name);
+    expect(names).not.toContain("attribution");
+    expect(names).not.toContain("licence");
+    expect(names).not.toContain("sourceName");
+    expect(names).not.toContain("observedAt");
+    expect(names).not.toContain("latitude");
+  });
+
+  it("does not offer to save a synthetic development layer", () => {
+    // The stress harness generates its points in this process. One of them in a case file
+    // would be fabricated content in the artefact the reader keeps (product-brief 6).
+    if (!camera) return;
+    const devLayer: MapLayerDefinition = { ...camerasLayer, devOnly: true };
+    render(
+      <FeatureDetail
+        layer={devLayer}
+        feature={camera}
+        payload={payloadFor(devLayer)}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /save to a case/i })).not.toBeInTheDocument();
+  });
+});

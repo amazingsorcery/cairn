@@ -7,7 +7,14 @@ import { SUMMARY_MAX, summarySchema, uuidSchema } from "./common";
 import { directoryCacheKey, parseDirectoryFilters, parseSearchFilters } from "./filters";
 import { checkContiguousOrder, replacePlaybookStepsSchema } from "./playbooks";
 import { assertCostModelsAligned, inputTypesSchema, outputTypesSchema } from "./vocabulary";
-import { addWorkspaceItemSchema, createNoteSchema, NOTE_MAX } from "./workspaces";
+import {
+  addWorkspaceItemSchema,
+  createNoteSchema,
+  NOTE_MAX,
+  packSnapshotProperties,
+  savedFeatureSchema,
+  unpackSnapshotProperties,
+} from "./workspaces";
 
 const UUID = "0f8f7c2e-2f7a-4d1a-9c1e-6d1b0a0c2f3d";
 const UUID_B = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
@@ -78,22 +85,12 @@ describe("workspace item kind/reference pairing", () => {
     expect([...WORKSPACE_ITEM_KINDS]).toEqual(["tool", "checklistStep", "mapFeature"]);
   });
 
-  it("requires a snapshot for kind 'mapFeature', and neither FK", () => {
+  it("requires a feature reference for kind 'mapFeature', and neither FK", () => {
     // mapFeature is the kind with nothing to point at: its referent is a position an
     // upstream published for a moment. By the time the user reopens the case, that aircraft
     // has moved and that wildfire may be out. A dangling reference to something ephemeral
     // is worse than a snapshot — it silently becomes wrong rather than visibly becoming old.
-    const feature = {
-      sourceSlug: "usgs-earthquakes",
-      sourceName: "USGS Earthquake Hazards Program",
-      sourceKind: "earthquakes",
-      featureRef: "us7000abcd",
-      latitude: 38.1,
-      longitude: -122.4,
-      observedAt: "2026-08-31T12:00:00.000Z",
-      attribution: "USGS Earthquake Hazards Program",
-      licence: "public domain (US Government)",
-    };
+    const feature = { sourceSlug: "usgs-earthquakes", featureRef: "us7000abcd" };
 
     expect(
       addWorkspaceItemSchema.safeParse({
@@ -103,7 +100,7 @@ describe("workspace item kind/reference pairing", () => {
       }).success,
     ).toBe(true);
 
-    // Without the snapshot there is nothing to render later, and no way to recover it.
+    // Without the reference there is nothing to resolve, and no way to recover it.
     expect(
       addWorkspaceItemSchema.safeParse({ workspaceId: UUID, kind: "mapFeature" }).success,
     ).toBe(false);
@@ -119,25 +116,81 @@ describe("workspace item kind/reference pairing", () => {
     ).toBe(false);
   });
 
-  it("keeps the attribution on a saved feature, because the obligation outlives the source", () => {
-    // We cannot go back and ask what the licence was once the upstream has forgotten the
-    // feature, so a snapshot without a credit is unshippable at save time, not at render time.
-    const result = addWorkspaceItemSchema.safeParse({
+  it("gives a crafted request no field in which to send an attribution — QV-14", () => {
+    // ADR 0025 Consequences: the SERVER is the authority on attribution, licence, source
+    // name and title. The wire format carries the reference and nothing else, so there is
+    // nothing to blank rather than a blank that is later overwritten.
+    const parsed = addWorkspaceItemSchema.parse({
       workspaceId: UUID,
       kind: "mapFeature",
       feature: {
         sourceSlug: "usgs-earthquakes",
-        sourceName: "USGS",
-        sourceKind: "earthquakes",
         featureRef: "us7000abcd",
-        latitude: 38.1,
-        longitude: -122.4,
-        observedAt: "2026-08-31T12:00:00.000Z",
-        attribution: "",
-        licence: "public domain (US Government)",
+        attribution: " ",
+        licence: "",
+        sourceName: "Totally Made Up Observatory",
+        latitude: 0,
+        longitude: 0,
+        observedAt: "1970-01-01T00:00:00.000Z",
       },
     });
-    expect(result.success).toBe(false);
+
+    expect(parsed.feature).toEqual({
+      sourceSlug: "usgs-earthquakes",
+      featureRef: "us7000abcd",
+    });
+  });
+
+  it("refuses a whitespace attribution or licence on the way to the database — QV-14", () => {
+    // `.min(1)` accepted a single space and rendered as an empty credit line in the Markdown
+    // and PDF exports. ODbL, CC BY and the TfL terms make the credit a condition of use, so
+    // a blank one is a licence breach, not a cosmetic gap. `.trim()` runs first in Zod.
+    const snapshot = {
+      sourceSlug: "usgs-earthquakes",
+      sourceName: "USGS Earthquake Hazards Program",
+      sourceKind: "earthquakes",
+      featureRef: "us7000abcd",
+      label: "M 4.6 - 12 km SW of Petrolia",
+      latitude: 38.1,
+      longitude: -122.4,
+      observedAt: "2026-08-31T12:00:00.000Z",
+      attribution: "USGS Earthquake Hazards Program",
+      licence: "public domain (US Government)",
+    };
+
+    expect(savedFeatureSchema.safeParse(snapshot).success).toBe(true);
+    expect(savedFeatureSchema.safeParse({ ...snapshot, attribution: " " }).success).toBe(false);
+    expect(savedFeatureSchema.safeParse({ ...snapshot, licence: "\t\n " }).success).toBe(false);
+    expect(savedFeatureSchema.safeParse({ ...snapshot, label: "  " }).success).toBe(false);
+    expect(savedFeatureSchema.safeParse({ ...snapshot, sourceName: "" }).success).toBe(false);
+  });
+
+  it("carries the precision caveat through the properties column and back", () => {
+    // `workspace_feature_snapshots` has no `precision` column. Without this round trip an
+    // NWS alert exports a precise-looking coordinate months later with nothing left to say
+    // it is an administrative centroid tens of kilometres from the weather.
+    const packed = packSnapshotProperties(
+      { event: "Flood Warning", severity: "Severe" },
+      {
+        label: "approx - zone centre",
+        note: "This alert names administrative zones rather than a polygon, so the coordinate is the centre of one zone.",
+        approximateRadiusMetres: 30000,
+      },
+    );
+
+    // Every adapter property stays exactly where db/schema.ts says it is: top level.
+    expect(packed.event).toBe("Flood Warning");
+
+    const unpacked = unpackSnapshotProperties(packed);
+    expect(unpacked.properties).toEqual({ event: "Flood Warning", severity: "Severe" });
+    expect(unpacked.precision?.approximateRadiusMetres).toBe(30000);
+    expect(unpacked.precision?.label).toBe("approx - zone centre");
+
+    // No caveat means no caveat, not an empty one. Caveating everything is caveating nothing.
+    expect(unpackSnapshotProperties(packSnapshotProperties({ a: 1 }, null)).precision).toBeNull();
+    // A row written by an older build is an unvalidated boundary like any other.
+    expect(unpackSnapshotProperties(null)).toEqual({ properties: {}, precision: null });
+    expect(unpackSnapshotProperties({ $precision: "nonsense" }).precision).toBeNull();
   });
 
   it("requires toolId for kind 'tool'", () => {

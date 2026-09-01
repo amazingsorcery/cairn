@@ -61,6 +61,42 @@ export function renderCaseMarkdown(doc: CaseDocument): string {
     }
   }
 
+  /*
+   * SAVED MAP FEATURES. Every one carries its credit and its licence INLINE, beside the
+   * feature (ADR 0025, ADR 0011 rule 2) — a line at the foot of the file does not satisfy
+   * ODbL, CC BY or the TfL terms, and this file gets pasted into other documents in pieces.
+   *
+   * Observed and saved are both printed and never collapsed: one is the upstream's instant,
+   * the other is ours.
+   */
+  out.push(`## Saved from the map — ${doc.counts.features}`, "");
+  if (doc.features.length === 0) {
+    out.push("_No map features saved in this case._", "");
+  } else {
+    for (const feature of doc.features) {
+      out.push(`### ${feature.title}`, "");
+      out.push(`- Observed: ${feature.observedAt}`);
+      out.push(`- Position: ${feature.coordinates}`);
+      if (feature.precisionNote) {
+        // The caveat goes UNDER the number it qualifies, in a full sentence. An export never
+        // calls the map's renderer, so this is the only place it can be said.
+        out.push(`  - Approximate position. ${feature.precisionNote}`);
+      }
+      if (feature.altitudeMetres !== null) {
+        out.push(`- Altitude: ${Math.round(feature.altitudeMetres)} m`);
+      }
+      out.push(`- Source: ${feature.sourceName} (${feature.sourceSlug}, ${feature.sourceKind})`);
+      out.push(`- Source record: ${feature.featureRef}`);
+      if (feature.sourceUrl) out.push(`- Origin: ${feature.sourceUrl}`);
+      out.push(`- Attribution: ${feature.attribution}`);
+      out.push(`- Licence: ${feature.licence}`);
+      for (const property of feature.properties) {
+        out.push(`- ${property.key}: ${property.value}`);
+      }
+      out.push(`- Saved to this case: ${feature.savedAt}`, "");
+    }
+  }
+
   out.push(`## Notes — ${doc.counts.notes}`, "");
   const anchored = doc.counts.notes - doc.notes.length;
   if (anchored > 0) {

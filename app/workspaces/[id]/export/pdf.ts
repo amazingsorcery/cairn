@@ -125,6 +125,38 @@ export function renderCasePdf(caseDoc: CaseDocument): Promise<Buffer> {
         }
       }
 
+      /*
+       * The credit sits WITH the feature, on the same page as the coordinate it belongs to
+       * (ADR 0025, ADR 0011 rule 2). A licence condition satisfied only by a line at the end
+       * of the document is not satisfied for a reader who prints page two.
+       */
+      heading(doc, `Saved from the map — ${caseDoc.counts.features}`, 13);
+      if (caseDoc.features.length === 0) {
+        body(doc, "No map features saved in this case.", { muted: true });
+      } else {
+        for (const feature of caseDoc.features) {
+          doc.font("Helvetica-Bold").fontSize(10).fillColor("#111111").text(feature.title);
+          mono(doc, `observed        ${feature.observedAt}`, 12);
+          mono(doc, `position        ${feature.coordinates}`, 12);
+          if (feature.precisionNote) {
+            body(doc, `Approximate position. ${feature.precisionNote}`, { indent: 12 });
+          }
+          if (feature.altitudeMetres !== null) {
+            mono(doc, `altitude        ${Math.round(feature.altitudeMetres)} m`, 12);
+          }
+          mono(doc, `source          ${feature.sourceName} (${feature.sourceSlug})`, 12);
+          mono(doc, `source record   ${feature.featureRef}`, 12);
+          if (feature.sourceUrl) mono(doc, `origin          ${feature.sourceUrl}`, 12);
+          mono(doc, `attribution     ${feature.attribution}`, 12);
+          mono(doc, `licence         ${feature.licence}`, 12);
+          for (const property of feature.properties) {
+            mono(doc, `${property.key.padEnd(15).slice(0, 15)} ${property.value}`, 12);
+          }
+          mono(doc, `saved           ${feature.savedAt}`, 12);
+          doc.moveDown(0.4);
+        }
+      }
+
       heading(doc, `Notes — ${caseDoc.counts.notes}`, 13);
       const anchored = caseDoc.counts.notes - caseDoc.notes.length;
       if (anchored > 0) {

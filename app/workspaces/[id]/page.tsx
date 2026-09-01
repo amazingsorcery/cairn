@@ -6,6 +6,7 @@ import { Checklist } from "@/components/workspaces/checklist";
 import { NoteComposer } from "@/components/workspaces/note-composer";
 import { NoteCard } from "@/components/workspaces/note-card";
 import { Region } from "@/components/workspaces/region";
+import { SavedFeatures } from "@/components/workspaces/saved-features";
 import { SavedTools } from "@/components/workspaces/saved-tools";
 import { WorkspaceHeader } from "@/components/workspaces/workspace-header";
 import { Breadcrumb } from "@/components/ui/breadcrumb";
@@ -17,8 +18,9 @@ import { toolFactsFor } from "./tool-facts";
 /**
  * `/workspaces/[id]` — the whole case on ONE page.
  *
- * Three regions, not three routes (sitemap.md 7): splitting them would triple the round
- * trips for a view whose entire value is having the case in front of you at once.
+ * Four regions, not four routes (sitemap.md 7): splitting them would multiply the round
+ * trips for a view whose entire value is having the case in front of you at once. The fourth
+ * — "saved from the map" — arrived with ADR 0025; `states.md` 7.2 predates it and names three.
  *
  * A NON-OWNER GETS 404, NOT 403 (architecture HANDOFF 11 assertion 2). `getWorkspace` binds
  * `where id = $1 and user_id = $2` and returns null for both "does not exist" and "is not
@@ -39,7 +41,8 @@ export const dynamic = "force-dynamic";
 
 export const metadata = pageMetadata({
   title: "Case",
-  description: "A case workspace: checklist, saved tools and timestamped notes.",
+  description:
+    "A case workspace: checklist, saved tools, features saved from the map, and timestamped notes.",
   path: "/workspaces",
   index: false,
 });
@@ -108,13 +111,14 @@ export default async function WorkspaceDetailPage({
             notes: workspace.notes.length,
             tools: workspace.savedTools.length,
             steps: workspace.checklist.length,
+            features: workspace.savedFeatures.length,
           }}
         />
       </div>
 
       {/* One polite live region for the route (HANDOFF-shell 10.1). */}
       <p aria-live="polite" className="sr-only">
-        {`${checkedCount} of ${workspace.checklist.length} checklist steps done, ${workspace.savedTools.length} saved tools, ${workspace.notes.length} notes`}
+        {`${checkedCount} of ${workspace.checklist.length} checklist steps done, ${workspace.savedTools.length} saved tools, ${workspace.savedFeatures.length} saved map features, ${workspace.notes.length} notes`}
       </p>
 
       {allDone && workspace.status === "active" ? (
@@ -145,6 +149,21 @@ export default async function WorkspaceDetailPage({
           countLabel="saved tools"
         >
           <SavedTools items={workspace.savedTools} facts={facts} />
+        </Region>
+
+        {/*
+          SAVED FROM THE MAP — the fourth region, and the only one whose rows are a record
+          rather than a reference to one. A saved tool points at a catalogue entry that can be
+          re-checked; a saved feature points at nothing, because the upstream has forgotten it
+          (ADR 0025). It renders even when empty, like the other three, so a reader learns the
+          surface exists rather than only discovering it by accident on the map.
+        */}
+        <Region
+          title="Saved from the map"
+          count={String(workspace.savedFeatures.length)}
+          countLabel="saved map features"
+        >
+          <SavedFeatures items={workspace.savedFeatures} />
         </Region>
 
         <Region title="Notes" count={String(caseNotes.length)} countLabel="case notes">
