@@ -47,7 +47,18 @@ ENV PNPM_HOME="/pnpm" \
 # corepack ships with Node 22. `corepack enable` makes the `pnpm` shim available; the shim
 # then reads the "packageManager" field in package.json and materialises exactly that
 # version (pnpm@11.1.3), so the container and CI cannot drift from the lockfile's producer.
-RUN corepack enable
+#
+# `corepack prepare --activate` is not optional here, and the first real deploy is what
+# proved it. The shim downloads pnpm ON FIRST USE, at RUN TIME. The migrate container runs
+# on the `backend` network, which is `internal: true` and has no route to the internet — by
+# design, since the database must not be reachable from outside. So `pnpm db:migrate` died
+# with `getaddrinfo EAI_AGAIN registry.npmjs.org` and took the deploy with it.
+#
+# Preparing the version at BUILD time, when the network is available, bakes the tarball into
+# the image. Nothing is fetched at run time, which is also the correct property for a
+# migration step: it must not depend on npm being reachable, or up, at the moment you are
+# trying to fix production.
+RUN corepack enable && corepack prepare pnpm@11.1.3 --activate
 
 WORKDIR /app
 
