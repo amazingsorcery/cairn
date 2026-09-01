@@ -122,6 +122,27 @@ async function harness() {
   return { runConnector, flightsDriver };
 }
 
+/**
+ * A fixed window boundary, NOT `new Date()`.
+ *
+ * This mock stands in for `lib/rate-limit.ts`, whose `resetAt` is the end of the actor's
+ * current fixed window (ADR 0009) — the same instant for every call inside that window, and
+ * derived from the *caller's* own key rather than from anything another reader did.
+ *
+ * It was `new Date()`, evaluated afresh on every call, which made this file fail roughly
+ * three runs in eight: the byte-identity assertion below compares a probe against a control
+ * made microseconds apart, and whenever the two straddled a millisecond tick the envelopes
+ * differed by one digit of `quotaResetsAt`. The defect was in the harness, not in the
+ * product — but a security test that fails a third of the time teaches people to re-run it
+ * until it is green, which is how a real regression gets waved through.
+ *
+ * A constant is no weaker than a moving clock here: the mock's value never depended on any
+ * per-subject state, so it could not have carried the leak this file is testing for. Making
+ * it constant models the real limiter more faithfully and removes the only non-deterministic
+ * field from the comparison. The assertions are untouched.
+ */
+const WINDOW_RESET_AT = new Date("2026-09-01T00:01:00.000Z");
+
 /** A per-subject budget, so "the attacker spends their own quota" is a real thing here. */
 function budgetedConsume(limits: Readonly<Record<string, number>>): void {
   const used = new Map<string, number>();
@@ -130,7 +151,13 @@ function budgetedConsume(limits: Readonly<Record<string, number>>): void {
     const count = (used.get(key) ?? 0) + 1;
     used.set(key, count);
     const limit = limits[action] ?? 1000;
-    return { ok: count <= limit, count, limit, remaining: Math.max(0, limit - count), resetAt: new Date() };
+    return {
+      ok: count <= limit,
+      count,
+      limit,
+      remaining: Math.max(0, limit - count),
+      resetAt: WINDOW_RESET_AT,
+    };
   });
 }
 
