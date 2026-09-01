@@ -96,16 +96,22 @@ const METRES_PER_DEGREE = 111_320;
  * the difference is far below the width of the line, and a geodesic ring would be precision
  * the input does not have.
  */
+function ringExtent(latitude: number, radiusMetres: number): { lat: number; lon: number } {
+  /* Guard the pole: `cos(90°)` is zero and would send the longitude offset to infinity. */
+  const cosLat = Math.max(0.01, Math.cos((latitude * Math.PI) / 180));
+  return {
+    lat: radiusMetres / METRES_PER_DEGREE,
+    lon: radiusMetres / (METRES_PER_DEGREE * cosLat),
+  };
+}
+
 function accuracyRing(
   latitude: number,
   longitude: number,
   radiusMetres: number,
 ): GeoJSON.FeatureCollection {
   const steps = 64;
-  const dLat = radiusMetres / METRES_PER_DEGREE;
-  /* Guard the pole: `cos(90°)` is zero and would send the longitude offset to infinity. */
-  const cosLat = Math.max(0.01, Math.cos((latitude * Math.PI) / 180));
-  const dLon = radiusMetres / (METRES_PER_DEGREE * cosLat);
+  const { lat: dLat, lon: dLon } = ringExtent(latitude, radiusMetres);
 
   const ring: [number, number][] = [];
   for (let i = 0; i <= steps; i += 1) {
@@ -191,11 +197,28 @@ export default function PointMap({
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     reducedMotionRef.current = reducedMotion;
 
+    /*
+     * A coordinate that names an area is framed by that area, not by a fixed zoom. A 1 km
+     * MGRS square at zoom 15 fills the whole box and reads as a stray arc across the map,
+     * which tells the reader nothing about how coarse their input was — and how coarse the
+     * input was is the thing this preview exists to show.
+     */
+    const ring = accuracyMetres !== undefined && accuracyMetres > 1 ? ringExtent(latitude, accuracyMetres) : null;
+
     const map = new MapLibreMap({
       container,
       style: mapTiles.styleUrl,
       center: [longitude, latitude],
       zoom,
+      ...(ring
+        ? {
+            bounds: [
+              [longitude - ring.lon, latitude - ring.lat],
+              [longitude + ring.lon, latitude + ring.lat],
+            ] as [[number, number], [number, number]],
+            fitBoundsOptions: { padding: 36, animate: false, maxZoom: zoom },
+          }
+        : {}),
       /* Our own controls: MapLibre's are 29px and the floor here is 44 (HANDOFF-shell §10.4). */
       attributionControl: false,
       /*
@@ -255,7 +278,7 @@ export default function PointMap({
      * Once the map exists the reader owns the viewport, and the effect below moves the marker
      * without tearing the map down.
      */
-  }, [latitude, longitude, zoom]);
+  }, [latitude, longitude, zoom, accuracyMetres]);
 
   /** Move the marker and re-centre as the coordinate changes, without rebuilding the map. */
   React.useEffect(() => {

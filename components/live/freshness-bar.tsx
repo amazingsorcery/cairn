@@ -35,6 +35,7 @@ const UNAVAILABLE_ICON: Record<LiveReason, LucideIcon> = {
   "quota-exhausted": Info,
   "rate-limited": Info,
   disabled: PowerOff,
+  "bad-request": Info,
 };
 
 /**
@@ -52,6 +53,9 @@ const UNAVAILABLE_TONE: Record<LiveReason, "destructive" | "info"> = {
   "quota-exhausted": "info",
   "rate-limited": "info",
   disabled: "info",
+  // `info`, not `destructive`: we rejected the parameters, nothing is broken and no third
+  // party is at fault. Colouring our own refusal as an outage blames the wrong party.
+  "bad-request": "info",
 };
 
 const TONE_CLASS = {

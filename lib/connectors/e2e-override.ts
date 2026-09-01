@@ -92,6 +92,7 @@ const DEFAULT_MESSAGE: Record<DegradedReason, string> = {
   "quota-exhausted": "You have reached the limit for this source. Forced by E2E_CONNECTOR_STATE.",
   "rate-limited": "The upstream is rate-limiting us. Forced by E2E_CONNECTOR_STATE.",
   disabled: "This live source is switched off. No request was made.",
+  "bad-request": "That request could not be understood. Forced by E2E_CONNECTOR_STATE.",
 };
 
 /**

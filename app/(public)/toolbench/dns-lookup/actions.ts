@@ -3,14 +3,11 @@
 import { z } from "zod";
 
 import { dnsDriver } from "@/lib/connectors/dns";
-import {
-  invalidInput,
-  runToolConnector,
-  toLookupOutcome,
-  toolbenchActor,
-} from "@/lib/connectors/toolbench";
+import { runConnector } from "@/lib/connectors/runtime";
+import { toolbenchActor } from "@/lib/connectors/actor";
+import { invalidInput, toLookupOutcome } from "@/lib/connectors/toolbench";
 import type { DnsLookup } from "@/lib/toolbench/dns";
-import type { LookupOutcome } from "@/lib/toolbench/lookup";
+import type { LookupOutcome } from "@/lib/toolbench/connector-envelope";
 import { normaliseHostname } from "@/lib/toolbench/net-target";
 
 /**
@@ -35,6 +32,6 @@ export async function lookupDns(raw: unknown): Promise<LookupOutcome<DnsLookup>>
   const name = normaliseHostname(parsed.data.name);
   if (!name.ok) return invalidInput(name.error);
 
-  const envelope = await runToolConnector(dnsDriver, { name: name.value }, await toolbenchActor());
+  const envelope = await runConnector(dnsDriver, { name: name.value }, await toolbenchActor());
   return toLookupOutcome(envelope);
 }

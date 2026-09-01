@@ -3,27 +3,48 @@ import { z } from "zod";
 import { fail, ok, type ToolResult } from "./result";
 
 /**
- * The envelope a Toolbench route handler returns, and the sentence a reader gets for each
- * way it can be degraded.
+ * The one vocabulary the Toolbench uses for a connector-backed answer, in both directions it
+ * can arrive: parsed off the wire from a Route Handler, or returned directly from a Server
+ * Action.
  *
- * Two tools here send a query through `lib/connectors/` — the Overpass builder and the
- * broadcast finder — and both need the same thing: a client-side parse of the response that
- * cannot throw, and copy that distinguishes the four degraded states ADR 0011 rule 5 names.
- * "Something went wrong" is not one of them.
+ * MERGED FROM TWO MODULES. `lib/toolbench/lookup.ts` and this file were written the same day
+ * by two agents solving the same problem for two transports, and expressed the same six
+ * states with the same reasoning in two vocabularies. Two names for one concept is how a
+ * surface ends up rendering "something went wrong" because the copy lived in the other one.
+ *
+ * Both transports are still supported and neither is a compatibility shim:
+ *
+ *   - **Route Handlers** (`/toolbench/overpass`, the broadcast finder) return JSON, so the
+ *     response is `unknown` and has to be parsed: `connectorEnvelopeSchema` + `parseEnvelope`.
+ *   - **Server Actions** (the four network tools) are typed end to end, so there is nothing
+ *     to parse and the payload keeps its type: `LookupOutcome<T>`.
+ *
+ * Underneath both sits ONE reason vocabulary and ONE copy table, so a reader gets the same
+ * sentence for the same condition whichever tool they are on.
  *
  * The distinctions are not pedantry. `quota-exhausted` means we refused the caller against a
  * ceiling we chose, and waiting will fix it. `rate-limited` means the upstream refused us,
  * and the correct behaviour is to stop asking. `disabled` means an operator turned it off,
- * which is a decision and not a fault. A reader who is told the wrong one retries the wrong
- * thing.
+ * which is a decision and not a fault. `bad-request` means we rejected what was typed and
+ * called nobody. A reader who is told the wrong one retries the wrong thing.
  */
 
+/**
+ * Mirrors `DegradedReason` in `lib/connectors/types.ts`, value for value.
+ *
+ * Deliberately duplicated rather than imported, for one reason: `lib/connectors/` throws on
+ * load in a browser bundle by design, and these values are needed by Client Components. The
+ * duplication is not left to memory — `connector-envelope.test.ts` asserts the two lists are
+ * identical, so adding a seventh reason on the server and forgetting it here fails a test
+ * rather than silently rendering a blank panel for a state that now exists.
+ */
 export const DEGRADED_REASONS = [
   "upstream-down",
   "stale",
   "quota-exhausted",
   "rate-limited",
   "disabled",
+  "bad-request",
 ] as const;
 
 export type DegradedReason = (typeof DEGRADED_REASONS)[number];
@@ -74,7 +95,7 @@ const DEGRADED_COPY: Readonly<Record<DegradedReason, DegradedCopy>> = {
   "upstream-down": {
     title: "The source did not answer",
     detail:
-      "The upstream service could not be reached or did not respond in time. Nothing is wrong with your query. Try again in a minute.",
+      "The upstream could not be reached, did not respond in time, or answered something unusable. Nothing is wrong with your query. THIS IS NOT A RESULT: it says nothing at all about what you looked up, so do not record it as an absence of data. Try again in a minute, and if it persists check the source directly before drawing any conclusion.",
     retryable: true,
   },
   stale: {
@@ -101,6 +122,12 @@ const DEGRADED_COPY: Readonly<Record<DegradedReason, DegradedCopy>> = {
       "An operator has not enabled this connector, or it has no recorded legal basis on file. No request was made. This is a decision rather than a fault, and everything on this page that runs in your browser still works.",
     retryable: false,
   },
+  "bad-request": {
+    title: "That input was not accepted",
+    detail:
+      "We rejected the query before calling anyone, so nothing was sent anywhere. The message above says what to change. This is a fault in the input rather than in the source.",
+    retryable: true,
+  },
 };
 
 export function describeDegraded(reason: DegradedReason): DegradedCopy {
@@ -123,4 +150,59 @@ export function formatAge(seconds: number | null): string {
   const minutes = Math.round(seconds / 60);
   if (minutes < 90) return `${minutes} minutes ago`;
   return `${Math.round(minutes / 60)} hours ago`;
+}
+
+
+/* ------------------------------------------------------------------ *
+ * The Server Action shape
+ * ------------------------------------------------------------------ */
+
+/**
+ * What a server-side Toolbench lookup returns to the browser when the transport is a Server
+ * Action rather than a Route Handler.
+ *
+ * TWO OUTCOMES, NOT MORE. A Server Action is typed end to end, so on success the payload
+ * keeps its type and there is nothing to parse; on failure there is exactly one thing the UI
+ * needs, which is the `reason`. An earlier version of this union carried a third `invalid`
+ * member for a refused input — that is now `unavailable` with `reason: "bad-request"`, which
+ * is one fewer concept and uses the same vocabulary as every other surface.
+ *
+ * There is no pending state in this union, on purpose: pending is the client's business and
+ * belongs to `useTransition`, not to a value the server returns.
+ */
+export type LookupOutcome<T> =
+  | {
+      readonly status: "ok";
+      readonly data: T;
+      /** ISO 8601. The instant the upstream answered, not the instant we rendered. */
+      readonly fetchedAt: string;
+      /** True when this is a cached payload past its TTL, served because a refresh failed. */
+      readonly stale: boolean;
+      /** Rendered next to the data, never in a footer. Null only when none is owed. */
+      readonly attribution: string | null;
+      /** Present on a stale answer: one sentence saying why it was not refreshed. */
+      readonly note: string | null;
+    }
+  | {
+      readonly status: "unavailable";
+      readonly reason: DegradedReason;
+      /** One sentence, safe to render verbatim. Never an upstream body, a stack or a URL. */
+      readonly message: string;
+      readonly attribution: string | null;
+    };
+
+/**
+ * Did anything actually leave our server?
+ *
+ * Worth having as a function rather than a comment: three of the six reasons mean we refused
+ * before calling anyone, and a page that says "the source is unavailable" when no source was
+ * contacted is telling the reader something false about a third party.
+ */
+export function madeARequest(outcome: LookupOutcome<unknown>): boolean {
+  if (outcome.status === "ok") return true;
+  return (
+    outcome.reason !== "disabled" &&
+    outcome.reason !== "quota-exhausted" &&
+    outcome.reason !== "bad-request"
+  );
 }

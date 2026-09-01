@@ -10,7 +10,7 @@ import {
   visibilityAssessment,
   type IpIntelligence,
 } from "@/lib/toolbench/ip-intel";
-import type { LookupOutcome } from "@/lib/toolbench/lookup";
+import type { LookupOutcome } from "@/lib/toolbench/connector-envelope";
 import { Announcer, useAnnounce } from "./announcer";
 import { EmptyResult, IsoDate, LookupForm, LookupStatus, Provenance } from "./network-tool-shell";
 import { OutputRow, ToolPanel } from "./output-row";

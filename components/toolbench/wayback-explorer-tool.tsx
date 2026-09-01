@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import type { CapturePair } from "@/lib/connectors/wayback";
-import type { LookupOutcome } from "@/lib/toolbench/lookup";
+import type { LookupOutcome } from "@/lib/toolbench/connector-envelope";
 import {
   collapseUnchanged,
   diffLines,

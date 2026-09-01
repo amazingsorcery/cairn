@@ -3,14 +3,11 @@
 import { z } from "zod";
 
 import { ripeStatDriver } from "@/lib/connectors/ripestat";
-import {
-  invalidInput,
-  runToolConnector,
-  toLookupOutcome,
-  toolbenchActor,
-} from "@/lib/connectors/toolbench";
+import { runConnector } from "@/lib/connectors/runtime";
+import { toolbenchActor } from "@/lib/connectors/actor";
+import { invalidInput, toLookupOutcome } from "@/lib/connectors/toolbench";
 import type { IpIntelligence } from "@/lib/toolbench/ip-intel";
-import type { LookupOutcome } from "@/lib/toolbench/lookup";
+import type { LookupOutcome } from "@/lib/toolbench/connector-envelope";
 import { normalisePublicIp } from "@/lib/toolbench/net-target";
 
 /**
@@ -36,7 +33,7 @@ export async function lookupIp(raw: unknown): Promise<LookupOutcome<IpIntelligen
   const ip = normalisePublicIp(parsed.data.resource);
   if (!ip.ok) return invalidInput(ip.error);
 
-  const envelope = await runToolConnector(
+  const envelope = await runConnector(
     ripeStatDriver,
     { resource: ip.value.address },
     await toolbenchActor(),

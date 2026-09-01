@@ -137,13 +137,13 @@ export const overpassDriver: ConnectorDriver<OverpassParams, OverpassPayload> = 
     /**
      * BELT AND BRACES ON THE REGISTRY ROW.
      *
-     * `runConnector` resolves its row by `kind`, and several connectors now share
-     * `infrastructure`. During development that handed this driver a DNS resolver's row and
-     * it POSTed an Overpass query at `https://cloudflare-dns.com/api/interpreter` — the
-     * request went out, to the wrong operator, under the wrong quota and the wrong recorded
-     * legal basis. The caller (`runToolConnector`) now resolves by slug, and this check
-     * exists so that a future caller which does not cannot repeat it. A driver must never
-     * send its payload to a host it does not recognise.
+     * `runConnector` used to resolve its row by `kind`, and several connectors now share
+     * `infrastructure`. That handed this driver a DNS resolver's row and it POSTed an
+     * Overpass query at `https://cloudflare-dns.com/api/interpreter` — the request went out,
+     * to the wrong operator, under the wrong quota and the wrong recorded legal basis, and
+     * it presented as an ordinary "source unreachable". `runtime.ts` resolves by slug now,
+     * and this check stays so that a future caller which does not cannot repeat it. A driver
+     * must never send its payload to a host it does not recognise.
      */
     const base = connector.baseUrl.replace(/\/+$/, "");
     if (new URL(base).hostname !== OVERPASS_HOST) {

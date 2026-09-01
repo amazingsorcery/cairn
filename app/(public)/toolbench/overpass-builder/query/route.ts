@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { auth } from "@/lib/auth";
 import { overpassDriver } from "@/lib/connectors/overpass";
-import { runToolConnector } from "@/lib/connectors/toolbench";
+import { runConnector } from "@/lib/connectors/runtime";
 import { clientSubject } from "@/lib/rate-limit";
 
 /**
@@ -26,14 +26,13 @@ import { clientSubject } from "@/lib/rate-limit";
  * attempt to record.
  *
  * ── WHICH REGISTRY ROW ─────────────────────────────────────────────────────
- * Through `runToolConnector`, NOT `runConnector` directly. `runConnector` resolves its row
- * with `getLiveConnector(driver.kind)`, and several connectors now share one kind — every
- * Toolbench source is `infrastructure`. Resolving by kind hands this driver whichever row
- * sorts first alphabetically, which during development meant an Overpass query being POSTed
- * at a DNS resolver's base URL, successfully, with the wrong attribution and the wrong quota
- * envelope. `runToolConnector` resolves by slug and re-applies the same four fail-closed
- * live conditions before handing the row to `runConnector`. The proper fix is a `slug`
- * option on `runConnector` itself, which is a change to a file this role does not own.
+ * `runConnector` resolves it by `driver.slug`. It used to resolve by `driver.kind`, and
+ * several connectors now share one kind — every Toolbench source is `infrastructure` — so it
+ * handed this driver whichever row sorted first alphabetically. During development that
+ * meant an Overpass query being POSTed at a DNS resolver's base URL, successfully, with the
+ * wrong attribution and the wrong quota envelope. That is fixed in `runtime.ts` itself, and
+ * the `runToolConnector` wrapper that worked around it has been deleted rather than left
+ * behind as a second way to do the same thing.
  *
  * Always answers 200 with an envelope. The reader needs to know whether the query was
  * refused by us, refused by them, or ran and found nothing, and those are three different
@@ -58,7 +57,7 @@ export async function POST(request: Request): Promise<Response> {
     raw = {};
   }
 
-  const envelope = await runToolConnector(overpassDriver, raw, { subject });
+  const envelope = await runConnector(overpassDriver, raw, { subject });
 
   return NextResponse.json(
     {

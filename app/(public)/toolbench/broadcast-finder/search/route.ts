@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { auth } from "@/lib/auth";
 import { broadcastDriver } from "@/lib/connectors/broadcast";
-import { runToolConnector } from "@/lib/connectors/toolbench";
+import { runConnector } from "@/lib/connectors/runtime";
 import { clientSubject } from "@/lib/rate-limit";
 
 /**
@@ -27,11 +27,11 @@ import { clientSubject } from "@/lib/rate-limit";
  * never be.
  *
  * ── WHICH REGISTRY ROW ─────────────────────────────────────────────────────
- * Through `runToolConnector`, which resolves the row BY SLUG. `runConnector` resolves by
- * kind, and a kind now holds several connectors; resolving by kind is how a driver ends up
- * pointed at another source's base URL with another source's quota. The row this uses is the
- * existing `radio-browser` one — the same operator, terms and kill-switch as the map layer,
- * because it is the same upstream.
+ * `runConnector` resolves it BY SLUG. It used to resolve by kind, and a kind now holds
+ * several connectors; resolving by kind is how a driver ends up pointed at another source's
+ * base URL with another source's quota. The row this uses is the existing `radio-browser`
+ * one — the same operator, terms and kill-switch as the map layer, because it is the same
+ * upstream.
  *
  * Always answers 200 with an envelope, even when the upstream is down: an HTTP error would
  * hand the client an error boundary and lose the reason, and the reason is what the reader
@@ -63,7 +63,7 @@ export async function POST(request: Request): Promise<Response> {
     raw = {};
   }
 
-  const envelope = await runToolConnector(broadcastDriver, raw, { subject });
+  const envelope = await runConnector(broadcastDriver, raw, { subject });
 
   return NextResponse.json(
     {

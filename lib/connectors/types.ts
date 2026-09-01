@@ -51,13 +51,24 @@ export type ConnectorState = "fresh" | "stale" | "unavailable";
  *                         stop polling on this reason (see `lib/connectors/runtime.ts`).
  *  - `disabled`         — an operator turned the kill-switch off, or the connector has no
  *                         recorded legal basis. Not a fault; a decision.
+ *  - `bad-request`      — WE refused the caller's parameters before calling anyone. Nothing
+ *                         left the building and nothing is wrong upstream.
+ *
+ * `bad-request` was added because a grammar failure was reporting `upstream-down`: the right
+ * sentence ("that request could not be understood") attached to the wrong reason. Every
+ * surface that branches on `reason` therefore told the reader a third party was having a bad
+ * day when the truth was that we had rejected what they typed — and on the Toolbench, where a
+ * user supplies the parameters, that is the difference between "fix your input" and "try
+ * again later". It is also the difference between an operator seeing a spike of upstream
+ * failures and seeing a spike of malformed requests, which lead to opposite investigations.
  */
 export type DegradedReason =
   | "upstream-down"
   | "stale"
   | "quota-exhausted"
   | "rate-limited"
-  | "disabled";
+  | "disabled"
+  | "bad-request";
 
 /**
  * A connector NEVER throws for an expected failure. It returns a degraded envelope.

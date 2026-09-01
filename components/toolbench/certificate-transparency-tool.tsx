@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import type { CertificateSummary, HostnameFinding } from "@/lib/toolbench/ct";
 import { resolvableHostnames } from "@/lib/toolbench/ct";
-import type { LookupOutcome } from "@/lib/toolbench/lookup";
+import type { LookupOutcome } from "@/lib/toolbench/connector-envelope";
 import { Announcer, useAnnounce } from "./announcer";
 import { CopyButton } from "./copy-button";
 import {

@@ -39,6 +39,11 @@ import type { ConnectorDriver } from "./types";
  *    service was under load; the tool rendered "no logged certificates mention ripe.net",
  *    which is the exact false negative this product exists not to produce.
  *
+ *    CONFIRMED BY MEASUREMENT, 2026-09-01 05:16: the identical query for `ripe.net` returned
+ *    **404 in 2.6 s and then 502 within seconds**, and had returned 200 with 4,375 rows
+ *    earlier the same hour. A 404 from this service is a failure mode, not a negative result,
+ *    and nothing in the response distinguishes it from one that is.
+ *
  *    So a 404 is now an upstream failure. The cost is a domain genuinely absent from the logs
  *    reading as "the source did not answer" rather than as "nothing found" — a wrong status,
  *    which the reader can retry and check. The alternative was a wrong finding, which they

@@ -8,10 +8,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  ageSeconds,
-  describeAge,
+  describeDegraded,
+  envelopeAgeSeconds,
+  formatAge,
   type LookupOutcome,
-} from "@/lib/toolbench/lookup";
+} from "@/lib/toolbench/connector-envelope";
 import { cn } from "@/lib/utils";
 import { useAnnounce } from "./announcer";
 import { FieldError } from "./output-row";
@@ -116,75 +117,54 @@ export function LookupForm({
  * The four outcomes
  * ------------------------------------------------------------------ */
 
-/** Copy for each failure, written so a reader knows whether to retry, wait, or stop. */
-const FAILURE_COPY: Readonly<
-  Record<
-    "disabled" | "quota-exhausted" | "rate-limited" | "upstream-down",
-    { title: string; guidance: string }
-  >
-> = {
-  disabled: {
-    title: "This source is switched off",
-    guidance:
-      "No request was made. An operator turns each source on deliberately after reviewing the terms we recorded for it, so this is a decision rather than a fault. Everything else on this page — the technique, its limits and the worked example — still applies.",
-  },
-  "quota-exhausted": {
-    title: "This tool has reached its own limit",
-    guidance:
-      "This is our ceiling, not the source's, and nothing left this server. We cap our own traffic so that a burst from here never becomes a burden on a free public service. It clears within a minute.",
-  },
-  "rate-limited": {
-    title: "The source asked us to slow down",
-    guidance:
-      "This one is theirs, not ours, and it is the only failure here where retrying would be wrong rather than merely useless. We have stopped calling until the cooldown expires.",
-  },
-  "upstream-down": {
-    title: "The source did not answer",
-    guidance:
-      "This is not a result. It says nothing at all about what you looked up — do not record it as an absence of data. Try again in a few minutes, and if it persists, check the source directly before drawing any conclusion.",
-  },
-};
-
+/**
+ * The four (now six) honest failure states.
+ *
+ * The copy is NOT written here. It comes from `describeDegraded` in
+ * `lib/toolbench/connector-envelope.ts`, which is also what the Overpass builder and the
+ * broadcast finder render — so a reader who meets "the source asked us to slow down" on one
+ * tool meets the same sentence on the others. This component used to carry its own table,
+ * which is how two tools end up disagreeing about what `rate-limited` means.
+ *
+ * `bad-request` is given its own icon and tone: it is the only reason that is about the
+ * reader's input rather than about a third party, and telling somebody a source is down when
+ * we rejected what they typed sends them to check the wrong thing.
+ */
 export function LookupStatus({ outcome }: { outcome: LookupOutcome<unknown> | null }) {
   const announce = useAnnounce();
 
   React.useEffect(() => {
-    if (outcome === null) return;
-    if (outcome.status === "invalid") announce(`That input was not accepted. ${outcome.message}`);
-    else if (outcome.status === "unavailable") {
-      announce(`${FAILURE_COPY[outcome.reason].title}. No results.`);
-    }
+    if (outcome === null || outcome.status === "ok") return;
+    const { title } = describeDegraded(outcome.reason);
+    announce(
+      outcome.reason === "bad-request"
+        ? `That input was not accepted. ${outcome.message}`
+        : `${title}. No results.`,
+    );
   }, [outcome, announce]);
 
   if (outcome === null || outcome.status === "ok") return null;
 
-  if (outcome.status === "invalid") {
-    return (
-      <Alert variant="warning" className="mt-6">
-        <ShieldAlert aria-hidden="true" />
-        <AlertTitle>That is not something this tool can look up</AlertTitle>
-        <AlertDescription>
-          <p>{outcome.message}</p>
-          <p className="mt-2">
-            Nothing was sent anywhere. The check runs before any request is made.
-          </p>
-        </AlertDescription>
-      </Alert>
-    );
-  }
+  const copy = describeDegraded(outcome.reason);
+  const ourFault = outcome.reason === "bad-request";
+  const Icon = ourFault ? ShieldAlert : outcome.reason === "disabled" ? PowerOff : AlertTriangle;
 
-  const copy = FAILURE_COPY[outcome.reason];
   return (
-    <Alert variant={outcome.reason === "upstream-down" ? "destructive" : "warning"} className="mt-6">
-      {outcome.reason === "disabled" ? (
-        <PowerOff aria-hidden="true" />
-      ) : (
-        <AlertTriangle aria-hidden="true" />
-      )}
+    <Alert
+      variant={outcome.reason === "upstream-down" ? "destructive" : "warning"}
+      className="mt-6"
+    >
+      <Icon aria-hidden="true" />
       <AlertTitle>{copy.title}</AlertTitle>
       <AlertDescription>
         <p>{outcome.message}</p>
-        <p className="mt-2">{copy.guidance}</p>
+        <p className="mt-2">{copy.detail}</p>
+        {!copy.retryable ? (
+          <p className="mt-2">
+            Retrying now would not help, and on a rate limit it would mean asking a service
+            that has already said no.
+          </p>
+        ) : null}
       </AlertDescription>
     </Alert>
   );
@@ -215,14 +195,14 @@ export function Provenance({
     return () => window.clearInterval(timer);
   }, []);
 
-  const seconds = ageSeconds(outcome.fetchedAt, now);
+  const seconds = envelopeAgeSeconds(outcome.fetchedAt, new Date(now)) ?? 0;
 
   return (
     <div className={cn("mt-4 border-t border-border pt-3 text-xs text-muted-foreground", className)}>
       <p className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <Clock className="size-3.5 shrink-0" aria-hidden="true" />
         <span>
-          Retrieved <time dateTime={outcome.fetchedAt}>{describeAge(seconds)}</time>, at{" "}
+          Retrieved <time dateTime={outcome.fetchedAt}>{formatAge(seconds)}</time>, at{" "}
           <span className="font-mono">{outcome.fetchedAt}</span>.
         </span>
       </p>

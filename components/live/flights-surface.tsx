@@ -331,6 +331,7 @@ const UNAVAILABLE_TITLE = {
   "quota-exhausted": "Aircraft positions paused",
   "rate-limited": "Aircraft positions paused",
   disabled: "Flight tracking is switched off",
+  "bad-request": "That view could not be read",
 } as const;
 
 /**

@@ -4,6 +4,7 @@ import { logger } from "@/lib/logger";
 import { absoluteUrl } from "@/lib/metadata";
 import { listCategorySlugs, listTagSlugs } from "@/lib/queries/taxonomy";
 import { listPublishedToolSlugs } from "@/lib/queries/tools";
+import { TOOLBENCH_ENTRIES } from "@/lib/toolbench/registry";
 
 /**
  * `sitemap.xml`. ISR:3600, matching the caching contract in architecture HANDOFF §8.
@@ -35,8 +36,28 @@ function staticRoutes(now: Date): MetadataRoute.Sitemap {
     { url: absoluteUrl("/live"), lastModified: now, changeFrequency: "weekly", priority: 0.7 },
     { url: absoluteUrl("/live/flights"), lastModified: now, changeFrequency: "daily", priority: 0.6 },
     { url: absoluteUrl("/live/cameras"), lastModified: now, changeFrequency: "daily", priority: 0.6 },
+    { url: absoluteUrl("/toolbench"), lastModified: now, changeFrequency: "weekly", priority: 0.9 },
     { url: absoluteUrl("/methodology"), changeFrequency: "monthly", priority: 0.8 },
     { url: absoluteUrl("/about"), changeFrequency: "monthly", priority: 0.5 },
+
+    /*
+     * Every Toolbench route, driven from the registry rather than listed by hand.
+     *
+     * `TOOLBENCH_ENTRIES` is a static array with no database dependency, which is why this
+     * belongs in the static block, and `lib/toolbench/registry.test.ts` already asserts that
+     * the registry and the route directory contain exactly the same slugs. So a tool cannot
+     * appear here without a page behind it, and — the failure that actually happens — a tool
+     * cannot be added without appearing here. A hand-maintained list would have shipped four
+     * of fifteen.
+     */
+    ...TOOLBENCH_ENTRIES.map((entry) => ({
+      url: absoluteUrl(`/toolbench/${entry.slug}`),
+      lastModified: now,
+      // Each page is prose plus a client- or server-side utility; the content changes when
+      // somebody edits it, not on a schedule.
+      changeFrequency: "monthly" as const,
+      priority: 0.7,
+    })),
   ];
 }
 

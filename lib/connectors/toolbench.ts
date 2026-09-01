@@ -1,134 +1,49 @@
-import { headers } from "next/headers";
-
 import brand from "@/config/brand";
-import type { Connector } from "@/db/schema";
-import { auth } from "@/lib/auth";
 import { logger } from "@/lib/logger";
-import { getConnectorBySlug } from "@/lib/queries/live";
-import { clientSubject } from "@/lib/rate-limit";
+import type { LookupOutcome } from "@/lib/toolbench/connector-envelope";
 import { isPinnedHost } from "@/lib/toolbench/net-target";
-import type { LookupFailureReason, LookupOutcome } from "@/lib/toolbench/lookup";
 
-import { parseRetryAfter, runConnector, UpstreamStatusError } from "./runtime";
-import type { ActorIdentity, ConnectorDriver, ConnectorEnvelope } from "./types";
+import { parseRetryAfter, UpstreamStatusError } from "./runtime";
+import type { ConnectorEnvelope } from "./types";
 
 /**
- * The shared runner and HTTP path for the four Toolbench connectors.
+ * The shared HTTP path and envelope mapping for the four Toolbench network connectors.
  *
  * ─────────────────────────────────────────────────────────────────────────────
- * WHY THIS EXISTS RATHER THAN CALLING `runConnector` DIRECTLY
+ * THERE IS NO LONGER A `runToolConnector` WRAPPER, AND THAT IS THE POINT
  * ─────────────────────────────────────────────────────────────────────────────
- * `runConnector` resolves its registry row through `getLiveConnector(driver.kind)`, which
- * returns the alphabetically first published, enabled row **of that kind**. That is correct
- * for the Live surfaces, where one kind means one source. It is wrong here: all four of
- * these sources are `kind = 'infrastructure'` (ADR 0024 merged sources and connectors into
- * one registry, and `infrastructure` is the kind that fits a certificate log, a resolver, a
- * routing registry and a web archive). Resolving by kind would silently serve the crt.sh row
- * to the RIPEstat driver — and it would do so *successfully*, with the wrong attribution and
- * the wrong quota, which is the worst kind of bug this registry can produce.
+ * This module used to export one, because `runConnector` resolved its registry row through
+ * `getLiveConnector(driver.kind)` — the first enabled row of that kind — and all of these are
+ * `kind = 'infrastructure'`. Resolving by kind would have served one source's row to another
+ * source's driver, with the wrong attribution, the wrong quota and the wrong legal basis. The
+ * wrapper resolved by slug instead and re-applied the four live checks that passing
+ * `options.connector` bypasses.
  *
- * So the row is resolved **by slug** and handed to `runConnector` through `RunOptions`. The
- * four live conditions `getLiveConnector` would have applied are re-applied here, in the
- * same order and with the same fail-closed default, because passing `options.connector`
- * bypasses them. `lib/sources/governed.ts` reaches the identical conclusion from the poller
- * side and its `isLive` is deliberately the same four checks.
+ * `runConnector` now resolves by `driver.slug` itself, so the wrapper was a second copy of
+ * `isLive` maintained in a third place and has been deleted. Call `runConnector` directly.
  *
- * `lib/connectors/runtime.ts`, `types.ts` and `audit.ts` are NOT modified by any of this.
- * The cleaner fix — a `slug` option on `runConnector` — is a change to a file this agent
- * does not own; it is written up in `docs/toolbench/HANDOFF-network-tools.md`.
+ * What remains here is the part that is genuinely specific to these four:
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * PER-USER QUOTA APPLIES HERE, UNLIKE THE POLLERS
- * ─────────────────────────────────────────────────────────────────────────────
- * `lib/sources/governed.ts` drops the per-user quota because a poller answers a timer and
- * there is no user. These are *user* queries — a person typed a domain and pressed a button
- * — so all four controls apply: kill-switch, global ceiling, per-user quota, audit row.
- * That is `runConnector` unmodified, which is why it is reused rather than reimplemented.
+ *   `upstreamGet`      one host-pinned GET with a byte cap and manual redirect handling
+ *   `toLookupOutcome`  connector envelope -> the shape a Client Component renders
+ *
+ * `toolbenchActor` was here and has moved to `./actor`. It called `auth()`, which put the
+ * whole of next-auth on the import path of every driver — and therefore of
+ * `TOOLBENCH_CONNECTOR_SEEDS`, and therefore of `db/seed.ts`, whose test then could not load
+ * at all. Seeds are data and must be readable with no request in scope.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * WHAT IS NEVER LOGGED
  * ─────────────────────────────────────────────────────────────────────────────
- * The domain, the IP, the URL. ADR 0013: the audit log records *that* a call happened,
- * never *what was asked for*. `connector_requests` has no column that could hold it, and
- * nothing in this file passes a query value to `logger`. A journalist's lookups must not be
+ * The domain, the IP, the URL. ADR 0013: the audit log records *that* a call happened, never
+ * *what was asked for*. `connector_requests` has no column that could hold it, and nothing in
+ * this file passes a query value to `logger`. A journalist's lookups must not be
  * reconstructable from our own records, and the only reliable way to guarantee that is for
  * the record never to exist.
  */
 
 /** The `kind` all four Toolbench sources are registered under. See `db/schema.ts`. */
 export const TOOLBENCH_CONNECTOR_KIND = "infrastructure" as const;
-
-/**
- * The registry row, or a sentence explaining why we will not call this upstream.
- *
- * The four conditions, all fail-closed, mirroring `getLiveConnector`:
- *   `status = 'published'`, `enabled = true`, `terms_url` present, `legal_basis` present.
- */
-function liveRefusal(connector: Connector | null, slug: string): string | null {
-  if (!connector) {
-    return `This source has no entry in the connector registry, so there is no recorded basis for calling it. Nothing was requested. (${slug})`;
-  }
-  if (!connector.enabled) {
-    return `An operator has switched ${connector.name} off. Nothing was requested.`;
-  }
-  if (connector.status !== "published") {
-    return `${connector.name} is registered but not yet published — an operator has to review its recorded terms and turn it on. Nothing was requested.`;
-  }
-  if (connector.termsUrl === null || connector.legalBasis === null) {
-    return `${connector.name} has no recorded terms or legal basis, so it cannot be called. Nothing was requested.`;
-  }
-  return null;
-}
-
-/**
- * Run one Toolbench connector on behalf of a user.
- *
- * Never throws for an expected failure. Returns the same degraded envelope vocabulary the
- * Live surfaces use, so the tool page can say *what* is wrong — off, at its limit, refused
- * by the upstream, not answering — rather than showing a spinner that lies.
- */
-export async function runToolConnector<Params, Result>(
-  driver: ConnectorDriver<Params, Result>,
-  rawParams: unknown,
-  actor: ActorIdentity,
-): Promise<ConnectorEnvelope<Result>> {
-  let connector: Connector | null = null;
-  try {
-    connector = await getConnectorBySlug(driver.slug);
-  } catch (error) {
-    // We could not prove we are allowed to call. Fail closed, exactly as the poller does.
-    logger.error(
-      { scope: "toolbench.connector", slug: driver.slug, err: error },
-      "Registry lookup failed; refusing to call upstream",
-    );
-    return {
-      fetchedAt: null,
-      state: "unavailable",
-      data: null,
-      connectorSlug: driver.slug,
-      attribution: null,
-      lastError: "The source registry is unavailable, so no lookup was authorised.",
-      reason: "disabled",
-    };
-  }
-
-  const refusal = liveRefusal(connector, driver.slug);
-  if (refusal !== null) {
-    logger.info({ scope: "toolbench.connector", slug: driver.slug }, "Connector not live; no call made");
-    return {
-      fetchedAt: null,
-      state: "unavailable",
-      data: null,
-      connectorSlug: connector?.slug ?? driver.slug,
-      attribution: connector?.attribution ?? null,
-      lastError: refusal,
-      reason: "disabled",
-    };
-  }
-
-  // Non-null by construction: `liveRefusal` returns a string for every null case above.
-  return runConnector(driver, rawParams, actor, { connector: connector as Connector });
-}
 
 /* ------------------------------------------------------------------ *
  * The one outbound HTTP path for these four drivers
@@ -273,26 +188,17 @@ export function decodeJson(text: string): unknown {
  * ------------------------------------------------------------------ */
 
 /**
- * The quota and audit subject for a Toolbench lookup.
+ * Map a connector envelope onto the shape a Client Component renders.
  *
- * The signed-in user's id if there is one, otherwise the client IP. **Both are HMAC-hashed
- * before they reach `rate_limits` or `connector_requests`** (ADR 0009, ADR 0013), so nothing
- * identifying is stored on either side of the call. Identical construction to
- * `/live/flights`, deliberately: one way of identifying a caller in this codebase, not two.
- */
-export async function toolbenchActor(): Promise<ActorIdentity> {
-  const session = await auth();
-  if (session?.user?.id) return { subject: session.user.id };
-  const requestHeaders = await headers();
-  return { subject: clientSubject(new Request("http://internal", { headers: requestHeaders })) };
-}
-
-/**
- * Map a connector envelope onto the four-outcome union the client renders.
+ * `reason` passes straight through now that `DegradedReason` and `DEGRADED_REASONS` carry the
+ * same six members. It used to be narrowed by hand into a shorter union, which silently
+ * collapsed anything unrecognised to `upstream-down` — so the day a new reason was added, the
+ * Toolbench would have blamed the upstream for it. `connector-envelope.test.ts` asserts the
+ * two lists stay identical.
  *
- * `lastError` is written by `runtime.ts` and by `runToolConnector`, and is always a sentence
- * we composed — never an upstream body, never a stack, never a URL. That is why it can be
- * returned to the browser verbatim.
+ * `lastError` is written by `runtime.ts` and is always a sentence we composed — never an
+ * upstream body, never a stack, never a URL. That is why it can be returned to the browser
+ * verbatim.
  */
 export function toLookupOutcome<T>(envelope: ConnectorEnvelope<T>): LookupOutcome<T> {
   if (envelope.data !== null && envelope.fetchedAt !== null) {
@@ -306,22 +212,18 @@ export function toLookupOutcome<T>(envelope: ConnectorEnvelope<T>): LookupOutcom
     };
   }
 
-  const reason: LookupFailureReason =
-    envelope.reason === "disabled" ||
-    envelope.reason === "quota-exhausted" ||
-    envelope.reason === "rate-limited"
-      ? envelope.reason
-      : "upstream-down";
-
   return {
     status: "unavailable",
-    reason,
+    reason: envelope.reason ?? "upstream-down",
     message: envelope.lastError ?? "This source could not be reached just now.",
     attribution: envelope.attribution,
   };
 }
 
-/** An input we refused. Nothing was requested, and the message says what to change. */
+/**
+ * An input we refused. **Nothing was requested**, which is what `bad-request` means and why
+ * it is not `upstream-down`: no third party was involved and none should be blamed.
+ */
 export function invalidInput(message: string): LookupOutcome<never> {
-  return { status: "invalid", message };
+  return { status: "unavailable", reason: "bad-request", message, attribution: null };
 }

@@ -11,7 +11,7 @@ import {
   type DnsLookup,
   type DnsRecordSet,
 } from "@/lib/toolbench/dns";
-import type { LookupOutcome } from "@/lib/toolbench/lookup";
+import type { LookupOutcome } from "@/lib/toolbench/connector-envelope";
 import { Announcer, useAnnounce } from "./announcer";
 import { CopyButton } from "./copy-button";
 import { LookupForm, LookupStatus, Provenance } from "./network-tool-shell";

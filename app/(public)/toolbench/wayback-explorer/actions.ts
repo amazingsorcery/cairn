@@ -2,14 +2,11 @@
 
 import { z } from "zod";
 
-import {
-  invalidInput,
-  runToolConnector,
-  toLookupOutcome,
-  toolbenchActor,
-} from "@/lib/connectors/toolbench";
+import { runConnector } from "@/lib/connectors/runtime";
+import { toolbenchActor } from "@/lib/connectors/actor";
+import { invalidInput, toLookupOutcome } from "@/lib/connectors/toolbench";
 import { waybackCapturesDriver, waybackTimelineDriver, type CapturePair } from "@/lib/connectors/wayback";
-import type { LookupOutcome } from "@/lib/toolbench/lookup";
+import type { LookupOutcome } from "@/lib/toolbench/connector-envelope";
 import { normaliseLookupUrl } from "@/lib/toolbench/net-target";
 import { parseWaybackTimestamp, type Timeline } from "@/lib/toolbench/wayback";
 
@@ -52,7 +49,7 @@ export async function lookupTimeline(raw: unknown): Promise<LookupOutcome<Timeli
   const url = normaliseLookupUrl(parsed.data.url);
   if (!url.ok) return invalidInput(url.error);
 
-  const envelope = await runToolConnector(
+  const envelope = await runConnector(
     waybackTimelineDriver,
     { url: url.value.href },
     await toolbenchActor(),
@@ -85,7 +82,7 @@ export async function fetchCaptures(raw: unknown): Promise<LookupOutcome<Capture
     return invalidInput("Those are the same capture. Pick two different ones.");
   }
 
-  const envelope = await runToolConnector(
+  const envelope = await runConnector(
     waybackCapturesDriver,
     { url: url.value.href, before: parsed.data.before, after: parsed.data.after },
     await toolbenchActor(),

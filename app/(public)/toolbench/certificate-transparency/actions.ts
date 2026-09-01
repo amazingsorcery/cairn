@@ -3,14 +3,11 @@
 import { z } from "zod";
 
 import { crtShDriver } from "@/lib/connectors/crtsh";
-import {
-  invalidInput,
-  runToolConnector,
-  toLookupOutcome,
-  toolbenchActor,
-} from "@/lib/connectors/toolbench";
+import { runConnector } from "@/lib/connectors/runtime";
+import { toolbenchActor } from "@/lib/connectors/actor";
+import { invalidInput, toLookupOutcome } from "@/lib/connectors/toolbench";
 import type { CertificateSummary } from "@/lib/toolbench/ct";
-import type { LookupOutcome } from "@/lib/toolbench/lookup";
+import type { LookupOutcome } from "@/lib/toolbench/connector-envelope";
 import { normaliseHostname } from "@/lib/toolbench/net-target";
 
 /**
@@ -49,7 +46,7 @@ export async function lookupCertificates(raw: unknown): Promise<LookupOutcome<Ce
   const domain = normaliseHostname(parsed.data.domain);
   if (!domain.ok) return invalidInput(domain.error);
 
-  const envelope = await runToolConnector(
+  const envelope = await runConnector(
     crtShDriver,
     { domain: domain.value, excludeExpired: parsed.data.excludeExpired },
     await toolbenchActor(),

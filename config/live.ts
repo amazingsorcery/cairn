@@ -43,6 +43,20 @@ export const mapTiles = {
    * OpenFreeMap is vector-only and publishes no raster endpoint, so the name is now
    * `styleUrl` and a raster consumer gets a type error instead of a blank map.
    */
+  /**
+   * Two styles, one per theme — the same cartography at two lightnesses.
+   *
+   * A single style means a black map inside a white card for anyone using the light theme,
+   * and light is a preference this product deliberately respects rather than tolerates.
+   * `components/map/basemap.ts` already carried the pair; this file did not, so the preview
+   * maps on the coordinate and image-metadata tools were dark in both themes.
+   */
+  styleUrls: {
+    light: "https://tiles.openfreemap.org/styles/positron",
+    dark: "https://tiles.openfreemap.org/styles/dark",
+  },
+
+  /** Dark, for a caller that cannot read the theme. Prefer `styleUrls`. */
   styleUrl: "https://tiles.openfreemap.org/styles/dark",
 
   /** Rendered visibly on the map, not in a footer. Required by the licence. */

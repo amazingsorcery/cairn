@@ -154,4 +154,7 @@ const TITLE: Record<LiveReason, string> = {
   "quota-exhausted": "Aircraft positions paused",
   "rate-limited": "Aircraft positions paused",
   disabled: "Flight tracking is switched off",
+  // Near-unreachable here: the viewport is clamped by `flightParamsSchema`, not typed by a
+  // reader. It is a real state on the Toolbench, where the parameters come from a text field.
+  "bad-request": "That view could not be read",
 };

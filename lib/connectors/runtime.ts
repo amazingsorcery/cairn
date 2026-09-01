@@ -272,10 +272,24 @@ export async function runConnector<Params, Result>(
   try {
     params = driver.normalise(rawParams);
   } catch (error) {
-    // A malformed request is ours to reject, not the upstream's. Nothing is called and
-    // nothing is audited: no outbound attempt took place.
+    /*
+     * A malformed request is OURS to reject, not the upstream's. Nothing is called and
+     * nothing is audited, because no outbound attempt took place.
+     *
+     * The reason is `bad-request`, not `upstream-down`. It used to be the latter, which meant
+     * every surface branching on `reason` told the reader a third party was failing when in
+     * fact we had rejected what they typed — and on the Toolbench, where the parameters come
+     * from a text field, that is the difference between "fix your input" and "try again
+     * later". The error is logged but never returned: it is a Zod message describing the
+     * caller's own value, and on these surfaces that value is the reader's query.
+     */
     logger.warn({ scope: "connector.run", slug: connector.slug, err: error }, "Bad parameters");
-    return unavailable(connector.slug, "upstream-down", "That request could not be understood.", attribution);
+    return unavailable(
+      connector.slug,
+      "bad-request",
+      "That request could not be understood, so nothing was requested from the source.",
+      attribution,
+    );
   }
 
   const key = `${connector.slug}:${driver.cacheKey(params)}`;
