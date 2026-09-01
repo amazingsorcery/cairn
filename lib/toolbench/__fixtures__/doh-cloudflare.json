@@ -1,0 +1,400 @@
+{
+ "ripe.net-A": {
+  "Status": 0,
+  "TC": false,
+  "RD": true,
+  "RA": true,
+  "AD": true,
+  "CD": false,
+  "Question": [
+   {
+    "name": "ripe.net",
+    "type": 1
+   }
+  ],
+  "Answer": [
+   {
+    "name": "ripe.net",
+    "type": 1,
+    "TTL": 185,
+    "data": "193.0.11.51"
+   }
+  ]
+ },
+ "ripe.net-MX": {
+  "Status": 0,
+  "TC": false,
+  "RD": true,
+  "RA": true,
+  "AD": true,
+  "CD": false,
+  "Question": [
+   {
+    "name": "ripe.net",
+    "type": 15
+   }
+  ],
+  "Answer": [
+   {
+    "name": "ripe.net",
+    "type": 15,
+    "TTL": 300,
+    "data": "10 mail-mx-1.ripe.net."
+   },
+   {
+    "name": "ripe.net",
+    "type": 15,
+    "TTL": 300,
+    "data": "10 mail-mx-2.ripe.net."
+   }
+  ]
+ },
+ "ripe.net-NS": {
+  "Status": 0,
+  "TC": false,
+  "RD": true,
+  "RA": true,
+  "AD": true,
+  "CD": false,
+  "Question": [
+   {
+    "name": "ripe.net",
+    "type": 2
+   }
+  ],
+  "Answer": [
+   {
+    "name": "ripe.net",
+    "type": 2,
+    "TTL": 86400,
+    "data": "ns3.lacnic.net."
+   },
+   {
+    "name": "ripe.net",
+    "type": 2,
+    "TTL": 86400,
+    "data": "ns3.afrinic.net."
+   },
+   {
+    "name": "ripe.net",
+    "type": 2,
+    "TTL": 86400,
+    "data": "ns4.apnic.net."
+   },
+   {
+    "name": "ripe.net",
+    "type": 2,
+    "TTL": 86400,
+    "data": "manus.authdns.ripe.net."
+   },
+   {
+    "name": "ripe.net",
+    "type": 2,
+    "TTL": 86400,
+    "data": "rirns.arin.net."
+   }
+  ]
+ },
+ "ripe.net-TXT": {
+  "Status": 0,
+  "TC": false,
+  "RD": true,
+  "RA": true,
+  "AD": true,
+  "CD": false,
+  "Question": [
+   {
+    "name": "ripe.net",
+    "type": 16
+   }
+  ],
+  "Answer": [
+   {
+    "name": "ripe.net",
+    "type": 16,
+    "TTL": 300,
+    "data": "\"MS=ms67751268\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 16,
+    "TTL": 300,
+    "data": "\"_3wvnerwv6j7cjao9jlahbjz2rawnoyo\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 16,
+    "TTL": 300,
+    "data": "\"c36nlg98h32mxgwrbtz64y39018my6nd\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 16,
+    "TTL": 300,
+    "data": "\"ZOOM_verify_dPvgSmAFSuKoW25ykWqtfw\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 16,
+    "TTL": 300,
+    "data": "\"sendinblue-site-verification=2659830\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 16,
+    "TTL": 300,
+    "data": "\"apple-domain-verification=hv6DqD0eixJVkv6U\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 16,
+    "TTL": 300,
+    "data": "\"status-page-domain-verification=qchkrfl7cvf2\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 16,
+    "TTL": 300,
+    "data": "\"jamf-site-verification=uCzTUcUzhZPNK3iyW7XJTQ\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 16,
+    "TTL": 300,
+    "data": "\"canva-site-verification=OXBJeXuzzmyUDU6WSHl0Ng\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 16,
+    "TTL": 300,
+    "data": "\"Sendinblue-code:d850df5c8b2bd24ad6e9574a894923c8\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 16,
+    "TTL": 300,
+    "data": "\"1password-site-verification=A5TCA342Y5EKBHWQ4TIY6JGY6U\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 16,
+    "TTL": 300,
+    "data": "\"onetrust-domain-verification=5b56bd2f7a8e49c08ac2ada053e80797\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 16,
+    "TTL": 300,
+    "data": "\"slack-domain-verification=QptqrRufWKeDJ1y3mG0kPOaXJj9ApWlaLvPtTcaV\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 16,
+    "TTL": 300,
+    "data": "\"google-site-verification=8brVsJvMeSvFzAIgUz-1bsBnkYURhzGe5DypAEmTPcI\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 16,
+    "TTL": 300,
+    "data": "\"google-site-verification=9zU35i5d8RKlwcp3slIZY5tvyyaId9Pjfo-4HOUIJtg\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 16,
+    "TTL": 300,
+    "data": "\"google-site-verification=Jl1ZA-AqhDLpL0vMBeFun9-qY3T58aHRe6sqCdj4iAk\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 16,
+    "TTL": 300,
+    "data": "\"google-site-verification=Mjh2VRqOuHsP4hbQDoA_flEskh-6S-YlFNrqGWayXAg\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 16,
+    "TTL": 300,
+    "data": "\"atlassian-sending-domain-verification=21dc1473-7602-4c53-88dc-2b96d55bdb12\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 16,
+    "TTL": 300,
+    "data": "\"adobe-idp-site-verification=9dc07873a943b8b6ea812fb3747cb4e8332ef61d8450a61cef6bcbd84480c42c\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 16,
+    "TTL": 300,
+    "data": "\"atlassian-domain-verification=gald0QJawuRiDwOWptmExBQ/fIHLfDUHAKzhiRiJXTDHEGHWb0v0SpyLCKuVLPzU\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 16,
+    "TTL": 300,
+    "data": "\"v=spf1 ip4:193.0.19.0/24 ip6:2001:67c:2e8:11::/64 include:mail.zendesk.com include:spf.afas.online include:spf.sendinblue.com include:_spf.google.com ~all\""
+   }
+  ]
+ },
+ "ripe.net-CAA": {
+  "Status": 0,
+  "TC": false,
+  "RD": true,
+  "RA": true,
+  "AD": true,
+  "CD": false,
+  "Question": [
+   {
+    "name": "ripe.net",
+    "type": 257
+   }
+  ],
+  "Answer": [
+   {
+    "name": "ripe.net",
+    "type": 257,
+    "TTL": 86400,
+    "data": "0 issue \"amazonaws.com\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 257,
+    "TTL": 86400,
+    "data": "0 issue \"digicert.com; cansignhttpexchanges=yes\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 257,
+    "TTL": 86400,
+    "data": "0 issue \"letsencrypt.org\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 257,
+    "TTL": 86400,
+    "data": "0 issue \"pki.goog; cansignhttpexchanges=yes\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 257,
+    "TTL": 86400,
+    "data": "0 issuewild \"amazonaws.com\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 257,
+    "TTL": 86400,
+    "data": "0 issuewild \"digicert.com; cansignhttpexchanges=yes\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 257,
+    "TTL": 86400,
+    "data": "0 issuewild \"letsencrypt.org\""
+   },
+   {
+    "name": "ripe.net",
+    "type": 257,
+    "TTL": 86400,
+    "data": "0 issuewild \"pki.goog; cansignhttpexchanges=yes\""
+   }
+  ]
+ },
+ "ripe.net-AAAA": {
+  "Status": 0,
+  "TC": false,
+  "RD": true,
+  "RA": true,
+  "AD": true,
+  "CD": false,
+  "Question": [
+   {
+    "name": "ripe.net",
+    "type": 28
+   }
+  ],
+  "Answer": [
+   {
+    "name": "ripe.net",
+    "type": 28,
+    "TTL": 300,
+    "data": "2001:67c:2e8:25::c100:b33"
+   }
+  ]
+ },
+ "www.bbc.co.uk-A": {
+  "Status": 0,
+  "TC": false,
+  "RD": true,
+  "RA": true,
+  "AD": false,
+  "CD": false,
+  "Question": [
+   {
+    "name": "www.bbc.co.uk",
+    "type": 1
+   }
+  ],
+  "Answer": [
+   {
+    "name": "www.bbc.co.uk",
+    "type": 5,
+    "TTL": 28111,
+    "data": "www.bbc.co.uk.pri.bbc.co.uk."
+   },
+   {
+    "name": "www.bbc.co.uk.pri.bbc.co.uk",
+    "type": 5,
+    "TTL": 256,
+    "data": "bbc.map.fastly.net."
+   },
+   {
+    "name": "bbc.map.fastly.net",
+    "type": 1,
+    "TTL": 16,
+    "data": "151.101.0.81"
+   },
+   {
+    "name": "bbc.map.fastly.net",
+    "type": 1,
+    "TTL": 16,
+    "data": "151.101.64.81"
+   },
+   {
+    "name": "bbc.map.fastly.net",
+    "type": 1,
+    "TTL": 16,
+    "data": "151.101.128.81"
+   },
+   {
+    "name": "bbc.map.fastly.net",
+    "type": 1,
+    "TTL": 16,
+    "data": "151.101.192.81"
+   }
+  ]
+ },
+ "nxdomain-A": {
+  "Status": 3,
+  "TC": false,
+  "RD": true,
+  "RA": true,
+  "AD": true,
+  "CD": false,
+  "Question": [
+   {
+    "name": "no-such-name-zz9.ripe.net",
+    "type": 1
+   }
+  ],
+  "Authority": [
+   {
+    "name": "ripe.net",
+    "type": 6,
+    "TTL": 3600,
+    "data": "manus.authdns.ripe.net. dns.ripe.net. 1788189647 3600 600 864000 3600"
+   }
+  ]
+ }
+}

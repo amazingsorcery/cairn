@@ -1,5 +1,5 @@
 import type { SourceFeature } from "@/lib/sources/types";
-import type { FeaturePrecision, MapLayerDefinition, Rgba } from "./types";
+import type { FeaturePrecision, LayerMedia, MapLayerDefinition, Rgba } from "./types";
 import { boolProp, instantProp, numberProp, stringProp } from "./props";
 
 /**
@@ -26,13 +26,12 @@ import { boolProp, instantProp, numberProp, stringProp } from "./props";
  * precisely the interest-graph leak product-brief §3.2 constraint 4 forbids. The layer's
  * description says so, because a reader of this product should not have to take it on trust.
  *
- * **The panel cannot play the stream, and that is a contract gap rather than a decision.**
- * `DetailRow.value` returns a string, so a registry entry has no way to declare a player or
- * even a link, and adding one would mean editing `feature-detail.tsx` — the component change
- * the registry exists to prevent. Recorded in `docs/frontend/HANDOFF-map.md` §10 with the
- * field that would close it. Until then the panel gives the stream URL as text, states
- * whether it can play in a browser at all, and links to the station's own homepage through
- * `SourceFeature.sourceUrl`.
+ * **The panel plays the stream, behind an explicit press** (`MapLayerDefinition.media`, added
+ * 2026-09-01 to close the gap this file used to describe). The `<audio>` element does not exist
+ * until the reader asks for it, it carries `preload="none"`, and its `src` is the broadcaster's
+ * own URL — the bytes go from the station to the reader and never through us. Nothing is
+ * reported back to the catalogue about which station was opened, which is the same decision
+ * recorded above, now visible in the interface.
  *
  * ## One in five of these cannot play on this page, and we say which
  *
@@ -140,6 +139,66 @@ function stationPrecision(feature: SourceFeature): FeaturePrecision {
       `${place === null ? "" : ` in ${place}`}, not a transmitter site. It says nothing about ` +
       `where a signal reaches: the stream is an internet stream and plays anywhere. Treat the ` +
       `dot as "the catalogue associates this station with here", not as a location you can cite.`,
+  };
+}
+
+/**
+ * The stream, as something the reader can actually use — or as a link when it cannot be.
+ *
+ * ## The 20% is the whole design of this function
+ *
+ * A plain-`http:` stream is blocked as mixed content by any browser on an HTTPS page, and it
+ * fails **silently**: no error, no console, nothing. A play button on one of those is a control
+ * that lies. Measured on 2026-08-31, that is 2,473 of 12,413 working geolocated stations.
+ *
+ * So they get `kind: "link"`, which opens the stream in a new tab — a top-level navigation the
+ * browser will honour, connecting the reader to the broadcaster exactly as the audio element
+ * would have. Same connection, same disclosure, one more step, and it works.
+ *
+ * Filtering them out instead would have been quieter and worse: dropping a fifth of a
+ * catalogue without saying so is the silent-incompleteness failure this codebase has met
+ * three times.
+ *
+ * `credit` is null throughout, and that is not an oversight. Radio Browser's maintainer
+ * dedicated the catalogue to the public domain and asks for nothing; the layer credits them
+ * anyway in its own status row, which is where a credit for the *catalogue* belongs. What we
+ * must not do is invent a credit line for the station's audio, whose licence the catalogue's
+ * dedication does not cover and cannot.
+ */
+function radioMedia(feature: SourceFeature): LayerMedia | null {
+  const url = stringProp(feature, "streamUrl");
+  if (url === null) return null;
+
+  let host: string;
+  try {
+    host = new URL(url).host;
+  } catch {
+    return null;
+  }
+
+  if (boolProp(feature, "isInsecureStream") === true) {
+    return {
+      kind: "link",
+      url,
+      host,
+      disclosure:
+        `This station publishes its stream over plain http, which a browser will not play ` +
+        `inside a secure page — it blocks it and reports nothing, so a play button here would ` +
+        `do nothing at all. Opening it in a new tab works: your browser connects straight to ` +
+        `${host}, which will see your IP address. Nothing about the audio passes through us.`,
+      credit: null,
+    };
+  }
+
+  return {
+    kind: "audio",
+    url,
+    host,
+    disclosure:
+      `Playing connects your browser directly to ${host}, the broadcaster's own host rather ` +
+      `than ours, and it will see your IP address. We never relay the audio, and we do not ` +
+      `report to the catalogue which stations you open.`,
+    credit: null,
   };
 }
 
@@ -262,16 +321,6 @@ export const radioLayer: MapLayerDefinition = {
      */
     { label: "Stream URL", value: (f) => stringProp(f, "streamUrl"), mono: true },
     {
-      label: "Playing this stream",
-      value: (f) => {
-        const insecure = boolProp(f, "isInsecureStream");
-        if (insecure === null) return null;
-        return insecure
-          ? "This station publishes its stream over plain http. A browser on a secure page blocks that as mixed content and fails silently, so it will not play here — opening the URL directly in a new tab still works. Either way your browser connects to the broadcaster, not to us."
-          : "Your browser would connect to the broadcaster directly over https. Nothing about the audio passes through us, and we do not report to the catalogue that you opened it.";
-      },
-    },
-    {
       label: "Catalogue's own check",
       value: (f) => {
         const ok = boolProp(f, "lastCheckOk");
@@ -292,6 +341,8 @@ export const radioLayer: MapLayerDefinition = {
     },
     { label: "Station identifier", value: (f) => stringProp(f, "stationUuid"), mono: true },
   ],
+
+  media: radioMedia,
 
   defaultSort: { key: "station", direction: "asc" },
 

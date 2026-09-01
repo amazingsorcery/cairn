@@ -1,11 +1,12 @@
 import Link from "next/link";
-import { ExternalLink, Laptop } from "lucide-react";
+import { ExternalLink, Laptop, Server } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { pageMetadata } from "@/lib/metadata";
 import {
   DATA_HANDLING_LABEL,
   TOOL_GROUPS,
+  type DataHandling,
   type ToolbenchEntry,
   toolsInGroup,
 } from "@/lib/toolbench/registry";
@@ -26,12 +27,39 @@ import {
 export const metadata = pageMetadata({
   title: "Toolbench",
   description:
-    "Working OSINT utilities that run in your browser: hashes and encodings, timestamp and coordinate conversion, solar geometry for chronolocation, image metadata, and a metadata scrubber.",
+    "Working OSINT utilities hosted here: hashes and encodings, timestamp and coordinate conversion, solar geometry for chronolocation, image metadata and a metadata scrubber — all in your browser — plus certificate transparency, DNS, IP and web-archive lookups against public sources.",
   path: "/toolbench",
 });
 
+/**
+ * The badge each data-handling value gets, and why the third is `outline` rather than
+ * `warning`: querying a public routing registry on somebody's behalf is not the same kind of
+ * disclosure as uploading their source's photograph to a search engine, and colouring the two
+ * identically would either alarm readers about the first or reassure them about the second.
+ */
+const HANDLING_BADGE: Readonly<
+  Record<DataHandling, { variant: "success" | "warning" | "outline"; Icon: typeof Laptop }>
+> = {
+  inBrowser: { variant: "success", Icon: Laptop },
+  opensThirdParty: { variant: "warning", Icon: ExternalLink },
+  onOurServer: { variant: "outline", Icon: Server },
+  /*
+   * Same badge as `onOurServer`, because the reader's disclosure is the same: the query
+   * reaches an upstream and never their address. The difference between the two values is
+   * whether routing it through us was a necessity or a choice, which is a sentence on the
+   * page rather than a colour on a card.
+   */
+  viaOurServer: { variant: "outline", Icon: Server },
+  /*
+   * `warning`, alongside the reverse-image launcher, and for the same reason: this is the
+   * other value where the reader's own browser reaches a third party. It is the only one of
+   * the five where the source learns the reader's address.
+   */
+  clientToSource: { variant: "warning", Icon: ExternalLink },
+};
+
 function ToolCard({ entry }: { entry: ToolbenchEntry }) {
-  const inBrowser = entry.dataHandling === "inBrowser";
+  const { variant, Icon } = HANDLING_BADGE[entry.dataHandling];
   return (
     <li>
       <Link
@@ -40,12 +68,8 @@ function ToolCard({ entry }: { entry: ToolbenchEntry }) {
       >
         <h3 className="font-semibold leading-tight tracking-tight">{entry.name}</h3>
         <p className="flex-1 text-sm leading-relaxed text-foreground-secondary">{entry.summary}</p>
-        <Badge variant={inBrowser ? "success" : "warning"} className="self-start">
-          {inBrowser ? (
-            <Laptop className="size-3" aria-hidden="true" />
-          ) : (
-            <ExternalLink className="size-3" aria-hidden="true" />
-          )}
+        <Badge variant={variant} className="self-start">
+          <Icon className="size-3" aria-hidden="true" />
           {DATA_HANDLING_LABEL[entry.dataHandling]}
         </Badge>
       </Link>
@@ -59,10 +83,17 @@ export default function ToolbenchPage() {
       <header className="max-w-[68ch]">
         <h1 className="text-2xl font-semibold tracking-tight md:text-3xl">Toolbench</h1>
         <p className="mt-3 text-lg text-foreground-secondary">
-          Utilities that run here rather than pointing somewhere else. Everything below except
-          the reverse image search launcher does its work inside your own browser: no file, no
-          coordinate and no token you type is sent to this site, because there is no route
-          here that would accept one.
+          Utilities that run here rather than pointing somewhere else. Most of them do their
+          work inside your own browser: no file, no coordinate and no token you type is sent
+          anywhere, because there is no request that would carry it.
+        </p>
+        <p className="mt-4 text-base leading-relaxed text-foreground-secondary">
+          The four domain and network tools are the exception, and every card says so. They
+          query public sources — a certificate log, a public resolver, a routing registry, a
+          web archive — that a web page is not permitted to call directly, so the query goes to
+          our server and our server asks on your behalf. The source sees us rather than you.
+          It does see what you asked about. We record that a lookup happened and how it ended,
+          and never what was looked up: there is no column in our audit log that could hold it.
         </p>
         <p className="mt-4 text-base leading-relaxed text-foreground-secondary">
           Each tool explains the technique it implements and what would make its answer wrong,
@@ -106,6 +137,14 @@ export default function ToolbenchPage() {
             and does not pronounce on whether an image was manipulated. Where a technique can
             only narrow a question rather than answer it, the tool says so at the point where
             you would otherwise over-read the result.
+          </p>
+          <p>
+            <strong className="text-foreground">WHOIS and registration lookups.</strong> The
+            DNS tool stops at four record types rather than adding a fifth. Registration data
+            is published by hundreds of separate registries under terms that differ registry by
+            registry, most of it is redacted under GDPR, and what remains is personal data we
+            would then be processing on behalf of someone who never contacted us. An honest
+            four-record tool is better than a fifth panel whose legal basis we could not state.
           </p>
           <p>
             Tools we do not host are{" "}

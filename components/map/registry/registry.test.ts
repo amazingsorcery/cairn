@@ -3,8 +3,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import type { SourceFeature } from "@/lib/sources/types";
-import { MAP_LAYERS, defaultVisibleLayerIds, findLayer } from "./index";
-import type { DeckKit, MapLayerDefinition, Rgba } from "./types";
+import { MAP_LAYERS, defaultVisibleLayerIds, findLayer, resolveMedia } from "./index";
+import type { DeckKit, LayerMedia, MapLayerDefinition, Rgba } from "./types";
 
 /**
  * THE REGISTRY'S STRUCTURAL GUARANTEE, ENFORCED RATHER THAN ASSERTED.
@@ -214,6 +214,85 @@ describe("the symbols the legends promise", () => {
     const fill = accessor(recorded, "getFillColor");
     expect(fill({ ...SAMPLE, properties: { isInsecureStream: true } })).toEqual([0, 0, 0, 0]);
     expect(fill({ ...SAMPLE, properties: { isInsecureStream: false } })).toEqual([10, 20, 30, 255]);
+  });
+});
+
+/**
+ * `resolveMedia` — the guard that stands between a community-edited URL and an `href`.
+ *
+ * Two of these three checks cannot be left to the layer that produced the record. Radio
+ * Browser's stream URLs are typed in by contributors, and camera URLs come from committed
+ * content that a future provider file could get wrong. A `javascript:` URL in an anchor is one
+ * of the oldest holes there is, and a disclosure that names the wrong host is a specific false
+ * assurance — worse than saying nothing at all.
+ */
+function fakeLayer(media: LayerMedia | null): MapLayerDefinition {
+  const base = MAP_LAYERS[0];
+  if (!base) throw new Error("the registry is empty");
+  return { ...base, media: () => media };
+}
+
+const MEDIA: LayerMedia = {
+  kind: "image",
+  url: "https://cameras.example.org/one.jpg",
+  host: "cameras.example.org",
+  disclosure: "Loading connects you to cameras.example.org, which will see your IP address.",
+  credit: "Example credit",
+};
+
+describe("resolveMedia", () => {
+  it("passes a well-formed record through", () => {
+    expect(resolveMedia(fakeLayer(MEDIA), SAMPLE)?.url).toBe(MEDIA.url);
+  });
+
+  it("refuses a record whose host is not the host of its own URL", () => {
+    // The disclosure and the control both name `host`. If it could disagree with `url` we
+    // would be telling a reader they are about to contact one operator while their browser
+    // contacts another.
+    const lying = { ...MEDIA, host: "trustworthy.example.org" };
+    expect(resolveMedia(fakeLayer(lying), SAMPLE)).toBeNull();
+  });
+
+  it("refuses anything that is not http(s), whatever the kind", () => {
+    for (const url of ["javascript:alert(1)", "data:text/html,x", "file:///etc/passwd"]) {
+      const host = "cameras.example.org";
+      expect(resolveMedia(fakeLayer({ ...MEDIA, kind: "link", url, host }), SAMPLE)).toBeNull();
+    }
+  });
+
+  it("refuses a plain-http image or audio, and allows a plain-http link", () => {
+    const http = { url: "http://stream.example.org/live", host: "stream.example.org" };
+    // Blocked as mixed content by the browser anyway: rendering it would produce a control
+    // that fails silently, which is the whole reason the `link` kind exists.
+    expect(resolveMedia(fakeLayer({ ...MEDIA, kind: "image", ...http }), SAMPLE)).toBeNull();
+    expect(resolveMedia(fakeLayer({ ...MEDIA, kind: "audio", ...http }), SAMPLE)).toBeNull();
+    // A top-level navigation the browser will honour, so this one is offered.
+    expect(resolveMedia(fakeLayer({ ...MEDIA, kind: "link", ...http }), SAMPLE)?.kind).toBe("link");
+  });
+
+  it("refuses a record with no disclosure, and a layer that offers no media", () => {
+    expect(resolveMedia(fakeLayer({ ...MEDIA, disclosure: "  " }), SAMPLE)).toBeNull();
+    expect(resolveMedia(fakeLayer(null), SAMPLE)).toBeNull();
+  });
+
+  it("returns null for every layer that declares no media at all", () => {
+    for (const layer of MAP_LAYERS.filter((l) => l.media === undefined)) {
+      expect(resolveMedia(layer, SAMPLE), `${layer.id}`).toBeNull();
+    }
+  });
+});
+
+describe("cadence", () => {
+  it("is a declared property, never a guess about which layer this is", () => {
+    for (const layer of MAP_LAYERS) {
+      expect(["live", "registry", undefined]).toContain(layer.cadence);
+    }
+  });
+
+  it("marks the layers that are checked rather than polled", () => {
+    // A hand-verified list reports the day it was checked. Everything else reports an age.
+    const registries = MAP_LAYERS.filter((l) => l.cadence === "registry").map((l) => l.id);
+    expect(registries).toContain("cameras");
   });
 });
 

@@ -1,7 +1,17 @@
 "use client";
 
 import * as React from "react";
-import { Clock, CloudOff, FileWarning, Info, PowerOff, Radio, Settings2, TimerOff } from "lucide-react";
+import {
+  ClipboardCheck,
+  Clock,
+  CloudOff,
+  FileWarning,
+  Info,
+  PowerOff,
+  Radio,
+  Settings2,
+  TimerOff,
+} from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -164,10 +174,44 @@ export function failureSentence(failure: SourceFailure, sourceName: string): str
   }
 }
 
+/**
+ * `31 August 2026` — a **date**, in UTC, for a source that is checked rather than polled.
+ *
+ * ## The one false word this closes
+ *
+ * The camera layer's status row read `Live · as of 00:00:00 UTC · 26 hours ago`. Both numbers
+ * were honest: `observedAt` for `content/cameras/*.json` is deliberately the day a human last
+ * verified the entries, because reporting "just now" for a fact checked in August is the
+ * freshness lie ADR 0014 exists to prevent. The word on the front was not honest, and neither
+ * was rendering a verification date as an age — 26 hours of nothing happening reads as decay
+ * on a surface where every other number means decay.
+ *
+ * A clock time is wrong here too: `00:00:00 UTC` is an artefact of a date with no time in it,
+ * and it looks like a stopped clock. So a registry states the day.
+ *
+ * Exported because `map-surface.tsx` needs the same words in the table caption and in the live
+ * region. One formatter, one vocabulary — two would drift.
+ */
+export function formatCheckedDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "an unrecorded date";
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(date);
+}
+
 export interface LayerStatusProps {
   label: string;
   unavailableTitle: string;
   payload: LayerPayloadDto;
+  /**
+   * Whether this layer's source is a feed or a hand-checked registry. From
+   * `MapLayerDefinition.cadence`, so this component still names no layer in particular.
+   */
+  cadence: "live" | "registry";
   /** True only while a revalidation for THIS layer is genuinely in flight. */
   refreshing: boolean;
   /**
@@ -183,6 +227,7 @@ export function LayerStatus({
   label,
   unavailableTitle,
   payload,
+  cadence,
   refreshing,
   initialAgeSeconds,
   onRetry,
@@ -225,7 +270,16 @@ export function LayerStatus({
     );
   }
 
-  const Icon = payload.stale ? Clock : Radio;
+  /*
+   * A REGISTRY IS NOT A FEED, AND MUST NOT SAY IT IS.
+   *
+   * `cadence` comes off the layer record, so this component still knows the name of no layer.
+   * A registry states the day it was last checked and shows no age: its `observedAt` is a
+   * verification date, and ticking seconds against it would render "somebody checked this in
+   * August" as decay. A feed is unchanged — for those the age is the number that matters most.
+   */
+  const isRegistry = cadence === "registry";
+  const Icon = payload.stale ? Clock : isRegistry ? ClipboardCheck : Radio;
 
   return (
     <div
@@ -237,15 +291,32 @@ export function LayerStatus({
     >
       <p className="flex flex-wrap items-center gap-x-2 gap-y-1 font-medium tabular text-foreground">
         <Icon className="size-4 shrink-0" aria-hidden="true" />
-        <span>{payload.stale ? "Stale" : "Live"}</span>
-        <span aria-hidden="true">·</span>
-        <span>
-          as of <time dateTime={payload.observedAt}>{formatClockUtc(payload.observedAt)}</time>
-        </span>
-        {age === null ? null : (
+        {isRegistry ? (
           <>
+            <span>{payload.stale ? "Last checked" : "Checked"}</span>
+            <time dateTime={payload.observedAt}>{formatCheckedDate(payload.observedAt)}</time>
+            {payload.stale ? (
+              <>
+                <span aria-hidden="true">·</span>
+                {/* Not "stale": a checked list does not rot. We could not re-read it, which is
+                    a different fact and the one an operator needs. */}
+                <span className="font-normal">we could not re-read it</span>
+              </>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <span>{payload.stale ? "Stale" : "Live"}</span>
             <span aria-hidden="true">·</span>
-            <span>{formatAge(age)}</span>
+            <span>
+              as of <time dateTime={payload.observedAt}>{formatClockUtc(payload.observedAt)}</time>
+            </span>
+            {age === null ? null : (
+              <>
+                <span aria-hidden="true">·</span>
+                <span>{formatAge(age)}</span>
+              </>
+            )}
           </>
         )}
         {payload.stale && refreshing ? (

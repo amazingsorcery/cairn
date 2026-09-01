@@ -2,7 +2,14 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { TOOLBENCH_ENTRIES, TOOL_GROUPS, findTool, toolsInGroup } from "./registry";
+import {
+  DATA_HANDLING_DETAIL,
+  DATA_HANDLING_LABEL,
+  TOOLBENCH_ENTRIES,
+  TOOL_GROUPS,
+  findTool,
+  toolsInGroup,
+} from "./registry";
 
 /**
  * Product-brief section 8: "every route in the nav is complete (if it isn't built, it isn't
@@ -45,12 +52,63 @@ describe("every entry carries what the brief requires of a tool", () => {
 
   it("states how the tool handles data", () => {
     for (const entry of TOOLBENCH_ENTRIES) {
-      expect(["inBrowser", "opensThirdParty"], entry.slug).toContain(entry.dataHandling);
+      expect(
+        ["inBrowser", "opensThirdParty", "onOurServer", "viaOurServer", "clientToSource"],
+        entry.slug,
+      ).toContain(entry.dataHandling);
     }
     // Only the reverse image launcher may claim to send anything anywhere. If a second tool
     // ever does, that is a decision someone should have to make deliberately.
     const thirdParty = TOOLBENCH_ENTRIES.filter((entry) => entry.dataHandling === "opensThirdParty");
     expect(thirdParty.map((entry) => entry.slug)).toEqual(["reverse-image-search"]);
+
+    /**
+     * The same lock on the server-side tools, and for a stronger reason: `onOurServer` means
+     * the reader's query leaves their machine and reaches a third party. Four tools do that
+     * today, every one of them because the source cannot be called from a browser at all.
+     * Adding a fifth must be a deliberate act with this list edited to say so, not something
+     * that happens because a client-side tool grew a fetch.
+     */
+    const serverSide = TOOLBENCH_ENTRIES.filter((entry) => entry.dataHandling === "onOurServer");
+    expect(serverSide.map((entry) => entry.slug).sort()).toEqual([
+      "certificate-transparency",
+      "dns-lookup",
+      "ip-intelligence",
+      "wayback-explorer",
+    ]);
+
+    /**
+     * `viaOurServer` is the same lock again, and the distinction from `onOurServer` is the
+     * reason it is a separate value: these two sources CAN be called from a browser, and we
+     * route them through the server anyway so the upstream never learns which place or
+     * language a reader was searching for. Describing a choice as an inability would
+     * misdescribe the trade the reader is being asked to accept.
+     */
+    const routedByChoice = TOOLBENCH_ENTRIES.filter(
+      (entry) => entry.dataHandling === "viaOurServer",
+    );
+    expect(routedByChoice.map((entry) => entry.slug).sort()).toEqual([
+      "broadcast-finder",
+      "overpass-builder",
+    ]);
+
+    /**
+     * `clientToSource` is the ONLY value that means the reader's own browser reaches a third
+     * party, so it is the one that most needs to stay deliberate. It exists for media, which
+     * product-brief §2b forbids us to relay — and the corollary, which the copy states, is
+     * that the source sees the reader's address.
+     */
+    const directMedia = TOOLBENCH_ENTRIES.filter((entry) => entry.dataHandling === "clientToSource");
+    expect(directMedia.map((entry) => entry.slug)).toEqual(["imagery-comparator"]);
+  });
+
+  it("gives every data-handling value a label and a detailed explanation", () => {
+    for (const entry of TOOLBENCH_ENTRIES) {
+      expect(DATA_HANDLING_LABEL[entry.dataHandling], entry.slug).toBeTruthy();
+      // The detail is what a reader actually decides on, so it has to be a paragraph rather
+      // than a badge caption.
+      expect(DATA_HANDLING_DETAIL[entry.dataHandling].length, entry.slug).toBeGreaterThan(120);
+    }
   });
 
   it("belongs to a declared group", () => {

@@ -180,6 +180,67 @@ export interface DetailRow<F extends SourceFeature = SourceFeature> {
  */
 export type FeaturePrecision = PositionalPrecision;
 
+/**
+ * THE THING THE LAYER IS FOR: a camera's picture, a station's audio.
+ *
+ * ## Why this is a registry field and not markup in the panel
+ *
+ * The camera layer exists so a reader can look through a camera, and the radio layer so they
+ * can hear a station. Before this field, `DetailRow.value` returned a string and neither was
+ * possible — the panel could print a URL and nothing else. The alternative to putting it here
+ * was a branch on a layer id inside `feature-detail.tsx`, which is the one thing this registry
+ * cannot survive.
+ *
+ * ## The rules this shape encodes, none of which are stylistic
+ *
+ * - **Our server never touches these bytes** (product-brief §2b). The URL is handed to the
+ *   client and the reader's browser connects to the operator or the broadcaster directly.
+ *   Relaying camera imagery would make us a redistributor of someone else's pictures; relaying
+ *   audio for fifty listeners is about 2.1 TB a month, roughly a thousand times this whole
+ *   deployment. Neither is a performance trade-off — they are different products.
+ * - **Nothing connects on page load** (ADR 0015). `feature-detail.tsx` renders the disclosure
+ *   and a control; the element that makes the request does not exist until the reader presses
+ *   it. No `preconnect`, no prefetch, no thumbnail warming — every one of those is a
+ *   sensible-looking optimisation that silently undoes the decision.
+ * - **`host` is the host the reader will actually contact**, and `resolveMedia` drops the
+ *   record if it disagrees with `url`. A disclosure that names the wrong host is worse than no
+ *   disclosure, because it is a specific false assurance.
+ * - **`credit` is a licence obligation.** TfL's terms require their exact wording including
+ *   the Ordnance Survey notice; CC BY requires Fintraffic's. It is rendered wherever the media
+ *   is, not in a footer. `null` means the licence genuinely asks for nothing — Radio Browser's
+ *   public-domain dedication — rather than "we did not bother".
+ */
+export interface LayerMedia {
+  /**
+   * `image` and `audio` load in place, behind the reader's explicit press.
+   *
+   * `link` is the third state and it is not a fallback: it is what "we may not embed this" and
+   * "your browser cannot play this" both look like. About a fifth of Radio Browser's stations
+   * publish a plain `http:` stream, which a browser on an HTTPS page blocks as mixed content
+   * and fails **silently** — the reader presses play, nothing happens, and concludes the tool
+   * is broken. Those get a link out, labelled, rather than a button that cannot work. Hiding
+   * them instead would be the silent-incompleteness failure this codebase has now met three
+   * times (NWS geometry, adsb.lol corners, and this).
+   */
+  readonly kind: "image" | "audio" | "link";
+  /**
+   * Absolute URL the CLIENT loads. `https:` for `image` and `audio` — anything else is blocked
+   * as mixed content anyway; `http:` is allowed only for `link`, where it is a top-level
+   * navigation the browser will honour.
+   */
+  readonly url: string;
+  /** Host from that URL. Named in the disclosure and in the control's own label. */
+  readonly host: string;
+  /**
+   * Plain words, before it happens, saying what pressing the control does and who sees what.
+   * A reader deciding whether to reveal their address to a camera operator is the entire
+   * reason the control is explicit rather than automatic.
+   */
+  readonly disclosure: string;
+  /** The credit the licence requires beside the media, or null when none is required. */
+  readonly credit: string | null;
+}
+
 /** The legend entry. Shape is carried as well as colour: colour is never the only signal. */
 export interface LegendEntry {
   readonly label: string;
@@ -233,6 +294,30 @@ export interface MapLayerDefinition<F extends SourceFeature = SourceFeature> {
    * Keep this only while a layer's adapter has not adopted the field; delete it once it has.
    */
   readonly precision?: (feature: F) => FeaturePrecision | null;
+  /**
+   * The picture or the audio this feature is *for*, or null when it has none.
+   *
+   * Rendered by `feature-detail.tsx` behind an explicit control, after the disclosure. Read it
+   * through `resolveMedia()` rather than calling it directly: that is where the URL's protocol
+   * is checked and where a record whose `host` disagrees with its own `url` is dropped.
+   */
+  readonly media?: (feature: F) => LayerMedia | null;
+  /**
+   * Whether this source is a feed or a hand-checked registry. Defaults to `"live"`.
+   *
+   * ## Why one word needed a contract field
+   *
+   * `layer-status.tsx` said **"Live"** above every healthy layer, and the camera layer's row
+   * read `Live · as of 00:00:00 UTC · 26 hours ago`. Both numbers are honest — `observedAt` for
+   * a static registry is deliberately the date a human last checked, because reporting "just
+   * now" for a fact checked in August is the freshness lie ADR 0014 exists to prevent — but the
+   * word was not. Nothing about `content/cameras/*.json` is live, and a verification date
+   * rendered as an age reads as decay.
+   *
+   * A `"registry"` layer states **when it was last checked**, as a date, and its age does not
+   * tick. A `"live"` layer is unchanged.
+   */
+  readonly cadence?: "live" | "registry";
   /** Default table order. Must name a column in `columns`. */
   readonly defaultSort: TableSort;
   /** Shown when the source answered and returned nothing. Never "no results". */

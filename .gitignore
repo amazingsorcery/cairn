@@ -52,3 +52,7 @@ caddy_config/
 # authored — and it must be regenerated on every build so it cannot drift from the installed
 # maplibre version.
 public/maplibre/
+
+# Throwaway verification scripts. Agents write these at the repo root and they should never
+# be committed or linted — one broke the lint gate for everyone else mid-build.
+tmp-*

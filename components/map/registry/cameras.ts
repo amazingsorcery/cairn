@@ -1,5 +1,5 @@
 import type { SourceFeature } from "@/lib/sources/types";
-import type { MapLayerDefinition, Rgba } from "./types";
+import type { LayerMedia, MapLayerDefinition, Rgba } from "./types";
 import { boolProp, instantProp, instantValue, stringProp } from "./props";
 
 /**
@@ -23,13 +23,16 @@ import { boolProp, instantProp, instantValue, stringProp } from "./props";
  * ADR 0015 requires that consequence to be **disclosed before it happens, in plain words**,
  * which is what the "Connecting to this camera" row in the detail panel is for.
  *
- * **The detail panel cannot yet render the click-to-load image itself.** `DetailRow.value`
- * returns a string, so there is no way for a registry entry to declare a media affordance,
- * and building one would mean editing `feature-detail.tsx` — the component change the
- * registry contract exists to prevent. It is recorded as a contract gap in
- * `docs/frontend/HANDOFF-map.md` §10 with the field that would close it, rather than
- * special-cased here. Until then the panel gives the reader the image URL, the host they
- * would be connecting to, the credit the licence requires, and the operator's own record.
+ * **The panel renders the image itself, behind an explicit press** (`MapLayerDefinition.media`,
+ * added 2026-09-01 to close the gap this file used to describe). Nothing loads until the reader
+ * asks; the control names the host in its own label; the image carries
+ * `referrerPolicy="no-referrer"` so the operator learns that somebody loaded it but not from
+ * which of our pages; and the credit its licence demands is rendered beside it. Every camera
+ * that reaches this layer has a confirmed embed permission — `lib/sources/traffic-cameras.ts`
+ * drops `embedPermitted: false` and the link-only registry before we ever see it — so `media`
+ * returns `kind: "image"` here. **If a provider is ever added whose permission is not
+ * confirmed, its features must return `kind: "link"` instead**, which is the same disclosure in
+ * the more obvious form (ADR 0015 point 5).
  *
  * ## Which cameras are here, and which are deliberately not
  *
@@ -129,6 +132,27 @@ function requiredCredit(feature: SourceFeature): string | null {
   return boolProp(feature, "attributionRequired") === true
     ? `${attribution} (required by the licence, and must be shown wherever the image is)`
     : attribution;
+}
+
+/**
+ * The camera's own picture, loaded by the reader's browser and never by ours.
+ *
+ * The credit is the provider's **verbatim** string. `requiredCredit` below adds a clause
+ * saying the licence demands it, which is right in a labelled detail row and wrong printed
+ * under a photograph: a credit line has to be the words the licence asks for, and nothing else.
+ */
+function cameraMedia(feature: SourceFeature): LayerMedia | null {
+  const url = stringProp(feature, "embedUrl");
+  const host = embedHost(feature);
+  const disclosure = connectionDisclosure(feature);
+  if (url === null || host === null || disclosure === null) return null;
+  return {
+    kind: "image",
+    url,
+    host,
+    disclosure,
+    credit: stringProp(feature, "attribution"),
+  };
 }
 
 export const camerasLayer: MapLayerDefinition = {
@@ -235,12 +259,11 @@ export const camerasLayer: MapLayerDefinition = {
     { label: "Licence", value: (f) => stringProp(f, "licence") },
     { label: "Required credit", value: requiredCredit },
     /*
-     * The URL is shown as text, and as monospace, because it is a thing to copy rather than a
-     * thing to click: a link here would connect the reader to the operator on a stray tap,
-     * which is the auto-load ADR 0015 forbids. The row under it says what opening it does.
+     * Still shown as text, and still not a link, now that the image loads in the panel. It is
+     * here to be copied into a note or a citation; the thing that actually connects is the
+     * disclosed control below, which is the only place a stray tap can reach an operator.
      */
     { label: "Image URL", value: (f) => stringProp(f, "embedUrl"), mono: true },
-    { label: "Connecting to this camera", value: connectionDisclosure },
     { label: "Entry last checked", value: formatVerifiedAt },
     {
       /*
@@ -253,6 +276,16 @@ export const camerasLayer: MapLayerDefinition = {
       mono: true,
     },
   ],
+
+  media: cameraMedia,
+
+  /*
+   * A registry, not a feed. `observedAt` is the newest `lastVerifiedAt` in
+   * `content/cameras/*.json` — the date a human actually checked — so the status row says
+   * "Checked 31 August 2026" rather than calling a hand-verified list "Live" and rendering its
+   * verification date as 26 hours of decay.
+   */
+  cadence: "registry",
 
   defaultSort: { key: "camera", direction: "asc" },
 

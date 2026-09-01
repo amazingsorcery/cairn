@@ -17,7 +17,7 @@ import { earthquakesLayer } from "./earthquakes";
 import { radioLayer } from "./radio";
 import { weatherAlertsLayer } from "./weather";
 import { wildfiresLayer } from "./wildfires";
-import { MAP_LAYERS, featurePrecision } from "./index";
+import { MAP_LAYERS, featurePrecision, resolveMedia } from "./index";
 import { layerPayloadSchema } from "../payload";
 
 /**
@@ -334,6 +334,39 @@ describe("the radio layer reads what its adapter writes", () => {
     }
   });
 
+  it("offers audio for an https stream and a link for a plain-http one", () => {
+    const secure = features.filter((f) => f.properties.isInsecureStream === false);
+    const insecure = features.filter((f) => f.properties.isInsecureStream === true);
+    expect(secure.length).toBeGreaterThan(0);
+    // A fifth of the catalogue. If the fixture ever has none, this asserts nothing.
+    expect(insecure.length).toBeGreaterThan(0);
+
+    for (const feature of secure) {
+      const media = resolveMedia(radioLayer, feature);
+      expect(media?.kind, `${feature.id}`).toBe("audio");
+      expect(media?.url).toBe(feature.properties.streamUrl);
+      expect(media?.disclosure).toContain(media?.host ?? "");
+    }
+    for (const feature of insecure) {
+      const media = resolveMedia(radioLayer, feature);
+      /*
+       * NOT `audio`, and not null. A play button on a plain-http stream is a control that does
+       * nothing at all — the browser blocks it and reports nothing — and dropping the station
+       * would hide a fifth of the catalogue without saying so.
+       */
+      expect(media?.kind, `${feature.id}`).toBe("link");
+      expect(media?.disclosure).toContain("plain http");
+    }
+  });
+
+  it("invents no credit for audio whose licence the catalogue does not cover", () => {
+    const first = features[0];
+    if (!first) return;
+    // The maintainer dedicated the CATALOGUE to the public domain. A station's stream is not
+    // theirs to license, so there is no credit to render and we do not manufacture one.
+    expect(resolveMedia(radioLayer, first)?.credit).toBeNull();
+  });
+
   it("caveats every station's position, because none of them is a transmitter", () => {
     for (const feature of features) {
       const precision = featurePrecision(radioLayer, feature);
@@ -373,14 +406,41 @@ describe("the cameras layer reads what its adapter writes", () => {
     }
   });
 
-  it("discloses the direct connection, naming the host, before the reader makes it", () => {
-    const row = camerasLayer.detail.find((r) => r.label === "Connecting to this camera");
+  it("offers every camera's own image, from the operator's host and not ours", () => {
     for (const feature of features) {
-      const disclosure = row?.value(feature) ?? "";
-      const host = new URL(String(feature.properties.embedUrl)).host;
-      expect(disclosure, `${feature.id}`).toContain(host);
-      expect(disclosure).toContain("IP address");
+      const media = resolveMedia(camerasLayer, feature);
+      expect(media, `${feature.id} offers no image`).not.toBeNull();
+      expect(media?.kind).toBe("image");
+      expect(media?.url).toBe(feature.properties.embedUrl);
+      // https only. A plain-http image is blocked as mixed content and fails silently.
+      expect(media?.url.startsWith("https://")).toBe(true);
     }
+  });
+
+  it("discloses the direct connection, naming the host, before the reader makes it", () => {
+    for (const feature of features) {
+      const media = resolveMedia(camerasLayer, feature);
+      const host = new URL(String(feature.properties.embedUrl)).host;
+      // `resolveMedia` drops a record whose host disagrees with its URL, so this also proves
+      // the sentence the reader is shown names the host their browser will actually contact.
+      expect(media?.host, `${feature.id}`).toBe(host);
+      expect(media?.disclosure).toContain(host);
+      expect(media?.disclosure).toContain("IP address");
+    }
+  });
+
+  it("carries the licence's exact words as the credit, with none of our commentary", () => {
+    for (const feature of features) {
+      const media = resolveMedia(camerasLayer, feature);
+      // The detail row explains that the credit is mandatory; a credit line printed under a
+      // photograph has to be the words the licence asks for and nothing else.
+      expect(media?.credit).toBe(feature.properties.attribution);
+      expect(media?.credit).not.toContain("required by the licence");
+    }
+  });
+
+  it("declares itself a registry, so nothing calls a hand-checked list live", () => {
+    expect(camerasLayer.cadence).toBe("registry");
   });
 
   it("does NOT caveat a position the operator itself published", () => {

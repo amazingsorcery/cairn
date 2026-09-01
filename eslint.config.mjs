@@ -27,6 +27,8 @@ const config = [
       // minified, and not ours to lint. ESLint does not read .gitignore, so it needs saying
       // here as well.
       "public/maplibre/**",
+      // Throwaway verification scripts written at the repo root during a build.
+      "tmp-*",
     ],
   },
   ...compat.extends("next/core-web-vitals", "next/typescript"),

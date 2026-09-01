@@ -14,7 +14,7 @@ import type { DeckMapProps } from "./deck-map";
 import { FeatureDetail } from "./feature-detail";
 import { FeatureTable } from "./feature-table";
 import { LayerControls } from "./layer-controls";
-import { LayerStatus } from "./layer-status";
+import { LayerStatus, formatCheckedDate } from "./layer-status";
 import { parseLayerPayload } from "./payload";
 import {
   MAP_LAYERS,
@@ -305,9 +305,19 @@ export function MapSurface({
       if (!payload) return `${layer.label}: not loaded.`;
       if (!payload.ok) return `${layer.unavailableTitle}.`;
       const sort = sorts[layer.id];
+      /*
+       * A registry is announced by the day it was checked, not by an age. `observedAt` for a
+       * hand-verified list is a verification date, and reading "26 hours ago" aloud states
+       * decay where there is none. The vocabulary is `layer-status.tsx`'s, imported rather
+       * than restated, so the announcement and the visible row cannot drift apart.
+       */
+      const freshness =
+        layer.cadence === "registry"
+          ? `checked ${formatCheckedDate(payload.observedAt)}`
+          : formatAge(ageAt(layer.id, payload));
       return `${layer.label}: ${formatNumber(payload.features.length)} ${
         payload.features.length === 1 ? "feature" : "features"
-      }, ${formatAge(ageAt(layer.id, payload))}. ${sort ? sortDescription(layer, sort) : ""}`;
+      }, ${freshness}. ${sort ? sortDescription(layer, sort) : ""}`;
     })
     .join(" ");
 
@@ -468,6 +478,9 @@ function LayerSection({
           label={layer.label}
           unavailableTitle={layer.unavailableTitle}
           payload={payload}
+          /* A registry says when it was checked; a feed says how old it is. Registry field,
+             not a branch on which layer this is. */
+          cadence={layer.cadence ?? "live"}
           refreshing={refreshing}
           initialAgeSeconds={initialAgeSeconds}
           onRetry={onRetry}
@@ -489,7 +502,11 @@ function LayerSection({
             onSelect={onSelect}
             caption={`${layer.label}: ${formatNumber(payload.features.length)} ${
               payload.features.length === 1 ? "feature" : "features"
-            } from ${payload.source.name}, observed ${formatClockUtc(payload.observedAt)}. Sortable by column.`}
+            } from ${payload.source.name}, ${
+              layer.cadence === "registry"
+                ? `checked ${formatCheckedDate(payload.observedAt)}`
+                : `observed ${formatClockUtc(payload.observedAt)}`
+            }. Sortable by column.`}
           />
         )
       ) : null}

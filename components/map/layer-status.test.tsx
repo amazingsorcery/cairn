@@ -41,13 +41,14 @@ function failed(failure: SourceFailure): LayerPayloadDto {
   return { layerId: "test", source: SOURCE, ok: false, failure, lastGoodAt: null };
 }
 
-function renderStatus(payload: LayerPayloadDto) {
+function renderStatus(payload: LayerPayloadDto, cadence: "live" | "registry" = "live") {
   const onRetry = vi.fn();
   render(
     <LayerStatus
       label="Earthquakes"
       unavailableTitle="Earthquakes unavailable"
       payload={payload}
+      cadence={cadence}
       refreshing={false}
       initialAgeSeconds={12}
       onRetry={onRetry}
@@ -137,6 +138,7 @@ describe("LayerStatus", () => {
           label="Earthquakes"
           unavailableTitle="Earthquakes unavailable"
           payload={failed(failure)}
+          cadence="live"
           refreshing={false}
           initialAgeSeconds={null}
           onRetry={vi.fn()}
@@ -163,6 +165,7 @@ describe("LayerStatus", () => {
           observedAt: new Date(Date.now() - 400_000).toISOString(),
           stale: true,
         }}
+        cadence="live"
         refreshing
         initialAgeSeconds={400}
         onRetry={vi.fn()}
@@ -225,5 +228,53 @@ describe("the disabled sentence reads as a sentence", () => {
     );
     expect(sentence).not.toContain("earthquakes's");
     expect(sentence).toContain("fault at the source's end");
+  });
+});
+
+/**
+ * A REGISTRY IS NOT A FEED, AND THE STATUS ROW MUST NOT SAY IT IS.
+ *
+ * The camera layer's row read `Live · as of 00:00:00 UTC · 26 hours ago`. Both numbers were
+ * honest — `observedAt` for a hand-verified list is deliberately the day somebody checked it,
+ * because claiming "just now" for a fact checked in August is the freshness lie ADR 0014 exists
+ * to prevent — but "Live" was not, and a verification date rendered as an age reads as decay on
+ * a surface where every other age means exactly that.
+ */
+describe("cadence", () => {
+  const checked: LayerPayloadDto = {
+    layerId: "test",
+    source: SOURCE,
+    ok: true,
+    features: [],
+    observedAt: "2026-08-31T00:00:00.000Z",
+    stale: false,
+  };
+
+  it("says when a registry was checked, and does not call it live", () => {
+    renderStatus(checked, "registry");
+    expect(screen.getByText("31 August 2026")).toBeInTheDocument();
+    expect(screen.getByText("Checked")).toBeInTheDocument();
+    expect(screen.queryByText("Live")).not.toBeInTheDocument();
+  });
+
+  it("shows a registry no age at all", () => {
+    renderStatus(checked, "registry");
+    // "26 hours ago" against a verification date is decay where there is none, and the clock
+    // time is 00:00:00 — an artefact of a date, which reads as a stopped clock.
+    expect(screen.queryByText(/ago$/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/00:00:00/)).not.toBeInTheDocument();
+  });
+
+  it("still says 'Live' and shows an age for a feed", () => {
+    renderStatus({ ...checked, observedAt: new Date().toISOString() }, "live");
+    expect(screen.getByText("Live")).toBeInTheDocument();
+  });
+
+  it("says a registry could not be re-read rather than calling it stale", () => {
+    renderStatus({ ...checked, stale: true }, "registry");
+    // A checked list does not rot. What happened is that we could not re-read it, which is a
+    // different fact and the one an operator needs.
+    expect(screen.getByText(/could not re-read it/i)).toBeInTheDocument();
+    expect(screen.queryByText("Stale")).not.toBeInTheDocument();
   });
 });

@@ -1,5 +1,5 @@
 import type { PositionalPrecision, SourceFeature, SourceQuery } from "@/lib/sources/types";
-import type { MapLayerDefinition, MapViewport } from "./types";
+import type { LayerMedia, MapLayerDefinition, MapViewport } from "./types";
 import { aircraftLayer } from "./aircraft";
 import { camerasLayer } from "./cameras";
 import { earthquakesLayer } from "./earthquakes";
@@ -10,6 +10,7 @@ import { wildfiresLayer } from "./wildfires";
 
 export type {
   DeckKit,
+  LayerMedia,
   DeckLayerFactory,
   DeckLayerInput,
   DetailRow,
@@ -113,4 +114,47 @@ export function featurePrecision<F extends SourceFeature>(
   feature: F,
 ): PositionalPrecision | null {
   return feature.precision ?? layer.precision?.(feature) ?? null;
+}
+
+/**
+ * The media a feature offers, **validated**, or null.
+ *
+ * `feature-detail.tsx` calls this and never `layer.media` directly, because two of the three
+ * checks below cannot be left to the layer that produced the record.
+ *
+ * 1. **The URL must parse and carry a protocol we will actually render.** `image` and `audio`
+ *    are `https:` only — a plain-http subresource is blocked as mixed content by any browser on
+ *    this page, so rendering one would produce a control that fails silently, which is the
+ *    exact failure the `link` kind exists to avoid. `link` accepts `http:` too, because there
+ *    it is a top-level navigation the browser will honour. Nothing else is accepted at all:
+ *    these URLs come from a community-edited catalogue, and `javascript:` in an `href` is one
+ *    of the oldest holes there is.
+ * 2. **`host` must be the host of `url`.** The disclosure names a host to the reader and the
+ *    control's own label repeats it. If the two could drift, this product would be telling
+ *    someone they are about to contact one operator while their browser contacts another —
+ *    a specific false assurance, which is worse than saying nothing.
+ * 3. A layer that throws while building a record disables its own media rather than the panel.
+ *
+ * Returning null is a normal outcome, not an error: most features have no media at all.
+ */
+export function resolveMedia<F extends SourceFeature>(
+  layer: MapLayerDefinition<F>,
+  feature: F,
+): LayerMedia | null {
+  const media = layer.media?.(feature) ?? null;
+  if (!media) return null;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(media.url);
+  } catch {
+    return null;
+  }
+
+  const allowed = media.kind === "link" ? ["http:", "https:"] : ["https:"];
+  if (!allowed.includes(parsed.protocol)) return null;
+  if (parsed.host !== media.host) return null;
+  if (media.disclosure.trim().length === 0) return null;
+
+  return media;
 }

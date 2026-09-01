@@ -10,11 +10,19 @@
  * describe what the tool actually does rather than what we would like it to do.
  */
 
-export type DataHandling = "inBrowser" | "opensThirdParty";
+export type DataHandling =
+  | "inBrowser"
+  | "opensThirdParty"
+  | "onOurServer"
+  | "viaOurServer"
+  | "clientToSource";
 
 export const DATA_HANDLING_LABEL: Readonly<Record<DataHandling, string>> = {
   inBrowser: "Runs in your browser",
   opensThirdParty: "Sends your image to a third party",
+  onOurServer: "Queries a public source from our server",
+  viaOurServer: "Searches a public source from our server",
+  clientToSource: "Your browser loads media from the source",
 };
 
 export const DATA_HANDLING_DETAIL: Readonly<Record<DataHandling, string>> = {
@@ -22,6 +30,22 @@ export const DATA_HANDLING_DETAIL: Readonly<Record<DataHandling, string>> = {
     "Everything this tool does happens on your own machine. No file, no coordinate and no text you type is sent to this site's server or anywhere else — there is no request to send it in.",
   opensThirdParty:
     "This tool opens other companies' search engines. Nothing is uploaded to this site, but the image does reach whichever engines you open, and they keep their own records of it.",
+  /**
+   * The honest version, written for somebody deciding whether to type a sensitive domain
+   * into it. It states what we see, what the upstream sees, and what we keep — including
+   * the part that is genuinely protective, which is that the query never appears in a log.
+   */
+  onOurServer:
+    "This tool cannot run in your browser: it queries a public source that a web page is not allowed to call directly. Your query goes to this site's server, which asks the source on your behalf and sends you the answer. That means the source sees our server rather than your address — but it does see what you asked about. We record that a lookup happened and how it ended; we never record the domain, address or URL you asked about, and there is no column in our audit log that could hold it.",
+  /**
+   * Distinct from `onOurServer`: these sources CAN be called from a browser, and we route
+   * them through the server anyway. Saying "cannot" where we mean "chose not to" would
+   * misdescribe the trade, and the trade is the thing the reader is deciding about.
+   */
+  viaOurServer:
+    "Your browser could call this source directly. We route it through this site's server instead, so the source sees us rather than your address and never learns which place, language or area you were searching for — that pattern is the thing this audience most needs not to leak. The request is sent as a POST so the query does not appear in a web-server log, here or anywhere. We record that a search happened and how it ended, never what it asked for.",
+  clientToSource:
+    "This tool loads media straight from its source into your browser, because relaying it through us would turn a linking site into a rebroadcasting one and exhaust a small server in hours. Nothing about that media passes through this site. The consequence, which is the part that matters to you: the source sees your address and exactly what you requested, so consider that before loading imagery of, or listening to, something sensitive.",
 };
 
 export interface ToolbenchEntry {
@@ -36,7 +60,7 @@ export interface ToolbenchEntry {
   readonly group: ToolGroup;
 }
 
-export type ToolGroup = "encodings" | "time" | "place" | "images";
+export type ToolGroup = "encodings" | "time" | "place" | "images" | "network" | "signals";
 
 export const TOOL_GROUPS: readonly { readonly id: ToolGroup; readonly label: string; readonly blurb: string }[] = [
   {
@@ -62,6 +86,18 @@ export const TOOL_GROUPS: readonly { readonly id: ToolGroup; readonly label: str
     label: "Images",
     blurb:
       "What a picture carries besides the picture — and how to take it back out before publishing.",
+  },
+  {
+    id: "network",
+    label: "Domains and networks",
+    blurb:
+      "The passive infrastructure surface behind a name: the hostnames its certificates have published, what it resolves to, who announces the address, and what the page used to say. These four query public sources from our server rather than from your browser, and each page says exactly what that means.",
+  },
+  {
+    id: "signals",
+    label: "Open transmissions",
+    blurb:
+      "What aircraft, ships and broadcasters put on the air, and what it does and does not tell you. An identifier broadcast in the clear is a claim by whoever configured the transmitter; a live stream is a source the publisher of a story does not control.",
   },
 ];
 
@@ -155,6 +191,110 @@ export const TOOLBENCH_ENTRIES: readonly ToolbenchEntry[] = [
       slug: "geolocating-from-imagery",
       title: "Geolocating from imagery",
       step: "Step 3 runs reverse image search before any manual work, because if somebody has already published this location the search costs two minutes and the manual work costs two days.",
+    },
+  },
+  {
+    slug: "certificate-transparency",
+    name: "Certificate transparency search",
+    summary:
+      "Every hostname that has appeared in a publicly logged certificate for a domain, with the date each one was first certificated and which authority issued it.",
+    dataHandling: "onOurServer",
+    group: "network",
+    playbook: {
+      slug: "investigating-a-domain-and-its-infrastructure",
+      title: "Investigating a domain and its infrastructure",
+      step: "Step 3 enumerates the DNS and certificate surface, and it starts with certificate transparency because the logs are append-only: a hostname that appeared in a certificate in 2019 is still there whether or not it ever resolved, and its first-seen date is often how an operation gets dated.",
+    },
+  },
+  {
+    slug: "dns-lookup",
+    name: "DNS lookup",
+    summary:
+      "A, AAAA, MX, NS, TXT and CAA records over DNS-over-HTTPS, with the CNAME chain, the DNSSEC flag and the difference between “no records” and “no such name” made explicit.",
+    dataHandling: "onOurServer",
+    group: "network",
+    playbook: {
+      slug: "investigating-a-domain-and-its-infrastructure",
+      title: "Investigating a domain and its infrastructure",
+      step: "Step 3 is emphatic that a hostname is not a host: certificate transparency and passive DNS both return large numbers of names that no longer resolve or never did, and stating that an organisation “has 340 subdomains” on the strength of an unresolved list is the characteristic error of this workflow. This is where each name gets resolved and the result recorded, including the negative ones.",
+    },
+  },
+  {
+    slug: "ip-intelligence",
+    name: "IP intelligence",
+    summary:
+      "The covering prefix, the AS that announces it and who holds it, the registry's allocation country, BGP first- and last-seen dates, route visibility, and the network's own abuse contact.",
+    dataHandling: "onOurServer",
+    group: "network",
+    playbook: {
+      slug: "investigating-a-domain-and-its-infrastructure",
+      title: "Investigating a domain and its infrastructure",
+      step: "Step 4 maps the hosting using scan indexes rather than your own scanner, and asks you to record the ASN, the provider and the date of every observation. This tool supplies the routing half of that — including whether a CDN sits in front, which decides how much of everything downstream is about the target at all.",
+    },
+  },
+  {
+    slug: "wayback-explorer",
+    name: "Wayback capture explorer",
+    summary:
+      "Every archived capture of a URL on one timeline, the dates its content actually changed read from the index digests, and a text diff between any two captures.",
+    dataHandling: "onOurServer",
+    group: "network",
+    playbook: {
+      slug: "investigating-a-domain-and-its-infrastructure",
+      title: "Investigating a domain and its infrastructure",
+      step: "Step 6 reconstructs the history, and says to use the CDX index rather than clicking through snapshots — it lists every capture with its timestamp and content digest, so you can see when the page actually changed rather than when it happened to be crawled. It also warns that a gap in captures usually means nobody crawled it, which is the most over-read signal in the whole workflow.",
+    },
+  },
+  {
+    slug: "overpass-builder",
+    name: "Overpass query builder",
+    summary:
+      "Search OpenStreetMap for where a combination of mapped features co-occurs inside a bounding box, with the Overpass QL shown and editable, and the results on a map and in a table.",
+    dataHandling: "viaOurServer",
+    group: "place",
+    playbook: {
+      slug: "geolocating-from-imagery",
+      title: "Geolocating from imagery",
+      step: "Step 3 is the one that turns geolocation from luck into method, and the one most people skip because it means learning a query language for twenty minutes. It asks you to query for the co-occurrence of two or three distinctive mapped features inside a bounding box — and it is emphatic that a null result usually means your query, your tagging assumption or OpenStreetMap's coverage is wrong, not that the feature is absent.",
+    },
+  },
+  {
+    slug: "imagery-comparator",
+    name: "Satellite imagery comparator",
+    summary:
+      "NASA MODIS and VIIRS imagery of the same place on two dates, side by side or under a swipe, daily and global back to February 2000.",
+    dataHandling: "clientToSource",
+    group: "place",
+    playbook: {
+      slug: "verifying-a-viral-videos-authenticity-and-timeline",
+      title: "Verifying a viral video's authenticity and timeline",
+      step: "Step 4 tests a claim against physical evidence the publisher did not control, and names satellite corroboration as one of the strongest available: imagery from before and after a claimed date shows damage, flooding, a burn scar or new construction independently of anything the video asserts. The step also states this tool's own limit — resolution shows that something changed, not what it is, and analysts routinely over-read those pixels.",
+    },
+  },
+  {
+    slug: "registry-lookup",
+    name: "Aircraft and vessel identifier decoder",
+    summary:
+      "US N-number to ICAO 24-bit address and back, which state's block an address belongs to, and what an MMSI's digits say about the station transmitting it.",
+    dataHandling: "inBrowser",
+    group: "signals",
+    playbook: {
+      slug: "tracing-a-vessel-and-its-owner",
+      title: "Tracing a vessel and its owner",
+      step: "Step 1 fixes the vessel's permanent identity before anything else, because an MMSI changes when a hull reflags and is routinely re-programmed to another vessel's number in sanctions evasion. This decodes what an MMSI actually encodes — including whether the thing you are tracking is a ship at all rather than a buoy, a coast station or a distress beacon — and points at the registries that hold the record.",
+    },
+  },
+  {
+    slug: "broadcast-finder",
+    name: "Broadcast finder",
+    summary:
+      "Public radio streams filtered by country, region, language, tag or name, played directly from the broadcaster — with the fifth of the catalogue a browser cannot play labelled rather than hidden.",
+    dataHandling: "viaOurServer",
+    group: "signals",
+    playbook: {
+      slug: "verifying-a-viral-videos-authenticity-and-timeline",
+      title: "Verifying a viral video's authenticity and timeline",
+      step: "Step 4 asks you to test a claim against at least one independent source the publisher does not control, and to record what each check returned including the ones that returned nothing. Live local radio is that kind of source during an unfolding event: local, contemporaneous, in the local language, and outside the platforms the footage is spreading on. Its own limit is on the tool page — absence of local coverage constrains nothing on its own.",
     },
   },
 ];
