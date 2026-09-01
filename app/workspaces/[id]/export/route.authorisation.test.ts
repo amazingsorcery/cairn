@@ -234,11 +234,23 @@ describeWithDatabase("GET /workspaces/[id]/export — ownership before a single 
    * ---------------------------------------------------------------- */
 
   it("throttles the owner after the export budget is spent, and says when to retry", async () => {
+    /*
+     * WRITTEN TO SURVIVE A WINDOW BOUNDARY, and it was not at first — the original asserted
+     * that response number `limit + 1` was a 429 and failed roughly once in fifteen runs.
+     * ADR 0009's windows are fixed and aligned to the epoch rather than to first use, so a
+     * loop that straddles a boundary gets a fresh budget mid-way and the eleventh call
+     * legitimately succeeds. Asserting the exact index was asserting the clock.
+     *
+     * What holds in every window is the property worth testing: at most `limit` exports
+     * succeed before one is refused. So the run of successes immediately before the first
+     * 429 is bounded by `limit`, wherever the boundary falls. Two windows can yield at most
+     * `2 * limit` successes, so a refusal must appear within the attempts allowed here.
+     */
     sessionStore.signedInAs(owner);
     const budget = RATE_LIMIT_POLICIES["workspace-export"].limit;
 
     const statuses: number[] = [];
-    for (let attempt = 0; attempt <= budget; attempt += 1) {
+    for (let attempt = 0; attempt < budget * 2 + 2; attempt += 1) {
       const response = await GET(
         request(ownersCase.workspaceId, "md"),
         params(ownersCase.workspaceId),
@@ -247,11 +259,17 @@ describeWithDatabase("GET /workspaces/[id]/export — ownership before a single 
       if (response.status === 429) {
         expect(Number(response.headers.get("retry-after"))).toBeGreaterThan(0);
         expect(response.headers.get("cache-control")).toContain("no-store");
+        break;
       }
+      expect(response.status).toBe(200);
     }
 
-    expect(statuses.slice(0, budget)).toEqual(Array.from({ length: budget }, () => 200));
-    expect(statuses[budget]).toBe(429);
+    const refusedAt = statuses.indexOf(429);
+    expect(refusedAt, `no export was ever refused: ${statuses.join(",")}`).toBeGreaterThan(-1);
+    expect(statuses.slice(0, refusedAt).every((status) => status === 200)).toBe(true);
+    // The successes since the last window reset. Never more than the budget.
+    expect(refusedAt).toBeLessThanOrEqual(budget * 2);
+    expect(refusedAt).toBeGreaterThanOrEqual(budget);
   });
 
   it("does not spend a stranger's budget on a case they cannot read", async () => {
