@@ -42,6 +42,11 @@ ENV PNPM_HOME="/pnpm" \
     PATH="/pnpm:$PATH" \
     # Corepack must not stop a non-interactive build to ask about downloading pnpm.
     COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
+    # Shared and world-readable. `corepack prepare` runs as root, but the migrator and
+    # runner stages both switch to USER node, whose home is /home/node — a cache under
+    # /root is unreadable to them, so corepack silently falls back to downloading. That
+    # fallback is the entire failure this pair of settings exists to prevent.
+    COREPACK_HOME=/usr/local/corepack \
     NEXT_TELEMETRY_DISABLED=1
 
 # corepack ships with Node 22. `corepack enable` makes the `pnpm` shim available; the shim
@@ -58,7 +63,16 @@ ENV PNPM_HOME="/pnpm" \
 # the image. Nothing is fetched at run time, which is also the correct property for a
 # migration step: it must not depend on npm being reachable, or up, at the moment you are
 # trying to fix production.
-RUN corepack enable && corepack prepare pnpm@11.1.3 --activate
+#
+# COREPACK_HOME is set explicitly, and that is the half that took a second deploy to find.
+# `corepack prepare` runs as root and would cache into /root/.cache/node/corepack; both the
+# migrator and runner stages then `USER node`, whose home is /home/node, so the cache is
+# unreadable and corepack silently falls back to downloading — exactly the failure the
+# prepare was added to prevent. A shared path plus a+rX makes the cache readable by whoever
+# the stage ends up running as.
+RUN corepack enable \
+    && corepack prepare pnpm@11.1.3 --activate \
+    && chmod -R a+rX /usr/local/corepack
 
 WORKDIR /app
 
