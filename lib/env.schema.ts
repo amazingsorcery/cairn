@@ -85,6 +85,19 @@ const serverSchema = z
 
     /** NASA FIRMS wildfire hotspots. Register at firms.modaps.eosdis.nasa.gov. */
     FIRMS_MAP_KEY: z.string().optional(),
+
+    /**
+     * Socrata application token, shared by the US municipal 911 feeds.
+     *
+     * Optional by design, and deliberately NOT an `apiKeyEnvVar`: without it the adapters
+     * still poll inside Socrata's anonymous limit. The token only raises the throttle. Its
+     * absence degrades headroom rather than disabling a layer, which is the difference
+     * between this and FIRMS_MAP_KEY — and the reason the emergency layers do not report
+     * `notConfigured` when it is missing.
+     *
+     * Free: https://dev.socrata.com/docs/app-tokens.html
+     */
+    SOCRATA_APP_TOKEN: z.string().optional(),
     /** Which FIRMS satellite product to read, e.g. VIIRS_SNPP_NRT. */
     FIRMS_SOURCE: z.string().optional(),
     /** Override the USGS earthquake feed window, e.g. all_hour, all_day. */

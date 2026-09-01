@@ -2,6 +2,8 @@ import { adsbLol } from "./adsb-lol";
 import { nasaFirms } from "./nasa-firms";
 import { nwsAlerts } from "./nws-alerts";
 import { radioBrowser } from "./radio-browser";
+import { seattleFire911 } from "./seattle-fire-911";
+import { sfPolice911 } from "./sf-police-911";
 import { trafficCameras } from "./traffic-cameras";
 import { usgsEarthquakes } from "./usgs-earthquakes";
 import type { SourceAdapter, SourceFeature, SourceKind } from "./types";
@@ -29,6 +31,8 @@ export const SOURCE_ADAPTERS: readonly SourceAdapter<SourceFeature>[] = [
   radioBrowser,
   trafficCameras,
   nasaFirms,
+  seattleFire911,
+  sfPolice911,
 ];
 
 /** Look one up by slug. Returns undefined rather than throwing for an unknown layer. */

@@ -123,6 +123,43 @@ const TERMS: Readonly<Record<string, TermsRecord>> = {
       "SCHEMA UNVERIFIED — a key is needed to capture a real payload and none was available " +
       "during the build. See docs/sources/nasa-firms.md.",
   },
+  "seattle-fire-911": {
+    operatorName: "City of Seattle / Seattle Fire Department (data.seattle.gov, Socrata)",
+    termsUrl: "https://data.seattle.gov/Public-Safety/Seattle-Real-Time-Fire-911-Calls/kzjm-xkqj",
+    legalBasis:
+      "Public Domain, declared in the dataset metadata (license.name = \"Public Domain\", " +
+      "attribution \"City of Seattle\"). No key gate. Refresh frequency published on the " +
+      "dataset as \"Near Realtime\". Socrata throttles per IP without an app token and does " +
+      "not throttle reasonable use with one (SOCRATA_APP_TOKEN, optional). LIVE-ONLY per " +
+      "ADR 0033: features are displayed, never persisted, and medical dispatch carries " +
+      "isMedical so the UI defaults it OFF. See docs/sources/seattle-fire-911.md.",
+    baseUrl: "https://data.seattle.gov",
+    globalCeiling: 60,
+    perUserQuota: 30,
+    notes:
+      "Verified 2026-09-01: a live fetch returned dispatches timestamped minutes earlier; " +
+      "\"Aid Response\" and \"Medic Response\" are the two largest call types and are marked " +
+      "medical. See docs/sources/seattle-fire-911.md.",
+  },
+  "sf-police-911": {
+    operatorName: "City & County of San Francisco / SFPD (data.sfgov.org, Socrata)",
+    termsUrl:
+      "https://data.sfgov.org/Public-Safety/Law-Enforcement-Dispatched-Calls-for-Service-Real-T/gnap-fj3t",
+    legalBasis:
+      "ODC Public Domain Dedication and License (PDDL) 1.0, declared in the dataset " +
+      "metadata. No key gate. Publishing frequency \"Multiple times per hour\". SFPD sets " +
+      "sensitive_call=true and withholds those locations; the adapter drops every " +
+      "sensitive_call row and reconstructs nothing (ADR 0033, no identity resolution). " +
+      "LIVE-ONLY: displayed, never persisted; medical/behavioural-health calls carry " +
+      "isMedical and default OFF. SF's fire dataset publishes daily and is rejected for the " +
+      "live layer. See docs/sources/sf-police-911.md.",
+    baseUrl: "https://data.sfgov.org",
+    globalCeiling: 30,
+    perUserQuota: 15,
+    notes:
+      "Verified 2026-09-01: live rows timestamped minutes earlier; 52 of 150 rows were " +
+      "sensitive_call and location-withheld, and are dropped. See docs/sources/sf-police-911.md.",
+  },
   "adsb-lol": {
     operatorName: "adsb.lol (community ADS-B aggregator)",
     termsUrl: "https://api.adsb.lol/docs",
