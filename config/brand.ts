@@ -5,7 +5,20 @@
  * This file is the single source of truth for every user-facing brand string in the
  * product. The contract it enforces:
  *
- *   Renaming the product must be a change to THIS FILE AND NO OTHER FILE.
+ *   Renaming the product must be a change to THIS FILE AND NO OTHER FILE
+ *   for every string a user can see.
+ *
+ * That qualifier is load-bearing and was added after QA measured the claim rather than
+ * reading it. Roughly ten files hardcode the name in identifiers a user never sees:
+ * `__cairnMapSourceCache`, `__cairnDb__`, `__cairnConnectorCache__`, the `cairn_dev`
+ * database name, the `cairn_csp` cache key, and `package.json`'s private `name` field.
+ * None is rendered, logged to a user, or sent to a third party — the one that WAS sent to a
+ * third party, an outbound User-Agent, was found and fixed.
+ *
+ * They are left alone deliberately: renaming a globalThis handle or a local database has no
+ * user-visible effect and carries real risk of breaking a running deployment's cache or
+ * connection string for no benefit. But the unqualified sentence was not true, and this file
+ * of all files should not assert something it does not do.
  *
  * That means:
  *

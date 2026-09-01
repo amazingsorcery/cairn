@@ -61,7 +61,14 @@ const PERMITTED: Readonly<Record<string, string>> = {
   "lib/sources": "http.ts",
 };
 
-/** Modules that would open a socket without going anywhere near the primitive. */
+/**
+ * Modules that would open a socket without going anywhere near the primitive.
+ *
+ * The raw socket modules are here because QA beat this test with them: the file's own title
+ * says "may open a socket" and the list contained nine HTTP clients and zero ways to open a
+ * socket. `import { connect } from "node:net"` inside `lib/connectors/` passed 68 assertions.
+ * An HTTP client is the convenient way to bypass the primitive; it was never the only one.
+ */
 const FORBIDDEN_IMPORTS = [
   "node:http",
   "node:https",
@@ -72,19 +79,42 @@ const FORBIDDEN_IMPORTS = [
   "axios",
   "got",
   "superagent",
+  // Raw sockets — QV-28.
+  "node:net",
+  "node:tls",
+  "node:dgram",
+  '"net"',
+  '"tls"',
+  '"dgram"',
 ];
 
-function sourceFiles(dir: string): string[] {
-  return readdirSync(join(ROOT, dir), { withFileTypes: true })
-    .filter(
-      (entry) =>
-        entry.isFile() &&
-        entry.name.endsWith(".ts") &&
-        !entry.name.endsWith(".test.ts") &&
-        !entry.name.endsWith(".d.ts"),
-    )
-    .map((entry) => entry.name)
-    .sort();
+/**
+ * Every source file under `dir`, **recursively**.
+ *
+ * This walked one level until QA beat it: a driver at `lib/connectors/drivers/qa-probe.ts`
+ * calling `fetch` directly passed all 68 assertions. The first person to create a
+ * subdirectory here would silently reopen QV-03, QV-18 and QV-09 at once — not by writing
+ * bad code, but by making a folder. A perimeter that only checks the ground floor is a
+ * perimeter with a staircase through it.
+ *
+ * Paths are returned relative to `dir` so a failure message names the subdirectory.
+ */
+function sourceFiles(dir: string, prefix = ""): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(join(ROOT, dir, prefix), { withFileTypes: true })) {
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      out.push(...sourceFiles(dir, rel));
+    } else if (
+      entry.isFile() &&
+      entry.name.endsWith(".ts") &&
+      !entry.name.endsWith(".test.ts") &&
+      !entry.name.endsWith(".d.ts")
+    ) {
+      out.push(rel);
+    }
+  }
+  return out.sort();
 }
 
 /**
