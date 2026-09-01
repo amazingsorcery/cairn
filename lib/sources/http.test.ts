@@ -188,6 +188,90 @@ describe("fetchUpstream failure typing", () => {
     expect(produced).toBeLessThanOrEqual(CAP + CHUNK * 4);
   });
 
+  /* ---------------------------------------------------------------- *
+   * QV-18 — the redirect pin
+   * ---------------------------------------------------------------- */
+
+  it("sends redirect: manual, so a 302 is a decision rather than a request", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 200 }));
+    await fetchUpstream({ slug: "pin", url: "https://example.com/a", signal: signal() });
+    expect(spy.mock.calls[0]?.[1]?.redirect).toBe("manual");
+  });
+
+  it("follows a redirect that stays on the host it was pointed at", async () => {
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(null, { status: 302, headers: { location: "/moved" } }),
+      )
+      .mockResolvedValueOnce(new Response('{"ok":true}', { status: 200 }));
+
+    const result = await fetchUpstream({ slug: "hop", url: "https://example.com/a", signal: signal() });
+
+    expect(result.ok).toBe(true);
+    // Resolved against the current URL, so a relative Location behaves as a browser would.
+    expect(spy.mock.calls[1]?.[0]).toBe("https://example.com/moved");
+  });
+
+  /**
+   * QA finding QV-18. `fetchUpstream` sent `redirect: "follow"` with no pin at all, in a
+   * codebase whose connector primitive four files away says why that is wrong:
+   * "'the upstream is trustworthy' is exactly the assumption an SSRF exploits — an open
+   * redirect on an otherwise honest service is enough."
+   *
+   * The exposure was one hop of unearned trust in six named operators, which is small; the
+   * reason it is closed rather than argued away is that the cloud metadata endpoint is one
+   * `Location:` header from any of them, and the whole deployment is one VPS.
+   */
+  const OFF_HOST = [
+    "https://169.254.169.254/latest/meta-data/",
+    "http://[fd00:ec2::254]/latest/meta-data/",
+    "https://evil.example.invalid/",
+    // Same registrable domain, different host: a pin is a host pin, not a suffix pin.
+    "https://attacker.example.com/",
+  ];
+
+  for (const location of OFF_HOST) {
+    it(`refuses a redirect to ${location} and makes no second request`, async () => {
+      const spy = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location } }))
+        .mockResolvedValueOnce(new Response("SHOULD NEVER BE REQUESTED", { status: 200 }));
+
+      const result = await fetchUpstream({
+        slug: "ssrf",
+        url: "https://example.com/a",
+        signal: signal(),
+      });
+
+      expect(result.ok).toBe(false);
+      // One request: the hop was refused rather than followed.
+      expect(spy).toHaveBeenCalledTimes(1);
+    });
+  }
+
+  it("stops walking a redirect chain rather than following it forever", async () => {
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 302, headers: { location: "/next" } }));
+
+    const result = await fetchUpstream({ slug: "loop", url: "https://example.com/a", signal: signal() });
+
+    expect(result.ok).toBe(false);
+    expect(spy.mock.calls.length).toBeLessThanOrEqual(4);
+  });
+
+  it("never sends our User-Agent to an off-host destination", async () => {
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(null, { status: 302, headers: { location: "https://169.254.169.254/" } }),
+      );
+    await fetchUpstream({ slug: "ua-leak", url: "https://example.com/a", signal: signal() });
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0]?.[0]).toBe("https://example.com/a");
+  });
+
   it("identifies us on every call, because an upstream that cannot contact us just blocks us", async () => {
     const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 200 }));
     await fetchUpstream({ slug: "ua", url: "https://example.com", signal: signal() });

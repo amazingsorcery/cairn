@@ -243,16 +243,3 @@ export async function upstreamRequest(
 export function upstreamGet(options: UpstreamGetOptions): Promise<UpstreamResponse> {
   return upstreamRequest({ ...options, method: "GET" });
 }
-
-/**
- * The host a registry row points at, for use as the pin.
- *
- * A driver passes `connector.baseUrl` and gets back the host it is allowed to talk to, so a
- * redirect cannot walk off the operator an admin actually configured. It does NOT make the
- * registry row trustworthy on its own: `overpass.ts` and `flights.ts` additionally compare it
- * against a module constant, because resolving the wrong row once already sent an Overpass
- * query to a DNS resolver's base URL.
- */
-export function hostOf(baseUrl: string): string {
-  return new URL(baseUrl).hostname;
-}

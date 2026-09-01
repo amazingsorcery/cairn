@@ -63,7 +63,6 @@ export {
   toolbenchUserAgent,
   upstreamGet,
   upstreamRequest,
-  hostOf,
   type UpstreamGetOptions,
   type UpstreamRequestOptions,
   type UpstreamResponse,

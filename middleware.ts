@@ -68,6 +68,26 @@ export function middleware(request: NextRequest): NextResponse {
  * Matched paths only. Everything else — the whole public catalogue, every static asset, and
  * `/api/health` — skips this file entirely, which is the difference between middleware that
  * costs nothing and middleware that taxes every request on a 2 GB VPS.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHY `/toolbench/*` AND `/api/*` ARE DELIBERATELY OUTSIDE THIS MATCHER
+ * ─────────────────────────────────────────────────────────────────────────────
+ * QA finding QV-25 noted, correctly, that this matcher is the reason nothing above the
+ * Toolbench routes or `/api/live/flights` counted anything, and that nothing said so. It
+ * says so now, and the answer is not to widen the matcher.
+ *
+ * Those surfaces are anonymous by design and have no session to check, so middleware could
+ * only rate-limit them — and middleware runs on the Edge runtime, where `lib/rate-limit.ts`
+ * cannot: the counter is a Postgres upsert through the Node `pg` driver. A limiter here
+ * would have to be a second implementation with a second store, which is the "three
+ * containers and stays that way" line in the conventions §3 and the drift QV-18 records the cost
+ * of.
+ *
+ * So the limiter is `connector-entry`, consumed inside `runConnector` — the chokepoint every
+ * one of those surfaces must cross to reach an upstream at all. See
+ * `lib/connectors/runtime.ts` step 0 and `tests/security/connector-entry-points.test.ts`,
+ * which asserts the inventory of those surfaces and that each reaches the connector seam
+ * only through that function.
  */
 export const config = {
   matcher: ["/workspaces/:path*", "/admin/:path*"],

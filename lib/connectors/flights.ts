@@ -3,9 +3,10 @@ import { z } from "zod";
 import { sourceUserAgent } from "@/lib/sources/http";
 
 import type { Connector } from "@/db/schema";
+import { connectorHost } from "@/lib/toolbench/net-target";
 
 import { UpstreamStatusError } from "./runtime";
-import { hostOf, upstreamGet } from "./upstream";
+import { upstreamGet } from "./upstream";
 import type { ConnectorDriver } from "./types";
 
 /**
@@ -272,7 +273,7 @@ export const flightsDriver: ConnectorDriver<FlightParams, FlightsPayload> = {
      * same reason: resolving a row by kind once handed a driver another operator's base URL
      * and the request went out under the wrong quota and the wrong recorded legal basis.
      */
-    if (hostOf(base) !== FLIGHTS_HOST) {
+    if (connectorHost(base) !== FLIGHTS_HOST) {
       throw new UpstreamStatusError(502);
     }
     const url =
@@ -407,7 +408,30 @@ export const FLIGHTS_CONNECTOR_SEED = {
    * Because the payload is shared across all viewers (ADR 0014 §4), the ceiling bounds our
    * TOTAL upstream traffic, not our traffic per reader.
    */
-  perUserQuota: 3,
+  /**
+   * `per_user_quota` COUNTS A READER'S READS, NOT OUR OUTBOUND CALLS, and that changed with
+   * QA finding QV-02.
+   *
+   * `runConnector` now spends this counter before it consults the payload cache, on every
+   * connector, because a free cache read was an oracle for what another reader had looked up
+   * and when. So a cache HIT costs a unit too, and 3 — a number chosen when only a miss cost
+   * anything — would refuse a reader who moved the viewport three times in a minute on a
+   * search-by-place surface.
+   *
+   * 6, matching the global ceiling: one reader may read this source as often as we are
+   * willing to call it in total. It does not widen our outbound rate by one request, because
+   * `global_ceiling` is still spent past the cache and still bounds outbound calls at 6/min,
+   * and the 60-second TTL means a reader watching one cell costs at most one call a minute.
+   *
+   * It is also the bound on probing: a stranger can ask about at most 6 grid cells a minute,
+   * against a counter that legitimate use shares, and each answer carries a timestamp coarse
+   * to a whole cache window.
+   *
+   * OPERATOR NOTE: quota columns are the operator's (ADR 0012) and a re-seed does not reset
+   * them on this row. A database seeded before 2026-09-01 still says 3; `update connectors
+   * set per_user_quota = 6 where slug = 'adsb-lol';` applies it.
+   */
+  perUserQuota: 6,
   globalCeiling: 6,
   windowSeconds: 60,
   timeoutMs: 5000,
