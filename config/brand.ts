@@ -49,7 +49,7 @@
  *   which escapes to production fails loudly and locally instead of silently delivering
  *   a user's mail to a stranger who happens to own the real domain.
  *
- *   `domainRegistered` and `socialsRegistered` are `false`. The UI MUST gate rendering of
+ *   `socialsRegistered` is `false` (`domainRegistered` is now true — see below). The UI MUST gate rendering of
  *   any link or address on those flags rather than on a hardcoded condition, so that
  *   "if it isn't built, it isn't linked" (product-brief §8) is enforced by the type system
  *   and not by memory. Flip them in the same commit that registers the real identifiers.
@@ -61,7 +61,7 @@
 
 const NAME = 'Cairn';
 const NAME_LOWER = 'cairn';
-const DOMAIN = 'cairn.example';
+const DOMAIN = 'wrath.rip';
 const COPYRIGHT_YEAR = 2026;
 
 /* ------------------------------------------------------------------ */
@@ -105,11 +105,21 @@ export const brand = {
     'Every entry states its cost, jurisdiction, and when a human last verified it.',
 
   /**
-   * Placeholder domain. RFC 2606 reserved TLD — cannot be registered, cannot resolve.
-   * Replace together with `domainRegistered` when a real domain is acquired.
+   * The domain this deployment actually serves from.
+   *
+   * `wrath.rip` is an owned domain being used as an interim host so the product can be
+   * deployed and used before a permanent name is bought. It is registered and it resolves,
+   * so `domainRegistered` is true and the UI will render real links and contact addresses.
+   *
+   * It is deliberately NOT the launch domain. `docs/brand/naming.md` §1 rules out names
+   * evoking violence or edge — this audience is journalists and human-rights researchers,
+   * and a URL they must paste into a story or a ticket is part of the product's
+   * credibility. Interim host, not brand.
+   *
+   * Changing it is this line plus `APP_URL` and `DOMAIN` in `.env`, and nothing else.
    */
   domainPlaceholder: DOMAIN,
-  domainRegistered: false,
+  domainRegistered: true,
 
   /** Contact addresses. All on the placeholder domain; none of these mailboxes exist yet. */
   email: {
