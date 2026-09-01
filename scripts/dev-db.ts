@@ -22,7 +22,7 @@
  *     behaviour and anything version-sensitive.
  *   - trust auth on loopback. Never use this configuration for anything reachable.
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
@@ -76,17 +76,52 @@ function start(): void {
   } else {
     // Modest settings: this mirrors the constrained VPS rather than the developer's laptop,
     // so a query that is only fast because of a huge cache does not look fine here.
-    run("pg_ctl", [
-      "-D",
-      DATA_DIR,
-      "-l",
-      LOG,
-      "-o",
-      `-p ${PORT} -c listen_addresses=127.0.0.1 -c max_connections=50 -c shared_buffers=128MB`,
-      "-w",
-      "start",
-    ]);
-    console.log(`started on 127.0.0.1:${PORT}`);
+    /*
+     * Start DETACHED, with stdio fully ignored.
+     *
+     * `pg_ctl -w start` run through a normal spawn does not return: the postmaster inherits
+     * the parent's stdout pipe and keeps it open, so the shell waits on it forever. The
+     * command then gets moved to a background task — and the postmaster is now tethered to
+     * that task's lifetime. When the harness reaps it, the shared database dies with it.
+     *
+     * That happened three times in one session. The symptom is the worst kind: no error
+     * anywhere, just `not running` the next time somebody looks, and every other agent's dev
+     * server failing on connection refused for reasons that appear unrelated to anything
+     * they did.
+     *
+     * `detached` plus `stdio: "ignore"` plus `unref()` means the postmaster holds no pipe and
+     * belongs to no process tree we control. Postgres already writes to `-l LOG`, so nothing
+     * is lost by discarding the handles.
+     */
+    const child = spawn(
+      "pg_ctl",
+      [
+        "-D",
+        DATA_DIR,
+        "-l",
+        LOG,
+        "-o",
+        `-p ${PORT} -c listen_addresses=127.0.0.1 -c max_connections=50 -c shared_buffers=128MB`,
+        "start",
+      ],
+      { detached: true, stdio: "ignore", windowsHide: true },
+    );
+    child.unref();
+
+    // `pg_ctl` was told not to wait, so wait here instead: poll until it accepts a
+    // connection, rather than assuming and letting the next command fail confusingly.
+    const deadline = Date.now() + 30_000;
+    let up = false;
+    while (Date.now() < deadline) {
+      if (spawnSync("pg_isready", ["-h", "127.0.0.1", "-p", PORT], { encoding: "utf8" }).status === 0) {
+        up = true;
+        break;
+      }
+    }
+    if (!up) {
+      throw new Error(`Postgres did not accept connections within 30s. See ${LOG}.`);
+    }
+    console.log(`started on 127.0.0.1:${PORT} (detached)`);
   }
 
   const exists = psql("postgres", `select 1 from pg_database where datname = '${DB_NAME}'`).trim();
