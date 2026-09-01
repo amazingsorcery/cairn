@@ -73,7 +73,6 @@ function fanOutDriver(n: number): ConnectorDriver<Record<string, never>, { n: nu
   return {
     kind: "infrastructure",
     slug: "qa-volume-connector",
-    perActor: true,
     normalise: () => ({}) as Record<string, never>,
     cacheKey: () => `k${Math.random()}`,
     async fetch(connector, _params, signal) {
@@ -114,7 +113,6 @@ describe("connector_requests records outbound volume, not attempts", () => {
     const driver: ConnectorDriver<Record<string, never>, { ok: true }> = {
       kind: "infrastructure",
       slug: "qa-volume-connector",
-      perActor: true,
       normalise: () => ({}) as Record<string, never>,
       cacheKey: () => "redirect",
       async fetch(connector, _params, signal) {
@@ -147,7 +145,6 @@ describe("connector_requests records outbound volume, not attempts", () => {
     const driver: ConnectorDriver<Record<string, never>, { ok: true }> = {
       kind: "infrastructure",
       slug: "qa-volume-connector",
-      perActor: true,
       normalise: () => ({}) as Record<string, never>,
       cacheKey: () => "sequential",
       async fetch(connector, _params, signal) {
@@ -173,7 +170,13 @@ describe("connector_requests records outbound volume, not attempts", () => {
   it("records zero for a refusal that made no request", async () => {
     const { runConnector, clearConnectorCache } = await import("./runtime");
     clearConnectorCache();
-    consume.mockResolvedValue({ ok: false, count: 999, limit: 1, remaining: 0, resetAt: new Date() });
+    // The CONNECTOR quotas refuse; the `connector-entry` door limiter (QV-25) does not,
+    // because it refuses before the registry read and would leave nothing to audit at all.
+    consume.mockImplementation(async (action: string) =>
+      action === "connector-entry"
+        ? { ok: true, count: 1, limit: 120, remaining: 119, resetAt: new Date() }
+        : { ok: false, count: 999, limit: 1, remaining: 0, resetAt: new Date() },
+    );
     globalThis.fetch = vi.fn(async () => new Response("{}", { status: 200 })) as typeof fetch;
 
     await runConnector(fanOutDriver(6), {}, { subject: "reader" }, { connector: liveConnector() });

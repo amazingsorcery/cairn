@@ -1,8 +1,8 @@
 # Local development stack.
 #
-# This file deliberately does NOT run the Next.js app by default. It provides the three
-# things that are painful to run natively — Postgres 16, Redis and an SMTP sink — and you
-# run the app on the host with `pnpm dev`.
+# This file deliberately does NOT run the Next.js app by default. It provides the two
+# things that are painful to run natively — Postgres 16 and an SMTP sink — and you run the
+# app on the host with `pnpm dev`.
 #
 # Why not containerise the dev server too: bind-mounting a repo into a Linux container
 # from macOS or Windows makes the Next.js file watcher an order of magnitude slower, and
@@ -13,20 +13,17 @@
 #
 # Quick start:
 #   cp .env.example .env      # then fill in the values it tells you to
-#   docker compose up -d      # starts db + redis + mailpit
+#   docker compose up -d      # starts db + mailpit
 #   pnpm db:migrate && pnpm db:seed
 #   pnpm dev                  # http://localhost:3000
 #   open http://localhost:8025  # Mailpit: every magic-link email lands here
 #
-# THE WORKER IS NOT IN THIS FILE, and that is deliberate. In development you run the poller
-# on the host the same way you run the app on the host — `pnpm worker` in a second terminal,
-# against the same `.env` — for exactly the reasons in the paragraph above: a bind-mounted
-# repo makes the watcher slow and the container's node_modules collide with the host's. The
-# production worker container is in docker-compose.prod.yml and is built, not mounted.
-#
-# `docker compose --profile prodtest up -d --build web-prod` still only starts `web`. To
-# smoke-test the worker image locally, build it explicitly:
-#   docker build --target worker -t app-worker:localtest .
+# THERE IS NO redis SERVICE AND NO WORKER, and that is a decision rather than an omission
+# (ADR 0031). `pnpm worker` never existed, and nothing in the application ever opened a Redis
+# connection — `ioredis` was a production dependency with zero imports. The source cache is
+# the in-process map in `app/(public)/map/sources.ts`, which needs no service to be running.
+# Development matches production: three long-running containers there, two support services
+# here.
 #
 # To smoke-test the *production* image locally before deploying:
 #   docker compose --profile prodtest up -d --build web-prod
@@ -69,42 +66,6 @@ services:
       retries: 10
       start_period: 30s
 
-  redis:
-    # v2 (ADR 0019). Development gets the same server as production with the same cache-only
-    # configuration, because the two behaviours that bite are both configuration: eviction
-    # under `allkeys-lru`, and keys vanishing across a restart because nothing is persisted.
-    # A developer whose local Redis quietly keeps everything forever will not reproduce
-    # either, and both are load-bearing in ADR 0022's claim that the map keeps no history.
-    #
-    # `maxmemory` is deliberately much smaller here than the 512 MB in production: a laptop
-    # cache that is allowed to grow to half a gigabyte is one that never evicts, which is
-    # exactly the case that then only shows up on the server.
-    image: redis:7-alpine
-    restart: unless-stopped
-    logging: *default-logging
-    command:
-      - redis-server
-      - --save
-      - ""
-      - --appendonly
-      - "no"
-      - --maxmemory
-      - 64mb
-      - --maxmemory-policy
-      - allkeys-lru
-    ports:
-      # Published on loopback only, so `pnpm dev`, `redis-cli` and the tests on the host can
-      # reach it. A bare "6379:6379" would put an unauthenticated Redis on every network the
-      # laptop joins, and an unauthenticated Redis reachable from a network is a
-      # remote-code-execution primitive, not merely an information leak.
-      - "127.0.0.1:6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 5s
-
   mailpit:
     # Auth.js magic links are useless in development without somewhere for the mail to go.
     # Mailpit accepts anything on 1025 and shows it in a web UI on 8025. Nothing leaves the
@@ -140,18 +101,10 @@ services:
     environment:
       # Inside the container, "localhost" is the container. Point at the db service.
       DATABASE_URL: postgres://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-devpassword}@db:5432/${POSTGRES_DB:-app}
-      # Same substitution for Redis: `redis://localhost:6379` in a .env is correct on the
-      # host and points the container at ITSELF, where nothing is listening. The cache then
-      # silently misses on every read (lib/sources/cache.ts treats a dead cache as a miss),
-      # so the map works and is slow and hits upstreams on every request — a failure with
-      # no error message anywhere. Overriding it here is what stops that.
-      REDIS_URL: redis://redis:6379
       SMTP_HOST: mailpit
       SMTP_PORT: "1025"
     depends_on:
       db:
-        condition: service_healthy
-      redis:
         condition: service_healthy
 
 volumes:

@@ -53,8 +53,11 @@ jobs:
         # you find out about a syntax or planner difference in production instead of here.
         #
         # NOT `postgis/postgis`. ADR 0022 refuses PostGIS: there is no spatial predicate in
-        # this product, no `cached_features` table, and the live positions live in Redis and
-        # expire. `postgres:16` IS the real thing here, and matching production is the whole
+        # this product and no `cached_features` table. (ADR 0022's original wording added
+        # "the live positions live in Redis and expire"; since ADR 0031 they live in the web
+        # process's own memory and expire there. Either way they are not in Postgres, so
+        # Postgres needs no spatial type.) `postgres:16` IS the real thing here, and
+        # matching production is the whole
         # reason this service container exists. If ADR 0022 is ever reversed, this image and
         # docker-compose.prod.yml's must change in the same commit — a CI that runs against
         # an extension production does not have tests a database nobody deploys.
@@ -74,25 +77,11 @@ jobs:
           --health-retries 10
           --health-start-period 20s
 
-      redis:
-        # v2 (ADR 0019). e2e now exercises the source cache, the rate limiter and the SSE
-        # pub/sub path, and all three are silent when Redis is absent: lib/sources/cache.ts
-        # treats an unreachable cache as a cache miss, by design. Without this container a
-        # cache bug — a wrong key, a missing TTL, a payload that does not round-trip —
-        # passes CI green and is found in production. That is the specific failure this
-        # service exists to prevent, not general realism.
-        #
-        # Configured like production and like docker-compose.yml: no persistence, a small
-        # ceiling, allkeys-lru. A CI Redis that never evicts cannot fail the way the real one
-        # does.
-        image: redis:7-alpine
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-        ports:
-          - 6379:6379
+      # ONE service container. There was a `redis:7-alpine` here for the source cache, the
+      # rate limiter and the SSE pub/sub path; ADR 0031 removed all three from the product.
+      # The cache is in-process, the limiter is fixed-window in Postgres (ADR 0009), and the
+      # stream was never built. A CI service container for a dependency the application does
+      # not open is the same defect as the production container that had no consumer.
 
     env:
       # The database the app, the migrations and Playwright all talk to. `localhost`
@@ -102,12 +91,6 @@ jobs:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: app_test
 
-      # `localhost` for the same reason as DATABASE_URL: the service container's port is
-      # published onto the runner, and the app under test runs on the runner, not in a
-      # container. In docker-compose.prod.yml the correct value is `redis://redis:6379`;
-      # getting those two the wrong way round is the single most common Redis
-      # misconfiguration in this stack, and it fails silently. See .env.example.
-      REDIS_URL: redis://localhost:6379
 
       APP_URL: http://localhost:3000
       AUTH_URL: http://localhost:3000
@@ -282,21 +265,10 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Build the worker image
-        # `FROM migrator`, so this is nearly free after the step above — but it is not free
-        # of failure modes. It asserts that the target exists and that its metadata (ENV,
-        # EXPOSE, HEALTHCHECK, CMD) is well-formed. Without it, a typo in the worker stage
-        # is discovered by deploy.sh on the server, after the backup and after two other
-        # images have already built.
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          target: worker
-          push: false
-          load: false
-          tags: app-worker:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      # There is no `worker` target to build. The Dockerfile stage was removed with the
+      # container it produced (ADR 0031): its CMD was `pnpm worker`, a script that never
+      # existed in package.json, so every image this step ever built was one that could not
+      # start. Two targets ship: runner and migrator.
 
   # =====================================================================================
   # Static validation of the infrastructure files themselves.
@@ -333,16 +305,17 @@ jobs:
         # corresponds to a failure that stays invisible until it is exploited or until the
         # site is already down:
         #
-        #   1. Five services. A service silently dropped by a bad merge is a poller that
-        #      stops existing, and nothing else in this pipeline would notice.
-        #   2. ONLY caddy publishes ports. A stray `ports:` on web, worker, db or redis puts
-        #      that service on the VPS's public IP — and UFW does not save you, because
-        #      Docker writes its own iptables rules ahead of UFW's chain. An unauthenticated
-        #      Redis on a public port is remote code execution via `CONFIG SET dir`, not
-        #      merely an information leak.
-        #   3. db, redis and worker are NOT on `edge`. `edge` is the network the internet
-        #      reaches. Keeping them off it is what makes "unreachable from outside" a
-        #      property of the topology rather than a promise about the Caddyfile.
+        #   1. Exactly four services: caddy, db, migrate, web. `migrate` is in the list
+        #      because `config` renders profile-gated services too; it never starts on `up`.
+        #      A service silently added or dropped by a bad merge is a change to the attack
+        #      surface, and nothing else in this pipeline would notice.
+        #   2. ONLY caddy publishes ports. A stray `ports:` on web or db puts that service
+        #      on the VPS's public IP — and UFW does not save you, because Docker writes its
+        #      own iptables rules ahead of UFW's chain. An unauthenticated Postgres on a
+        #      public port is the whole database.
+        #   3. db is NOT on `edge`. `edge` is the network the internet reaches. Keeping db
+        #      off it is what makes "unreachable from outside" a property of the topology
+        #      rather than a promise about the Caddyfile.
         #
         # jq is preinstalled on ubuntu-latest. `config --format json` needs Compose v2.20+,
         # which the runner image has.
@@ -353,10 +326,14 @@ jobs:
 
           echo "Services:"; jq -r '.services | keys | .[]' /tmp/compose.json
 
-          jq -e '(.services | keys | sort) == ["caddy","db","redis","web","worker"]' \
+          # `migrate` is filtered out before comparing rather than named in the expected
+          # list, because whether `compose config` renders a profile-gated service at all is
+          # a property of the Compose version, not of this file. Filtering makes the
+          # assertion true either way, while still catching a service added or dropped.
+          jq -e '([.services | keys[] | select(. != "migrate")] | sort) == ["caddy","db","web"]' \
             /tmp/compose.json > /dev/null \
-            || { echo "FAIL: expected exactly caddy, db, redis, web, worker"; exit 1; }
-          echo "OK: five services, exactly as expected"
+            || { echo "FAIL: expected exactly caddy, db, web (plus the profile-gated migrate)"; exit 1; }
+          echo "OK: three long-running services, exactly as expected"
 
           published=$(jq -r '[.services | to_entries[] | select((.value.ports // []) | length > 0) | .key] | sort | join(",")' /tmp/compose.json)
           if [ "$published" != "caddy" ]; then
@@ -370,7 +347,22 @@ jobs:
             echo "FAIL: edge must contain exactly caddy and web; it contains: $on_edge"
             exit 1
           fi
-          echo "OK: db, redis and worker are off the edge network"
+          echo "OK: db is off the edge network"
+
+          # No service may declare a dependency on a service that is not in the file. A
+          # leftover `depends_on: redis` would make every `up` fail with a message about an
+          # undefined service, on the server, at the end of a deploy — the exact class of
+          # failure ADR 0031 removed. Cheap to assert, so assert it.
+          jq -e '
+            (.services | keys) as $defined
+            | [.services | to_entries[]
+               | .key as $svc
+               | ((.value.depends_on // {}) | keys[])
+               | select(. as $d | $defined | index($d) | not)]
+              | length == 0
+          ' /tmp/compose.json > /dev/null \
+            || { echo "FAIL: a service depends_on something that is not defined in this file"; exit 1; }
+          echo "OK: every depends_on names a service that exists"
 
       - name: Validate the Caddyfile
         # `caddy validate` parses the config and builds the full provisioning graph, so it

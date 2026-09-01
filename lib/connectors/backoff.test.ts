@@ -120,6 +120,23 @@ describe("the per-connector cooldown", () => {
 
 const recorded: { outcome: string; upstreamStatus: number | null; durationMs: number }[] = [];
 
+/**
+ * The limiter is stubbed to PERMIT, so this suite tests the cooldown and nothing else.
+ *
+ * It used not to be stubbed at all, which worked while the per-user quota was spent after the
+ * cooldown check: the cooldown branch returned first and nothing reached the limiter. QV-02
+ * moved that quota above the cache read — and therefore above the cooldown — so an unstubbed
+ * `consume` now throws (there is no database in a unit test), `runConnector` fails CLOSED as
+ * it should, and every assertion here saw `quota-exhausted` instead of `rate-limited`. The
+ * fail-closed behaviour is correct and is asserted in `connector-cache.test.ts`; here it was
+ * only hiding the thing this file is about.
+ */
+vi.mock("@/lib/rate-limit", () => ({
+  consume: vi.fn(async () => ({ ok: true, count: 1, limit: 100, remaining: 99, resetAt: new Date() })),
+  hashSubject: (subject: string) => subject,
+  clientSubject: () => "anon",
+}));
+
 vi.mock("./audit", () => ({
   AUDIT_RETENTION_DAYS: 30,
   recordConnectorRequest: vi.fn(async (entry: Record<string, unknown>) => {

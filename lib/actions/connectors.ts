@@ -8,6 +8,7 @@ import { requireAdmin, requireEditor } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { logger } from "@/lib/logger";
 import { TAG } from "@/lib/queries/cache";
+import { clearRefusalMemo } from "@/lib/connectors/runtime";
 import { resetGovernanceMemo } from "@/lib/sources/governed";
 import {
   cameraIdSchema,
@@ -64,9 +65,15 @@ export async function setConnectorEnabled(input: unknown): Promise<ActionResult<
 
     // The registry read is deliberately uncached, so switching a source OFF takes effect on
     // the very next request with no TTL in between. Switching one back ON has to clear the
-    // remembered refusal (QV-05), which is what this call does — in this process. Another
+    // remembered refusal (QV-05), which is what these calls do — in this process. Another
     // process waits out its own window, at most `MAX_REFUSAL_MEMO_SECONDS`.
+    //
+    // BOTH memos, because there are two governed paths and they are not the same one:
+    // `governed.ts` serves the map's six adapters, `runtime.ts` serves the Toolbench and
+    // `/live/flights` (QV-25). Forgetting one of them is how "I turned it back on and nothing
+    // happened" becomes an incident report.
     resetGovernanceMemo();
+    clearRefusalMemo();
     // The `/live` landing page's connector list is cached and does need purging.
     revalidateTag(TAG.connectors);
 

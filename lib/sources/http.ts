@@ -1,6 +1,7 @@
 import brand from "@/config/brand";
 import { readCappedText } from "@/lib/net/capped-body";
 import { countOutboundRequest } from "@/lib/net/outbound-tally";
+import { connectorHost, isPinnedHost } from "@/lib/toolbench/net-target";
 
 import type { SourceFailure } from "./types";
 
@@ -191,9 +192,37 @@ export type FetchOptions = {
    * a cap means a misbehaving or redirected upstream cannot exhaust the worker's memory.
    */
   readonly maxBytes?: number;
+  /**
+   * The only host this request may reach, checked before it is made and again on every
+   * redirect hop. **Defaults to the host of `url` itself**, which is the right default here
+   * because every adapter builds its URL from module constants — so the pin is "the operator
+   * we meant to call", with no caller left to forget it. QA finding QV-18.
+   *
+   * `radio-browser` is the one adapter whose host comes from a remote discovery response; it
+   * anchors that host against `/^[a-z0-9-]+\.api\.radio-browser\.info$/` before building a
+   * URL, so the pin is still a host this codebase chose.
+   */
+  readonly pinnedHost?: string;
+  /**
+   * Same-host redirect hops to follow. Three is enough for the usual `/x` -> `/x/` and
+   * http->https tidying an API does, and small enough that a loop ends.
+   */
+  readonly maxRedirects?: number;
 };
 
 const DEFAULT_MAX_BYTES = 12 * 1024 * 1024;
+
+/**
+ * The host of a URL we built, or `null` if it will not parse. `null` refuses the request:
+ * a URL we cannot parse is a URL we cannot pin, and an unpinnable request is not one we make.
+ */
+function safeHost(url: string): string | null {
+  try {
+    return connectorHost(url);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * One GET, with a timeout, a byte cap and typed failures.
@@ -227,21 +256,85 @@ export async function fetchUpstream(options: FetchOptions): Promise<HttpOutcome>
   signal.addEventListener("abort", onCallerAbort, { once: true });
 
   try {
-    // Counted at the request itself (QV-09). The NWS adapter makes one index call plus up to
-    // twelve zone lookups in a single poll; the audit row has to say thirteen, not one.
-    countOutboundRequest();
-    const response = await fetch(url, {
-      signal: controller.signal,
-      redirect: "follow",
-      // The freshness contract is ours (ADR 0014). A second cache with its own clock is the
-      // two-clocks-disagreeing failure that makes an age display lie.
-      cache: "no-store",
-      headers: {
-        accept: "application/json",
-        "user-agent": sourceUserAgent(),
-        ...options.headers,
-      },
-    });
+    /**
+     * THE REDIRECT PIN — QA finding QV-18.
+     *
+     * This used to send `redirect: "follow"` with no pin at all, while the connector layer's
+     * primitive four files away explained why that is wrong: *"`follow` would walk a 302
+     * anywhere the upstream pointed, and 'the upstream is trustworthy' is exactly the
+     * assumption an SSRF exploits — an open redirect on an otherwise honest service is
+     * enough."* The exposure was bounded — every URL here is built from a module constant —
+     * but the cloud metadata endpoint is one `Location:` header away from six named
+     * operators, and the whole deployment is one VPS.
+     *
+     * So: `redirect: "manual"`, and each hop re-checked against the pin, which defaults to
+     * the host of the URL the adapter asked for. `isPinnedHost` is the SAME predicate the
+     * connector primitive uses — it also refuses a scheme downgrade, userinfo before the
+     * host, and a non-443 port — because QV-18's own note is that maintaining two copies "is
+     * how one of them ends up with QV-03 fixed and the other not".
+     *
+     * The two primitives are still two functions: they return different failure vocabularies
+     * (a typed `SourceFailure` here, a thrown `UpstreamStatusError` there) and own different
+     * cooldown maps. What is shared is what a copy would get wrong — the pin predicate and
+     * the streaming byte cap.
+     */
+    const pinnedHost = options.pinnedHost ?? safeHost(url);
+    const maxRedirects = options.maxRedirects ?? 3;
+
+    let target = url;
+    let response: Response;
+    for (let hop = 0; ; hop += 1) {
+      if (pinnedHost === null || !isPinnedHost(target, pinnedHost)) {
+        // Nothing is sent: not the request, and therefore not our User-Agent either.
+        return {
+          ok: false,
+          failure: {
+            kind: "upstreamError",
+            // No status: on the first pass nothing was requested at all, and on a hop the
+            // 3xx we refused to follow is not the failure — our refusal is.
+            // Never the URL either: a `Location` is upstream-controlled text and this
+            // message is rendered and logged.
+            message: "upstream redirected off its own host, so the request was not made",
+          },
+        };
+      }
+
+      // Counted at the request itself (QV-09). The NWS adapter makes one index call plus up
+      // to twelve zone lookups in a single poll; the audit row has to say thirteen, not one.
+      // A hop is a request we made, so it counts too.
+      countOutboundRequest();
+      response = await fetch(target, {
+        signal: controller.signal,
+        redirect: "manual",
+        // The freshness contract is ours (ADR 0014). A second cache with its own clock is the
+        // two-clocks-disagreeing failure that makes an age display lie.
+        cache: "no-store",
+        headers: {
+          accept: "application/json",
+          "user-agent": sourceUserAgent(),
+          ...options.headers,
+        },
+      });
+
+      if (response.status < 300 || response.status >= 400) break;
+
+      const location = response.headers.get("location");
+      if (location === null || hop >= maxRedirects) {
+        return {
+          ok: false,
+          failure: {
+            kind: "upstreamError",
+            status: response.status,
+            message: `upstream returned HTTP ${response.status} without a followable location`,
+          },
+        };
+      }
+      // Resolved against the CURRENT url, so a relative Location behaves as a browser would.
+      // The loop re-checks the pin at the top, which is the point.
+      target = new URL(location, target).toString();
+      // The body of a redirect is never read, so it is cancelled rather than buffered.
+      await response.body?.cancel();
+    }
 
     // Recorded before any branch, so a 429 and a 502 are equally visible to the audit row.
     lastStatus.set(slug, response.status);

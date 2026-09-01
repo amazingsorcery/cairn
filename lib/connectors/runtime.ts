@@ -417,8 +417,14 @@ export async function runConnector<Params, Result>(
   /*
    * A refusal we have already computed and already recorded, inside its window: no registry
    * read, no audit row, no request, and the same envelope the first caller got (QV-25).
+   *
+   * Skipped when the caller supplied a row. `options.connector` is the admin "test this
+   * connector" seam, and an operator who has just corrected a row and asked us to try it must
+   * get an answer about the row they handed us — not a sentence we cached about the last
+   * anonymous request. The row still goes through `isLive` (QV-01); the memo is a cache of a
+   * registry read, and there is no registry read to skip here.
    */
-  const remembered = recallRefusal(driver.slug, now);
+  const remembered = options.connector ? null : recallRefusal(driver.slug, now);
   if (remembered) return remembered.envelope as ConnectorEnvelope<Result>;
 
   /*
@@ -517,7 +523,15 @@ export async function runConnector<Params, Result>(
      * refusal is remembered: a live row is read every time, so switching a source OFF still
      * bites on the very next request (QV-25).
      */
-    rememberRefusal(driver.slug, envelope, connector?.cacheTtlSeconds ?? MAX_REFUSAL_MEMO_SECONDS, now);
+    // Not remembered for a caller-supplied row, for the same reason it is not read for one.
+    if (!options.connector) {
+      rememberRefusal(
+        driver.slug,
+        envelope,
+        connector?.cacheTtlSeconds ?? MAX_REFUSAL_MEMO_SECONDS,
+        now,
+      );
+    }
     return envelope as ConnectorEnvelope<Result>;
   }
 
@@ -978,4 +992,12 @@ export function parseRetryAfter(header: string | null, now: Date = new Date()): 
 /** Test seam: drop every cached payload. Not exported from the package index. */
 export function clearConnectorCache(): void {
   payloadCache.clear();
+  /*
+   * The refusal memo goes with it. Both are in-process caches of a previous answer, and a
+   * test that clears one but not the other is testing the memo instead of the thing it means
+   * to test — QA's 48-combination kill-switch sweep clears before each case precisely so that
+   * every case exercises `isLive`, and a surviving memo would answer for it.
+   * `clearRefusalMemo` is exported separately for the tests that are about the memo itself.
+   */
+  refusalMemo.clear();
 }

@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Connector } from "@/db/schema";
 
@@ -93,6 +93,10 @@ const VIEWPORT = { lat: 51.5, lon: -0.1, radius: 50 };
 
 let sockets: string[];
 const realFetch = globalThis.fetch;
+
+afterEach(() => {
+  globalThis.fetch = realFetch;
+});
 
 beforeEach(() => {
   getConnectorBySlug.mockReset();
@@ -221,13 +225,19 @@ describe("QV-02 reopened: the choice that produced it no longer exists", () => {
   });
 
   it("`runConnector` charges the caller before the cache is read, unconditionally", async () => {
-    const runtime = readFileSync(join(connectorDir, "runtime.ts"), "utf8");
-    const quotaAt = runtime.indexOf('spendQuota("connector-user"');
+    const runtime = readFileSync(join(connectorDir, "runtime.ts"), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+    // The spend, not the type annotation on `spendQuota`'s own parameter: the call is the
+    // one written across two lines as `spendQuota(\n    "connector-user",`.
+    const spends = [...runtime.matchAll(/spendQuota\(\s*"connector-user"/g)];
+    const quotaAt = spends[0]?.index ?? -1;
     const cacheAt = runtime.indexOf("readCache(key)");
     expect(quotaAt).toBeGreaterThan(-1);
     expect(cacheAt).toBeGreaterThan(-1);
     expect(quotaAt, "the per-user quota must be spent above the cache read").toBeLessThan(cacheAt);
-    // And exactly once: the second, post-cache spend existed only for the shared path.
-    expect(runtime.match(/spendQuota\("connector-user"/g)?.length).toBe(1);
+    // And exactly once: the second, post-cache spend existed only for the shared path, and
+    // charging it twice would halve the number an operator configured.
+    expect(spends.length).toBe(1);
   });
 });

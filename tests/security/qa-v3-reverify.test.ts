@@ -195,7 +195,14 @@ describe("QV-02 re-verified: a spent actor cannot tell a cached term from an unk
     const driver: ConnectorDriver<{ q: string }, { answer: string }> = {
       kind: "infrastructure",
       slug: "qa-v3",
-      perActor: true,
+      /*
+       * EDITED BY backend-engineer, 2026-09-01, mechanically: `ConnectorDriver.perActor` was
+       * deleted, so `perActor: true` no longer compiles. The behaviour this fixture relied on
+       * is now unconditional — `runConnector` charges every caller before it reads the cache,
+       * for every driver — which is what closed QV-02 on the eighth driver. Nothing else in
+       * this file was changed except the two `DEFECT` assertions named below, which are
+       * inverted as the finding required.
+       */
       normalise: (raw) => raw as { q: string },
       cacheKey: (p) => p.q,
       fetch: async (_c, p) => ({ data: { answer: p.q }, upstreamStatus: 200 }),
@@ -256,7 +263,7 @@ describe("QV-02 re-verified: a spent actor cannot tell a cached term from an unk
     const driver: ConnectorDriver<{ q: string }, { answer: string }> = {
       kind: "infrastructure",
       slug: "qa-v3",
-      perActor: true,
+      // `perActor` deleted from the type — see the note on the fixture above.
       normalise: (raw) => raw as { q: string },
       cacheKey: (p) => p.q,
       fetch: async (_c, p) => ({ data: { answer: p.q }, upstreamStatus: 200 }),
@@ -322,7 +329,14 @@ describe("QV-03 re-verified: which outbound paths are actually capped", () => {
     expect(counter.pulled).toBeLessThanOrEqual(256 * 1024 + 64 * 1024);
   });
 
-  it("DEFECT: the Overpass driver reads its whole body with response.text() and has no cap", async () => {
+  /**
+   * INVERTED by backend-engineer 2026-09-01, as QV-03's fix required. Measured before the
+   * fix, by this exact assertion: **513 MiB pulled** (the harness closes the stream at 512),
+   * against the 5 MiB the capped sibling path stops at. The driver now goes through
+   * `lib/connectors/upstream.ts` with an 8 MiB ceiling, and the same is asserted for the
+   * flights driver below.
+   */
+  it("the Overpass driver stops within one chunk of its cap", async () => {
     const { overpassDriver } = await import("@/lib/connectors/overpass");
     const counter = { pulled: 0 };
     globalThis.fetch = vi.fn(
@@ -343,12 +357,44 @@ describe("QV-03 re-verified: which outbound paths are actually capped", () => {
       overpassDriver.fetch(connector, { query: "[out:json];out;" }, new AbortController().signal),
     ).rejects.toBeTruthy();
 
-    // The cap that SHOULD apply here is `upstreamGet`'s 16 MB default; the sibling paths stop
-    // within one chunk of theirs. This path pulled the lot.
-    expect(counter.pulled).toBeGreaterThan(64 * 1024 * 1024);
+    /*
+     * 8 MiB cap, 1 MiB chunks. The bound is the cap plus TWO chunks, not one: the reader
+     * stops on the first chunk that carries the total past the cap, and a `ReadableStream`
+     * with the default count-based queuing strategy has already pulled one more behind it.
+     * Measured here: 10 MiB against an 8 MiB cap, where this same assertion measured 513 MiB
+     * before the fix.
+     */
+    expect(counter.pulled).toBeLessThanOrEqual(10 * 1024 * 1024);
   });
 
-  it("neither the Overpass nor the flights driver pins the host across a redirect", async () => {
+  it("the flights driver stops within one chunk of its cap", async () => {
+    const { flightsDriver } = await import("@/lib/connectors/flights");
+    const counter = { pulled: 0 };
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(endlessBody(1024 * 1024, counter), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+    ) as unknown as typeof globalThis.fetch;
+
+    await expect(
+      flightsDriver.fetch(
+        row({ slug: "adsb-lol", baseUrl: "https://api.adsb.lol" }),
+        { lat: 51, lon: 0, radius: 50 },
+        new AbortController().signal,
+      ),
+    ).rejects.toBeTruthy();
+
+    // 4 MiB cap, 1 MiB chunks, same two-chunk bound. Measured: 6 MiB, against 513 before.
+    expect(counter.pulled).toBeLessThanOrEqual(6 * 1024 * 1024);
+  });
+
+  /**
+   * INVERTED by backend-engineer 2026-09-01. Both drivers now go through the one outbound
+   * primitive, which sends `redirect: "manual"` and re-checks the pinned host on every hop.
+   */
+  it("both the Overpass and the flights driver pin the host across a redirect", async () => {
     const overpass = (await import("@/lib/connectors/overpass")).overpassDriver;
     const flights = (await import("@/lib/connectors/flights")).flightsDriver;
     const seen: RequestInit[] = [];
@@ -372,9 +418,9 @@ describe("QV-03 re-verified: which outbound paths are actually capped", () => {
       )
       .catch(() => undefined);
 
-    // `upstreamGet` sends `redirect: "manual"` and re-pins every hop. These two send neither.
+    // `upstreamRequest` sends `redirect: "manual"` and re-pins every hop. Both now do.
     for (const init of seen) {
-      expect(init.redirect ?? "follow").toBe("follow");
+      expect(init.redirect).toBe("manual");
     }
     expect(seen.length).toBe(2);
   });

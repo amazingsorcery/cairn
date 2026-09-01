@@ -196,10 +196,21 @@ describe("QA-V2-01: the map payload cache is keyed on the source slug AND the qu
  * still read another actor's result, free and untraceable, which is a "who looked this up,
  * and when" oracle.
  *
- * The fix is `ConnectorDriver.perActor`. A driver whose cache key contains caller input
- * consumes the per-user quota before the cache is consulted at all, so a hit costs a unit and
- * a refusal is audited, and its `fetchedAt` is quantised to the cache window so it cannot
- * carry another reader's instant.
+ * The first fix was `ConnectorDriver.perActor`: a driver whose cache key contains caller
+ * input consumed the per-user quota before the cache was consulted, so a hit cost a unit and
+ * a refusal was audited, and its `fetchedAt` was quantised to the cache window so it could
+ * not carry another reader's instant.
+ *
+ * QA REOPENED IT, and the reopening is why that flag no longer exists. Seven drivers declared
+ * `true`; `flightsDriver` declared `false`, arguing that a viewport is a question about the
+ * world — which is true of `/map` and false of `/live/flights`, the search-by-place surface
+ * that is the only thing that driver serves. Measured: a victim's exact millisecond returned
+ * to an attacker four times, free and unaudited, from a GET over an 11 km grid.
+ *
+ * The behaviour below is therefore now UNCONDITIONAL, for every driver and every call site,
+ * with nothing to declare and nothing to declare wrongly. See `lib/connectors/types.ts` for
+ * the argument and `tests/security/flights-oracle.test.ts` for the driver the flag was wrong
+ * about.
  */
 
 /** A row with every column `runConnector` reads, live: enabled, published, with a basis. */
@@ -228,7 +239,6 @@ function liveConnector(overrides: Record<string, unknown> = {}): Connector {
 const perActorDriver: ConnectorDriver<{ query: string }, { secret: string }> = {
   kind: "infrastructure",
   slug: "qa-oracle-connector",
-  perActor: true,
   normalise: (raw: unknown) => raw as { query: string },
   cacheKey: (params) => params.query,
   fetch: async (_c, params) => ({
@@ -260,8 +270,17 @@ describe("QA-V2-02: the connector payload cache is not a cross-user oracle", () 
     );
     expect(victim.state).toBe("fresh");
 
-    // The attacker has spent everything. Every quota check now refuses.
-    consume.mockResolvedValue(spent);
+    /*
+     * The attacker has spent everything. Every CONNECTOR quota check now refuses.
+     *
+     * `connector-entry` is deliberately left open: it is the door limiter added for QV-25 and
+     * it refuses before the registry is even read, so denying it here would prove the wrong
+     * thing. This test is about the connector quota being spent above the cache read, which
+     * is what makes a cached term and an unknown one indistinguishable.
+     */
+    consume.mockImplementation(async (action: string) =>
+      action === "connector-entry" ? allowed : spent,
+    );
     audit.mockClear();
 
     const probe = await runConnector(
@@ -356,44 +375,59 @@ describe("QA-V2-02: the connector payload cache is not a cross-user oracle", () 
     expect(first.fetchedAt?.getTime()).toBe(at.getTime());
   });
 
-  it("leaves a shared live layer on the ADR 0014 section 4 path: no quota for a cache hit", async () => {
+  /**
+   * REPLACES "leaves a shared live layer on the ADR 0014 section 4 path: no quota for a cache
+   * hit", which asserted the exemption QA reopened this finding over.
+   *
+   * That test was not wrong about ADR 0014 §4 — the cache ENTRY is still shared, and the
+   * assertion that the upstream sees one call for two readers is kept below. It was wrong
+   * that a READ of the shared entry should be free, and the driver it described ("a viewport
+   * is a question about the world") is the exact driver on which QA then measured a victim's
+   * fetch instant being handed to an attacker four times.
+   */
+  it("a live layer keeps ONE shared upstream call, and still charges each reader for the read", async () => {
     const { runConnector, clearConnectorCache } = await import("@/lib/connectors/runtime");
     clearConnectorCache();
-    const connector = liveConnector({ slug: "qa-shared-connector" });
+    const connector = liveConnector({ slug: "qa-shared-connector", cacheTtlSeconds: 60 });
 
-    const sharedDriver: ConnectorDriver<{ bbox: string }, { n: number }> = {
+    const fetchSpy = vi.fn(async () => ({ data: { n: 1 }, upstreamStatus: 200 }));
+    const viewportDriver: ConnectorDriver<{ bbox: string }, { n: number }> = {
       kind: "flights",
       slug: "qa-shared-connector",
-      // A viewport is a question about the world, not a private query: every reader looking
-      // at the same place asks the same thing, and one shared entry is the point.
-      perActor: false,
       normalise: (raw: unknown) => raw as { bbox: string },
       cacheKey: (params) => params.bbox,
-      fetch: async () => ({ data: { n: 1 }, upstreamStatus: 200 }),
+      fetch: fetchSpy,
     };
 
     consume.mockResolvedValue(allowed);
-    const startedAt = Date.now();
     const first = await runConnector(
-      sharedDriver,
+      viewportDriver,
       { bbox: "0,0,1,1" },
       { subject: "a" },
       { connector },
     );
-    expect(first.state).toBe("fresh");
-    // The exact upstream instant survives for a shared layer: it is the one number on a live
-    // page that must not be rounded, and it says nothing about any reader. Quantising it to
-    // this row's hour-long window would have put it before the call was even made.
-    expect(first.fetchedAt?.getTime() ?? 0).toBeGreaterThanOrEqual(startedAt);
+    const spendsAfterFirst = consume.mock.calls.filter(
+      ([action]) => action === "connector-user",
+    ).length;
 
-    const before = consume.mock.calls.length;
     const second = await runConnector(
-      sharedDriver,
+      viewportDriver,
       { bbox: "0,0,1,1" },
       { subject: "b" },
       { connector },
     );
+
+    expect(first.state).toBe("fresh");
     expect(second.state).toBe("fresh");
-    expect(consume.mock.calls.length).toBe(before);
+    // ADR 0014 §4 is intact: one shared entry, one upstream call for the two readers.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    // And the second reader paid for the read, which is what removes the oracle.
+    expect(
+      consume.mock.calls.filter(([action]) => action === "connector-user").length,
+    ).toBe(spendsAfterFirst + 1);
+    // The instant is the cache window, not the first reader's millisecond — on a live layer
+    // too, which is the part QV-02 was reopened over.
+    expect((second.fetchedAt?.getTime() ?? 1) % (60 * 1000)).toBe(0);
+    expect(second.fetchedAt?.getTime()).toBe(first.fetchedAt?.getTime());
   });
 });

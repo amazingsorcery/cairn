@@ -98,8 +98,12 @@ const serverSchema = z
      */
     SOURCE_CONTACT_EMAIL: z.string().email().optional(),
 
-    /** Redis, for the source cache, rate limiting and layer pub/sub (ADR 0019). */
-    REDIS_URL: z.string().optional(),
+    /*
+     * There is deliberately NO REDIS_URL here. ADR 0031 removed the `redis` container: it
+     * had zero application consumers, and the source cache is the in-process map in
+     * `app/(public)/map/sources.ts`. A variable declared here and read by nothing is a
+     * variable an operator sets and then trusts, which is QV-08's defect in one line.
+     */
   })
   .superRefine((env, ctx) => {
     if (env.RATE_LIMIT_SECRET === env.AUTH_SECRET) {

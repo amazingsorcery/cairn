@@ -50,10 +50,14 @@ emit ""
 
 # --- Containers -------------------------------------------------------------------------
 emit "Containers"
-# Five, up from three (ADR 0019). Ordered by what a reader depends on: if db or redis is
-# down, everything above it in this list is going to look broken too, and reading the list
-# top-down gives the cause before the symptoms.
-for svc in db redis web worker caddy; do
+# Three. ADR 0019 raised this to five; ADR 0031 removed `worker` and `redis` again -- the
+# worker had no entrypoint and Redis had no consumer. Ordered by what a reader depends on:
+# if db is down, everything below it in this list is going to look broken too, and reading
+# the list top-down gives the cause before the symptoms.
+#
+# `migrate` is deliberately absent: it is profile-gated and one-shot, so "not running" is
+# its correct steady state and checking it would report a fault on every healthy server.
+for svc in db web caddy; do
 	cid="$("${COMPOSE[@]}" ps -q "${svc}" 2>/dev/null)"
 	if [ -z "${cid}" ]; then
 		fail "${svc} is not running"
@@ -80,91 +84,85 @@ for svc in db redis web worker caddy; do
 	fi
 done
 
-# --- Redis ----------------------------------------------------------------------------------
-# What "Redis filling up" looks like, and why none of it is an error in the log.
+# --- Live sources -----------------------------------------------------------------------
+# "Has a source gone dark?" -- answered from Postgres, because since ADR 0031 there is no
+# worker to ask. Two questions, in order, and they are NOT the same question:
 #
-# maxmemory-policy is `allkeys-lru`, so a full Redis does not fail — it evicts. There is no
-# error, no restart and no alert: the only visible effect is that cache hits stop happening,
-# so the worker re-fetches more often and the map gets slower and closer to its upstream
-# ceilings. `evicted_keys` climbing is the single number that says so.
+#   1. IS ANYTHING SWITCHED ON? Every connector ships `enabled = false` and eleven of the
+#      thirteen also ship `status = 'draft'`. A board with no LIVE rows is the SHIPPED
+#      STATE of a fresh deploy, not a fault, and this script reports it as OK with a note
+#      rather than as a failure. A health check that cries wolf on the intended
+#      configuration is one an operator learns to ignore.
+#   2. FOR THE ROWS THAT ARE ON, WHAT HAPPENED IN THE LAST 24 HOURS? `connector_requests`
+#      records one row per governed attempt including the refusals, so an upstream that
+#      started answering 5xx, or one we started refusing to call, is visible here. This is
+#      the artefact that found v1's Q-02.
 #
-# A steady trickle of evictions is NORMAL and expected at a working set near the ceiling.
-# The thing to react to is used/max sitting above 90% together with evictions growing between
-# two runs of this script, which together mean the ceiling is now the binding constraint
-# rather than a safety net.
-emit ""
-emit "Redis"
-redis_cid="$("${COMPOSE[@]}" ps -q redis 2>/dev/null)"
-if [ -z "${redis_cid}" ]; then
-	fail "redis is not running — every layer will re-fetch on every request and the poll ceilings in ADR 0021 will be exceeded"
-else
-	# -a is passed only when a password is configured, because `redis-cli -a ""` warns on
-	# stderr and is noise on the common path.
-	if [ -n "${REDIS_PASSWORD:-}" ]; then
-		redis_info="$(docker exec "${redis_cid}" redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning info memory 2>/dev/null)"
-		redis_stats="$(docker exec "${redis_cid}" redis-cli -a "${REDIS_PASSWORD}" --no-auth-warning info stats 2>/dev/null)"
-	else
-		redis_info="$(docker exec "${redis_cid}" redis-cli info memory 2>/dev/null)"
-		redis_stats="$(docker exec "${redis_cid}" redis-cli info stats 2>/dev/null)"
-	fi
-
-	if [ -z "${redis_info}" ]; then
-		fail "redis is running but did not answer INFO. If a password is set, REDIS_PASSWORD must be in .env for this check to work."
-	else
-		used="$(printf '%s' "${redis_info}" | tr -d '\015' | awk -F: '/^used_memory:/ {print $2}')"
-		maxm="$(printf '%s' "${redis_info}" | tr -d '\015' | awk -F: '/^maxmemory:/ {print $2}')"
-		used_h="$(printf '%s' "${redis_info}" | tr -d '\015' | awk -F: '/^used_memory_human:/ {print $2}')"
-		evicted="$(printf '%s' "${redis_stats}" | tr -d '\015' | awk -F: '/^evicted_keys:/ {print $2}')"
-
-		if [ -n "${maxm}" ] && [ "${maxm:-0}" -gt 0 ] 2>/dev/null; then
-			pct=$((used * 100 / maxm))
-			if [ "${pct}" -ge 95 ]; then
-				fail "redis is at ${pct}% of maxmemory (${used_h}). It is evicting continuously; every eviction is a cache miss that becomes an upstream call. Raise REDIS_MAXMEMORY or find the key pattern that is growing."
-			elif [ "${pct}" -ge 85 ]; then
-				warn "redis is at ${pct}% of maxmemory (${used_h}) — at or near the eviction threshold"
-			else
-				ok "redis at ${pct}% of maxmemory (${used_h})"
-			fi
-		else
-			# maxmemory 0 means unlimited, which this stack never wants: an unbounded cache
-			# on a shared box competes with Postgres for RAM and is eventually OOM-killed.
-			fail "redis has no maxmemory set (unbounded). Check the redis `command:` in docker-compose.prod.yml."
-		fi
-		emit "        evicted_keys=${evicted:-unknown} (a slow climb is normal; a fast one means the ceiling is binding)"
-	fi
-fi
-
-# --- Live sources ---------------------------------------------------------------------------
-# The connector board, read from the worker itself. This is the answer to "has a source gone
-# dark", and it is deliberately printed in full rather than reduced to a pass/fail: a source
-# that is `notConfigured` because nobody has ever set its key is a completely different
-# situation from one that answered fine yesterday, and only the board shows which is which.
-# The web-facing version of the same data is /admin/connectors (ADR 0024).
+# The web-facing version of the same data is /admin/connectors (ADR 0024). This is the
+# version you can run over SSH when the app will not render.
 emit ""
 emit "Live sources"
-worker_cid="$("${COMPOSE[@]}" ps -q worker 2>/dev/null)"
-if [ -z "${worker_cid}" ]; then
-	fail "worker is not running — nothing is polling, and every layer will go stale as it passes its TTL"
-else
-	if "${COMPOSE[@]}" exec -T worker node -e \n		"fetch('http://127.0.0.1:'+(process.env.WORKER_HEALTH_PORT||9091)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" >/dev/null 2>&1; then
-		ok "the poll loop is running (worker /healthz returns 200)"
-	else
-		# 503 here means a poller STOPPED ATTEMPTING, which is our bug, not an upstream's.
-		# HANDOFF section 14 is the contract that makes this distinction meaningful.
-		fail "worker /healthz is not 200 — at least one poller has stopped attempting. This is a dead poller, NOT a dead upstream. docker compose -f ${COMPOSE_FILE} logs --tail=100 worker"
-	fi
 
-	board="$("${COMPOSE[@]}" exec -T worker node -e \n		"fetch('http://127.0.0.1:'+(process.env.WORKER_HEALTH_PORT||9091)+'/status').then(r=>r.text()).then(t=>{console.log(t);process.exit(0)}).catch(()=>process.exit(1))" 2>/dev/null)"
+# SQL on stdin, single-quoted sh script: $POSTGRES_* expand inside the db container from its
+# own environment and never reach this host's process list.
+psql_q() {
+	printf '%s\n' "$1" | "${COMPOSE[@]}" exec -T db sh -c \
+		'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -qAt -v ON_ERROR_STOP=1 -f -' 2>/dev/null
+}
+
+live_count="$(psql_q "select count(*) from connectors
+                       where enabled and status = 'published'
+                         and terms_url is not null and legal_basis is not null;")"
+
+if [ -z "${live_count}" ]; then
+	fail "could not read the connectors table. Is db up, and has the seed been run? See RUNBOOK section 6."
+elif [ "${live_count}" -eq 0 ]; then
+	total="$(psql_q 'select count(*) from connectors;')"
+	ok "no source is switched on (0 of ${total:-?} connectors are live). This is the SHIPPED STATE."
+	emit "        Nothing is calling any upstream. The map and the Toolbench render an honest"
+	emit "        'an operator switched this source off' on every live surface, by design."
+	emit "        To turn one on deliberately, read its legal_basis first: RUNBOOK section 18.5."
+else
+	ok "${live_count} connector(s) are live"
+	# One line per live source: attempts and outbound requests in 24 h, broken down by the
+	# outcomes that mean different things. `disabled` is excluded from "bad" because it is a
+	# decision, not a fault.
+	board="$(psql_q "select
+	    rpad(c.slug, 26)
+	    || ' attempts=' || lpad(count(*)::text, 5)
+	    || ' out=' || lpad(coalesce(sum(r.upstream_requests), 0)::text, 5)
+	    || ' ok=' || lpad(count(*) filter (where r.outcome = 'ok')::text, 5)
+	    || ' bad=' || lpad(count(*) filter (where r.outcome not in ('ok', 'disabled'))::text, 4)
+	    || ' last=' || coalesce(to_char(max(r.requested_at) at time zone 'UTC', 'MM-DD HH24:MI'), 'never')
+	  from connectors c
+	  left join connector_requests r
+	    on r.connector_id = c.id and r.requested_at > now() - interval '24 hours'
+	  where c.enabled and c.status = 'published'
+	  group by c.slug
+	  order by c.slug;")"
 	if [ -n "${board}" ]; then
 		# Process substitution, not a pipe: a piped `while read` runs in a subshell, and every
 		# `emit` inside it would append to a copy of REPORT that is discarded when the subshell
 		# exits. The board would then be collected and silently thrown away.
 		while IFS= read -r line; do
 			[ -n "${line}" ] && emit "        ${line}"
-		done < <(printf '%s
-' "${board}")
-	else
-		warn "the worker did not return a source board on /status"
+		done < <(printf '%s\n' "${board}")
+		emit "        bad = anything that is not 'ok' and not 'disabled': upstreamError, timeout,"
+		emit "        schemaChanged, rateLimited, quotaDenied. RUNBOOK section 18.3 forks on which."
+	fi
+
+	# A live source that has not been attempted at all in 24 h is the shape of a dead poll
+	# path. With on-demand fetching that can simply mean nobody opened the page, so it is a
+	# WARN and it says so rather than a FAIL.
+	silent="$(psql_q "select string_agg(c.slug, ', ' order by c.slug)
+	  from connectors c
+	  where c.enabled and c.status = 'published'
+	    and not exists (
+	      select 1 from connector_requests r
+	       where r.connector_id = c.id and r.requested_at > now() - interval '24 hours'
+	    );")"
+	if [ -n "${silent}" ]; then
+		warn "live but not attempted in 24 h: ${silent}. Either nobody opened the surface that uses it (normal on a quiet site), or that surface is broken. Open it and re-run."
 	fi
 fi
 

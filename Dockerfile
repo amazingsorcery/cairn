@@ -12,6 +12,14 @@
 #   docker build --target runner   -t app-web:current    .
 #   docker build --target migrator -t app-migrate:current .
 #
+# THERE IS NO `worker` STAGE, and its absence is a decision (ADR 0031). This file used to
+# carry a `FROM migrator AS worker` stage ending in `CMD ["pnpm", "worker"]` — a script that
+# never existed in package.json, so the container it produced crash-looped from the first
+# `docker compose up` and `infra/deploy.sh` rolled the deploy back on its health gate. QV-08.
+# The stage, its `/healthz` contract and the `egress` network that isolated it are recorded
+# in ADR 0031 and docs/deploy/HANDOFF.md §14 so they can be restored rather than re-derived.
+# Two images ship: `runner` and `migrator`.
+#
 # NO SECRETS ARE ACCEPTED OR BAKED IN. There is no ARG or ENV here that carries a
 # credential, and no `--mount=type=secret` is required, because the build does not talk to
 # the database or to any authenticated service. Every secret is supplied at *runtime* via
@@ -194,54 +202,3 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
   CMD ["node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
 
 CMD ["node", "server.js"]
-
-
-# ---------------------------------------------------------------------------------------
-# worker — the long-running poller container (v2, ADR 0019)
-# ---------------------------------------------------------------------------------------
-# `FROM migrator`, so this is literally the same filesystem with a different CMD: the same
-# source tree, the same node_modules (devDependencies included, because `tsx` is one), the
-# same layers on disk. Adding this stage costs one metadata layer, not a second image.
-#
-# WHY NOT `FROM runner`, which is what "share the image with web" would suggest.
-# The runner stage contains `.next/standalone`, which is a node_modules tree PRUNED BY THE
-# NEXT.JS TRACER to the modules the request path imports. The poller entrypoint is not a
-# route, nothing in the request path imports it, so neither it nor `tsx` survives the
-# prune. A `worker` service pointed at the runner image would start, fail to resolve its
-# own entrypoint, and restart-loop — and it would do so only in the container, never in
-# development. The migrator stage already solved this exact problem for `db/migrate.ts`
-# (see the comment above it) and the answer is the same one.
-#
-# WHAT THAT COSTS, stated plainly rather than hidden: this image carries the whole
-# repository and the whole devDependency tree in a container that runs for months, where
-# the runner image carries neither. That is more code present at runtime than `web` has.
-# The compensating controls are on the `worker` service in docker-compose.prod.yml — no
-# published port, no route from Caddy, no egress-less network peer that matters, non-root,
-# all capabilities dropped. The tightening path, if this is ever judged too much surface,
-# is to bundle the entrypoint with esbuild into a single file and run it on a bare
-# `node:22-bookworm-slim`; that is a build-tooling change, not a redesign.
-FROM migrator AS worker
-
-# Health endpoint port. Bound inside the container only — docker-compose.prod.yml publishes
-# nothing for this service and Caddy has no route to it. See docs/deploy/HANDOFF.md §14 for
-# the endpoint contract this port has to satisfy.
-ENV WORKER_HEALTH_PORT=9091
-
-# Documentation only. `expose` does not publish, and neither does this: it records for a
-# reader of `docker inspect` which port the healthcheck below is talking to.
-EXPOSE 9091
-
-# A poller that dies silently is worse than one that crashes loudly (see HANDOFF §14).
-# This probe answers ONE question: is the poll loop still ticking? It deliberately does NOT
-# fail when an upstream is down — product-brief §2b requires one bad upstream to disable its
-# own layer and nothing else, so an unreachable source must leave this container healthy and
-# show up on the connector board instead. Distinguishing those two is the endpoint's job;
-# this line only reads the verdict.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-  CMD ["node", "-e", "fetch('http://127.0.0.1:'+(process.env.WORKER_HEALTH_PORT||9091)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-
-# `pnpm worker` does not exist in package.json yet. That is deliberate and it is recorded as
-# a BLOCKING requirement in docs/deploy/HANDOFF.md §14 — the container will fail to start
-# with "Command \"worker\" not found" until the backend engineer adds it, which is the loud
-# failure this file wants rather than a container that starts and polls nothing.
-CMD ["pnpm", "worker"]

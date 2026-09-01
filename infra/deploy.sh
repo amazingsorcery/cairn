@@ -5,10 +5,11 @@
 #   ./infra/deploy.sh              normal deploy
 #   ./infra/deploy.sh --no-pull    deploy the working tree as-is (use after a manual fix)
 #   ./infra/deploy.sh --skip-backup   skip the pre-migration dump (NOT recommended)
-#   ./infra/deploy.sh --allow-degraded-worker
-#                                  finish the deploy even if the poller container never
-#                                  becomes healthy. Use when you are deliberately shipping
-#                                  a web-only change and already know the worker is broken.
+#
+# THREE CONTAINERS: web, db, caddy - plus the profile-gated one-shot `migrate`. There used
+# to be a `--allow-degraded-worker` flag whose only purpose was to finish a deploy past a
+# `worker` container that could never start. ADR 0031 removed the container, so the flag is
+# gone too; passing it now is a named error rather than a silent no-op.
 #
 # Design contract:
 #   * IDEMPOTENT. Running it twice in a row is a no-op deploy that ends healthy. Every
@@ -40,12 +41,16 @@ ENV_FILE="${REPO_DIR}/.env"
 # --- Options ---------------------------------------------------------------------------
 DO_PULL=1
 DO_BACKUP=1
-ALLOW_DEGRADED_WORKER=0
 for arg in "$@"; do
 	case "${arg}" in
 	--no-pull) DO_PULL=0 ;;
 	--skip-backup) DO_BACKUP=0 ;;
-	--allow-degraded-worker) ALLOW_DEGRADED_WORKER=1 ;;
+	--allow-degraded-worker)
+		# Named explicitly rather than falling through to "Unknown option", because it was a
+		# documented flag and somebody's shell history still has it. ADR 0031.
+		echo "--allow-degraded-worker was removed with the worker container (ADR 0031). There is no worker to degrade; drop the flag and re-run." >&2
+		exit 2
+		;;
 	-h | --help)
 		sed -n '2,30p' "${BASH_SOURCE[0]}"
 		exit 0
@@ -130,26 +135,15 @@ for var in DOMAIN ACME_EMAIL POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB DATABAS
 done
 log "Environment: DOMAIN=${DOMAIN}  APP_URL=${APP_URL}"
 
-# REDIS_URL is optional in lib/env.schema.ts, because a missing cache degrades rather than
-# crashes. In THIS stack it is not optional in practice: the worker writes its poll results
-# there and `web` reads them, so an unset or wrong value produces a map that works, is slow,
-# and calls every upstream on every request — which is the exact behaviour ADR 0021's
-# rate-limit arithmetic assumes cannot happen. Neither symptom raises an error anywhere.
-#
-# `localhost` is checked by name because it is the specific wrong answer: it is correct on a
-# developer's host and points a container at itself.
-if [ -z "${REDIS_URL:-}" ]; then
-	warn "REDIS_URL is not set. The worker and web will run without a shared cache: every"
-	warn "reader request will call upstreams directly, and the poll ceilings in ADR 0021"
-	warn "will be exceeded. Set REDIS_URL=redis://redis:6379 in .env."
-else
-	case "${REDIS_URL}" in
-	*localhost* | *127.0.0.1*)
-		die "REDIS_URL points at localhost (${REDIS_URL}). Inside a container that is the container itself and nothing is listening. Use redis://redis:6379 — see .env.example."
-		;;
-	esac
-	log "Redis: ${REDIS_URL%%://*}://<redacted>"
-fi
+# A .env carried over from a v2 deploy will still carry REDIS_URL and WORKER_HEALTH_PORT.
+# They are harmless - nothing reads them - but saying so here is cheaper than an operator
+# wondering whether their cache is silently broken. A warning, not a refusal: declining to
+# deploy over a stale line in a .env would be the wrong severity.
+for stale_var in REDIS_URL REDIS_PASSWORD REDIS_MAXMEMORY WORKER_HEALTH_PORT; do
+	if [ -n "${!stale_var:-}" ]; then
+		warn "${stale_var} is set in .env and nothing reads it. The redis and worker containers were removed (ADR 0031). The line is safe to delete."
+	fi
+done
 
 IMAGE_NAME="${IMAGE_NAME:-app-web}"
 IMAGE_TAG="${IMAGE_TAG:-current}"
@@ -205,25 +199,10 @@ else
 	log "No previously running image. This looks like a first deploy — rollback will not be available."
 fi
 
-# The worker runs a DIFFERENT image from web (Dockerfile target `worker`, which is the
-# migrator's filesystem with another CMD — see the comment on that stage for why it cannot
-# be the runner image). So it needs its own rollback tag: retagging only ${IMAGE_NAME}
-# would roll web back to the old code while leaving the worker on the new, broken one, which
-# is a state nobody would think to look for.
-WORKER_IMAGE="${IMAGE_NAME}-worker"
-WORKER_ROLLBACK_AVAILABLE=0
-WORKER_CID="$("${COMPOSE[@]}" ps -q worker 2>/dev/null || true)"
-if [ -n "${WORKER_CID}" ]; then
-	PREV_WORKER_IMAGE_ID="$(docker inspect --format '{{.Image}}' "${WORKER_CID}")"
-	docker image tag "${PREV_WORKER_IMAGE_ID}" "${WORKER_IMAGE}:previous"
-	WORKER_ROLLBACK_AVAILABLE=1
-	log "Running worker image ${PREV_WORKER_IMAGE_ID} tagged as ${WORKER_IMAGE}:previous"
-elif docker image inspect "${WORKER_IMAGE}:previous" >/dev/null 2>&1; then
-	WORKER_ROLLBACK_AVAILABLE=1
-	log "worker is not running; keeping the existing ${WORKER_IMAGE}:previous as its rollback point."
-else
-	log "No previously running worker image. First deploy of the worker container."
-fi
+# ONE rollback tag, because one long-running image ships. v2 kept a second for the worker
+# and rolled both together; ADR 0031 removed the worker, and with it the dual-image rollback
+# - which HANDOFF register 37 correctly called the least-exercised new code in this script,
+# running only when everything else had already gone wrong.
 
 GIT_BEFORE="$(git -C "${REPO_DIR}" rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
 log "Current commit: ${GIT_BEFORE}"
@@ -277,16 +256,11 @@ fi
 # 5. Build
 # =======================================================================================
 step "Building images"
-# Three targets. `migrate` is behind the `tools` profile, so it must be named explicitly or
+# Two targets. `migrate` is behind the `tools` profile, so it must be named explicitly or
 # compose will not build it, and the migration step below would then use a stale image.
-#
-# `worker` is cheap despite being a third image: its Dockerfile stage is `FROM migrator`, so
-# every layer it needs was already built by the line above it and this is a metadata write,
-# not a rebuild.
 "${COMPOSE[@]}" build web
 "${COMPOSE[@]}" --profile tools build migrate
-"${COMPOSE[@]}" build worker
-log "Build complete: ${IMAGE_NAME}:${IMAGE_TAG} and ${WORKER_IMAGE}:${IMAGE_TAG}"
+log "Build complete: ${IMAGE_NAME}:${IMAGE_TAG}"
 
 # From here on, a failure should put the previous image back.
 rollback() {
@@ -298,23 +272,12 @@ rollback() {
 	if [ "${ROLLBACK_AVAILABLE}" -eq 1 ]; then
 		warn "Rolling back to ${IMAGE_NAME}:previous"
 		docker image tag "${IMAGE_NAME}:previous" "${IMAGE_NAME}:${IMAGE_TAG}"
-		# The worker rides along. web and worker are built from the same commit and talk to
-		# each other through Redis keys whose shape that commit defines, so restoring one
-		# and not the other leaves two halves of different releases sharing a cache — a
-		# state with no error message and no obvious symptom beyond wrong data on the map.
-		if [ "${WORKER_ROLLBACK_AVAILABLE}" -eq 1 ]; then
-			warn "Rolling the worker back to ${WORKER_IMAGE}:previous"
-			docker image tag "${WORKER_IMAGE}:previous" "${WORKER_IMAGE}:${IMAGE_TAG}"
-			ROLLBACK_SERVICES="web worker caddy"
-		else
-			warn "No previous worker image; the worker will stay on the new build."
-			ROLLBACK_SERVICES="web caddy"
-		fi
 		# --no-build so compose uses the retagged image instead of rebuilding the broken
 		# source. --force-recreate so it does not decide the container is already correct.
-		# Unquoted on purpose: this is a word list, not one argument.
-		# shellcheck disable=SC2086
-		if "${COMPOSE[@]}" up -d --no-build --force-recreate ${ROLLBACK_SERVICES}; then
+		# `caddy` is recreated alongside `web` because it holds connections to the container
+		# it dialled; leaving it pointed at one that is being replaced is a minute of 502s
+		# for no reason.
+		if "${COMPOSE[@]}" up -d --no-build --force-recreate web caddy; then
 			warn "Previous image restarted. Verify manually:"
 			warn "  docker compose -f ${COMPOSE_FILE} ps"
 			warn "  curl -fsS https://${DOMAIN}/api/health"
@@ -342,12 +305,12 @@ rollback() {
 # =======================================================================================
 # 6. Start the database and wait for it to be genuinely ready
 # =======================================================================================
-step "Starting database and cache"
-# Both, together, before anything that depends on them. `worker` and `web` both declare
-# `condition: service_healthy` on both, so compose would do this anyway — doing it
-# explicitly means a failure here is reported as "the database would not start" rather than
-# as "the stack would not start", which are different problems with different fixes.
-"${COMPOSE[@]}" up -d db redis || rollback "starting db and redis"
+step "Starting the database"
+# Before anything that depends on it. `web` declares `condition: service_healthy` on `db`,
+# so compose would do this anyway - doing it explicitly means a failure here is reported as
+# "the database would not start" rather than as "the stack would not start", which are
+# different problems with different fixes.
+"${COMPOSE[@]}" up -d db || rollback "starting db"
 
 log "Waiting for Postgres to report healthy (pg_isready)..."
 DB_CID="$("${COMPOSE[@]}" ps -q db)"
@@ -365,20 +328,6 @@ until [ "$(docker inspect -f '{{.State.Health.Status}}' "${DB_CID}" 2>/dev/null 
 done
 log "Postgres is healthy."
 
-REDIS_CID="$("${COMPOSE[@]}" ps -q redis)"
-[ -n "${REDIS_CID}" ] || rollback "starting redis (no container id)"
-REDIS_DEADLINE=$(($(date +%s) + 60))
-until [ "$(docker inspect -f '{{.State.Health.Status}}' "${REDIS_CID}" 2>/dev/null || echo unknown)" = "healthy" ]; do
-	if [ "$(date +%s)" -ge "${REDIS_DEADLINE}" ]; then
-		"${COMPOSE[@]}" logs --tail=40 redis >&2 || true
-		# The most likely cause by far, so name it rather than making someone find it:
-		# adding --requirepass without also updating the healthcheck's redis-cli invocation
-		# leaves the probe answering NOAUTH forever. See .env.example, REDIS_PASSWORD.
-		rollback "waiting for redis to become healthy (60s timeout). If you have set a Redis password, check that the healthcheck in docker-compose.prod.yml passes it too."
-	fi
-	sleep 2
-done
-log "Redis is healthy."
 
 # =======================================================================================
 # 7. Migrate
@@ -395,7 +344,7 @@ log "Migrations applied."
 # =======================================================================================
 # 8. Start everything
 # =======================================================================================
-step "Starting web, worker and caddy"
+step "Starting web and caddy"
 "${COMPOSE[@]}" up -d --no-build --remove-orphans || rollback "starting the stack"
 
 # =======================================================================================
@@ -428,53 +377,57 @@ fi
 log "Internal health check passed."
 
 # =======================================================================================
-# 9b. Verify the worker
+# 9b. Print the connector board
 # =======================================================================================
-# A poller that dies silently is worse than one that crashes loudly. The whole point of the
-# worker's /healthz contract (HANDOFF section 14) is that this question has an answer:
+# This replaced a worker health gate that could never pass (ADR 0031, QV-08). The question
+# the gate was trying to answer - "is anything actually going to fetch data?" - still needs
+# an answer, and with the poller gone the answer lives in one table.
 #
-#   200 -> every enabled source has ATTEMPTED a poll inside its deadline. Some attempts may
-#          have failed; a dead upstream is not a dead worker and must not be treated as one.
-#   503 -> at least one source's loop has stopped attempting. That is our bug.
+# READ THIS OUTPUT ON EVERY DEPLOY, AND ESPECIALLY ON THE FIRST ONE. Every connector ships
+# `enabled = false`, and eleven of the thirteen also ship `status = 'draft'` (ADR 0012 §1,
+# fail closed). Both must be true for a source to call anything, so A FRESH DEPLOY HAS EVERY
+# LIVE SURFACE SWITCHED OFF BY DESIGN: the map renders its layers as "an operator switched
+# this source off", the Toolbench tools render the same, and nothing leaves the building.
+# That is correct, not broken. RUNBOOK section 18.5 is the procedure for turning one on
+# after reading its recorded legal basis.
 #
-# A 503 here FAILS THE DEPLOY and rolls back, and that is a deliberate choice against the
-# obvious alternative of warning and carrying on. The reasoning: a live site whose map has
-# silently stopped updating looks completely normal to everyone except a reader checking a
-# timestamp, so nobody finds it for days — which is precisely the failure product-brief
-# section 2b calls out. Losing one deploy is the cheaper mistake. `--allow-degraded-worker`
-# exists for the case where you already know and are shipping a web-only fix anyway.
-step "Verifying the worker"
+# This is a report, never a gate. It cannot fail the deploy: an all-off board is the shipped
+# state, and a board that refused to deploy would refuse the first deploy.
+step "Connector board"
 
-WORKER_DEADLINE=$(($(date +%s) + 150))
-WORKER_OK=0
-while [ "$(date +%s)" -lt "${WORKER_DEADLINE}" ]; do
-	if "${COMPOSE[@]}" exec -T worker node -e \n		"fetch('http://127.0.0.1:'+(process.env.WORKER_HEALTH_PORT||9091)+'/healthz').then(async r=>{const b=await r.text();if(!r.ok){console.error(r.status,b);process.exit(1)}console.log(b);process.exit(0)}).catch(e=>{console.error(String(e));process.exit(1)})" 2>/dev/null; then
-		WORKER_OK=1
-		break
-	fi
-	log "  worker not ready yet; retrying in 5s"
-	sleep 5
-done
+CONNECTOR_BOARD_SQL="
+  select
+    rpad(slug, 26)                                          as slug,
+    case when enabled then 'on ' else 'OFF' end              as enabled,
+    rpad(status, 10)                                        as status,
+    case
+      when enabled and status = 'published'
+       and terms_url is not null and legal_basis is not null then 'LIVE'
+      else '-'
+    end                                                     as live,
+    to_char(updated_at at time zone 'UTC', 'YYYY-MM-DD HH24:MI') as changed_utc
+  from connectors
+  order by (enabled and status = 'published') desc, slug;
+"
 
-if [ "${WORKER_OK}" -eq 1 ]; then
-	log "Worker health check passed."
-	# The board is printed on every successful deploy, not only on failure. It is the one
-	# moment someone is definitely watching, and "NASA FIRMS has been notConfigured since
-	# August" is a thing to notice now rather than to discover during an incident.
-	log "Connector board:"
-	"${COMPOSE[@]}" exec -T worker node -e \n		"fetch('http://127.0.0.1:'+(process.env.WORKER_HEALTH_PORT||9091)+'/status').then(r=>r.text()).then(t=>{console.log(t);process.exit(0)}).catch(()=>process.exit(0))" 2>/dev/null || true
-elif [ "${ALLOW_DEGRADED_WORKER}" -eq 1 ]; then
-	warn "The worker is NOT healthy, and --allow-degraded-worker was given, so the deploy continues."
-	warn "The map will go stale as each layer passes its TTL. Fix it:"
-	warn "  docker compose -f ${COMPOSE_FILE} logs --tail=100 worker"
-	warn "  See RUNBOOK -> 'A source has gone dark'."
+# SQL on stdin rather than inside `-c`, so there is one level of shell quoting to get right
+# instead of three. The sh script is SINGLE-quoted: $POSTGRES_USER and $POSTGRES_PASSWORD
+# are expanded by the shell inside the db container, from that container's own environment,
+# and never appear in this host's process list or in deploy.log.
+# stderr is NOT suppressed — if psql refuses, its own message is the diagnosis.
+if printf '%s\n' "${CONNECTOR_BOARD_SQL}" | "${COMPOSE[@]}" exec -T db sh -c \
+	'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -q -P pager=off -v ON_ERROR_STOP=1 -f -'; then
+	# `changed_utc` is trustworthy however the row was written: migration 0007 puts a
+	# BEFORE UPDATE trigger on `connectors`, so a kill-switch flipped with psql moves the
+	# timestamp exactly as one flipped through the app does. That is the whole reason the
+	# column is worth printing here.
+	log "LIVE = enabled AND published AND has both terms_url and legal_basis (lib/connectors/liveness.ts)."
+	log "No LIVE rows on a fresh deploy is the SHIPPED STATE, not a fault. See RUNBOOK section 18.5."
 else
-	warn "Last 80 lines of the worker container log:"
-	"${COMPOSE[@]}" logs --tail=80 worker >&2 || true
-	warn ""
-	warn "If \`pnpm worker\` does not exist yet, this is expected — see docs/deploy/HANDOFF.md"
-	warn "section 14. To ship a web-only change before it does: ./infra/deploy.sh --allow-degraded-worker"
-	rollback "worker health check (no 200 from /healthz within 150s)"
+	warn "Could not read the connector board from the database. The deploy is NOT rolled back:"
+	warn "the app is provably healthy, and this is a report rather than a control. Check:"
+	warn "  docker compose -f ${COMPOSE_FILE} exec -T db sh -c 'psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -c \"select count(*) from connectors\"'"
+	warn "If the table is empty, the seed has not been run: see RUNBOOK section 6."
 fi
 
 # Public path: through Caddy, over TLS, from the outside. A failure here is NOT a reason
@@ -535,14 +488,13 @@ step "Cleaning up"
 # Only dangling (untagged, unreferenced) layers from this build. NOT `prune -a`, which
 # would delete ${IMAGE_NAME}:previous and destroy the rollback path.
 docker image prune -f >/dev/null
-log "Dangling build layers removed. ${IMAGE_NAME}:previous and ${WORKER_IMAGE}:previous are preserved."
+log "Dangling build layers removed. ${IMAGE_NAME}:previous is preserved."
 
 "${COMPOSE[@]}" ps
 
 step "Deploy complete"
 log "Commit:  $(git -C "${REPO_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 log "Image:   ${IMAGE_NAME}:${IMAGE_TAG}"
-log "Worker:  ${WORKER_IMAGE}:${IMAGE_TAG}"
 if [ "${ROLLBACK_AVAILABLE}" -eq 1 ]; then
 	log "Rollback available: yes  ->  ./infra/deploy.sh is not the way back; see RUNBOOK 'Rolling back'"
 else

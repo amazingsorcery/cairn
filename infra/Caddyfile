@@ -49,17 +49,23 @@ import csp.caddy
 	# zstd first (better ratio, cheaper to decompress), gzip for everything older.
 	# Caddy negotiates from Accept-Encoding and skips already-compressed content types.
 	#
-	# THE `match` BLOCK IS NOT DECORATION. Caddy's default response matcher for `encode`
-	# includes `header Content-Type text/*`, and `text/event-stream` matches `text/*`. So
-	# the default would compress the SSE stream, and a compressor holds bytes in its own
-	# buffer until it has enough to emit a block — which converts a live stream into
-	# "nothing for thirty seconds, then everything at once". ADR 0023 names this as the
-	# thing that silently breaks SSE and makes excluding it a devops obligation rather than
-	# a default to be trusted.
+	# THE `match` BLOCK IS NOT DECORATION, and it is deliberately KEPT even though the SSE
+	# route it was written for no longer exists (ADR 0031).
+	#
+	# Caddy's default response matcher for `encode` includes `header Content-Type text/*`,
+	# and `text/event-stream` matches `text/*`. A compressor holds bytes in its own buffer
+	# until it has enough to emit a block, which converts a live stream into "nothing for
+	# thirty seconds, then everything at once" — a failure that produces no error, only a
+	# map whose ages are silently wrong.
 	#
 	# The list below is Caddy's own default set with `text/*` expanded to the specific text
-	# types we serve and `text/event-stream` absent. Repeated `header Content-Type` lines in
-	# a response matcher are OR'd, which is how Caddy's own default is written.
+	# types we serve, and `text/event-stream` absent. Repeated `header Content-Type` lines
+	# in a response matcher are OR'd, which is how Caddy's own default is written.
+	#
+	# Today this compresses exactly what it should and excludes a type we never emit, so it
+	# costs nothing. It stays because the day someone adds a stream is the day nobody will
+	# think to check the compression matcher, and reverting this to `text/*` is a one-word
+	# edit that looks like tidying up.
 	#
 	# ADDING A CONTENT TYPE HERE IS SAFE. Adding `text/*` back is not.
 	encode zstd gzip {
@@ -322,48 +328,20 @@ import csp.caddy
 	# `web` is the compose service name, resolved on the `edge` docker network. Port 3000
 	# is not published to the host by that service — this is the only path to it.
 	#
-	# TWO BRANCHES, because the live layer stream needs different proxy behaviour from every
-	# other response on this origin. Both are `handle` blocks rather than one `handle` plus
-	# a bare directive: `handle` blocks are mutually exclusive and evaluated in the order
-	# written, so the shape below says exactly what it does with no reliance on Caddy's
-	# directive-ordering rules.
+	# ONE BRANCH. This file used to carry a second `handle` block for `/api/map/stream` with
+	# `flush_interval -1`, provisioned ahead of an SSE route that was never built: the path
+	# answered 404, and the RUNBOOK told an operator to `curl` it during an incident. That is
+	# QV-07, and ADR 0031 removed the route from the design rather than leaving three
+	# operator documents describing a control that 404s. The map polls `/map/data/<layer>`
+	# on a five-second client timer; those are ordinary requests and this branch serves them.
 	#
-	# `worker` is deliberately absent from this file and there is no route to it. It is not
-	# on the `edge` network, so Caddy cannot resolve the name even if a line were added by
-	# mistake. See docker-compose.prod.yml's networks block.
+	# If a stream ever ships, restore the branch from this file's history — the argument for
+	# `flush_interval -1` and for excluding `text/event-stream` from `encode` above is worth
+	# more than the six lines of config.
+	#
+	# There is no `worker` service to route to either (ADR 0031), and there was no route to
+	# it before: it was never on the `edge` network, so Caddy could not resolve the name.
 
-	# --- Branch 1: the SSE layer stream (ADR 0023) --------------------------------------
-	# GET /api/map/stream — one stream per client carrying every layer, per ADR 0023 point 1.
-	@sse path /api/map/stream /api/map/stream/*
-	handle @sse {
-		reverse_proxy web:3000 {
-			# THE LINE THIS BRANCH EXISTS FOR. `-1` means "do not buffer the response body;
-			# flush every write straight to the client". Caddy does auto-detect
-			# `Content-Type: text/event-stream` and stream it, so this is belt and braces —
-			# and ADR 0023 point 4 requires it to be explicit rather than inherited,
-			# because a default that is not written down is a default a version bump or a
-			# future edit can change without anyone noticing. The failure it prevents is
-			# not an error: it is a map whose ages are silently thirty seconds wrong.
-			flush_interval -1
-
-			header_up X-Forwarded-For {remote_host}
-			header_up X-Real-IP {remote_host}
-			header_up X-Forwarded-Proto {scheme}
-			header_up X-Forwarded-Host {host}
-			header_up Host {host}
-
-			transport http {
-				dial_timeout 5s
-				# NO `response_header_timeout` here, unlike the branch below. An SSE
-				# response sends its headers immediately and then never ends, so the 30 s
-				# ceiling is harmless for the headers and wrong as a mental model for the
-				# body. Caddy applies no read timeout to the body by default, which is
-				# what an open stream needs.
-			}
-		}
-	}
-
-	# --- Branch 2: everything else ------------------------------------------------------
 	handle {
 		reverse_proxy web:3000 {
 			# SET, not append. Caddy's default is to append the peer address to any incoming
@@ -386,12 +364,47 @@ import csp.caddy
 			# Next.js want. Stated here so nobody "fixes" it later.
 			header_up Host {host}
 
-			# Give up on a dead upstream quickly rather than holding connections open through
-			# a restart. Next.js server-renders in tens of milliseconds; 30 s of read timeout
-			# is generous even for the PDF export path.
+			# TWO TIMEOUTS, AND THEY BOUND DIFFERENT FAILURES. Getting them the wrong way
+			# round is QV-12.
+			#
+			# `dial_timeout 5s` is the one that fires when the app is DOWN: a container that
+			# is restarting, crashed or not yet started refuses the connection, and Caddy
+			# gives up in five seconds and serves a diagnosable 502. That is the common case
+			# and it is fast.
+			#
+			# `response_header_timeout` only bites when `web` ACCEPTS the connection and then
+			# does not answer — a slow request, not a dead app. It was 30 s, and 30 s was
+			# WRONG, for a reason that is arithmetic rather than taste:
+			#
+			#   * A Server Action sends no response headers until the action returns, and a
+			#     Toolbench route handler sends none until it returns a Response. So this
+			#     value bounds the whole request, not just its headers.
+			#   * `runConnector` arms ONE AbortController per invocation at the connector's
+			#     `timeout_ms`, so that column is the real ceiling on a connector call. The
+			#     largest is 40,000 ms — crt.sh and the Internet Archive Wayback Machine.
+			#     (The Wayback captures driver makes two SEQUENTIAL fetches, but both run
+			#     under that single 40 s signal, so the ceiling is 40 s and not 80 s.)
+			#   * Neither of those 40 s figures is a preference. `lib/connectors/wayback.ts`
+			#     records the same CDX query for ripe.net answering in 3.4 s and then 38.3 s
+			#     on consecutive attempts, and argues that a shorter timeout "would not make
+			#     the archive faster, it would turn a slow success into a failure the reader
+			#     cannot distinguish from an empty result". At 30 s here, Caddy imposed that
+			#     shorter timeout anyway and replaced the connector's honest "the archive did
+			#     not answer in time" with a bare 502 from the proxy.
+			#
+			# 60 s = the largest `timeout_ms` plus 20 s for the audit write, the rate-limit
+			# upsert and rendering. ONE number for the whole origin rather than a `/toolbench/*`
+			# branch with its own value: a path list here is a second place that has to stay in
+			# step with the route tree, and two places that must agree and drift is the defect
+			# this repository keeps meeting.
+			#
+			# THIS NUMBER IS A CONTRACT WITH THE CONNECTOR REGISTRY and it is tested:
+			# infra/caddy-timeout.contract.test.ts reads the value below out of this file,
+			# takes max(timeoutMs) across every seeded connector, and fails if the margin
+			# closes. Change either side and that test tells you.
 			transport http {
 				dial_timeout 5s
-				response_header_timeout 30s
+				response_header_timeout 60s
 			}
 		}
 	}
