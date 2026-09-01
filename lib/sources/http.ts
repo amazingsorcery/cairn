@@ -1,4 +1,6 @@
 import brand from "@/config/brand";
+import { readCappedText } from "@/lib/net/capped-body";
+import { countOutboundRequest } from "@/lib/net/outbound-tally";
 
 import type { SourceFailure } from "./types";
 
@@ -225,6 +227,9 @@ export async function fetchUpstream(options: FetchOptions): Promise<HttpOutcome>
   signal.addEventListener("abort", onCallerAbort, { once: true });
 
   try {
+    // Counted at the request itself (QV-09). The NWS adapter makes one index call plus up to
+    // twelve zone lookups in a single poll; the audit row has to say thirteen, not one.
+    countOutboundRequest();
     const response = await fetch(url, {
       signal: controller.signal,
       redirect: "follow",
@@ -264,31 +269,30 @@ export async function fetchUpstream(options: FetchOptions): Promise<HttpOutcome>
       };
     }
 
-    const declared = Number(response.headers.get("content-length") ?? Number.NaN);
-    if (Number.isFinite(declared) && declared > maxBytes) {
+    /*
+     * The cap is applied to the STREAM (QV-03). The previous shape checked `Content-Length`
+     * — which is absent on every chunked response and describes the compressed size when
+     * present — and then called `response.text()`, so the ceiling was only ever tested
+     * against a string already in the heap. `readCappedText` cancels the body the moment the
+     * running total passes the cap, which is what "a misbehaving or redirected upstream
+     * cannot exhaust the worker's memory" was always meant to mean.
+     */
+    const capped = await readCappedText(response, maxBytes);
+    if (!capped.ok) {
       return {
         ok: false,
         failure: {
           kind: "upstreamError",
           status: response.status,
-          message: `payload ${declared} bytes exceeds the ${maxBytes} byte cap`,
+          message:
+            capped.reason === "declared"
+              ? `payload ${capped.bytes} bytes exceeds the ${maxBytes} byte cap`
+              : `payload exceeded the ${maxBytes} byte cap and was cut off at ${capped.bytes} bytes`,
         },
       };
     }
 
-    const text = await response.text();
-    if (text.length > maxBytes) {
-      return {
-        ok: false,
-        failure: {
-          kind: "upstreamError",
-          status: response.status,
-          message: `payload exceeds the ${maxBytes} byte cap`,
-        },
-      };
-    }
-
-    return { ok: true, status: response.status, text };
+    return { ok: true, status: response.status, text: capped.text };
   } catch (error) {
     if (timedOut) return { ok: false, failure: { kind: "timeout", afterMs: timeoutMs } };
     if (signal.aborted) {

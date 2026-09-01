@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { findLayer, layerQuery, type MapViewport } from "@/components/map/registry";
+import { clientSubject, consumeSafely } from "@/lib/rate-limit";
 import { buildLayerPayload } from "../../payloads";
 
 /**
@@ -34,15 +35,21 @@ export const runtime = "nodejs";
  *
  * Anything that fails validation is DROPPED rather than rejected: a crafted query string must
  * not be able to render an error page, and the fallback is a correct answer rather than an
- * empty one. The numbers are also quantised to whole degrees before they reach a source —
- * many readers looking at roughly the same place then share one upstream call and one cache
- * entry (ADR 0014 §4), and the coordinate we hand an upstream is deliberately coarser than
- * the one the reader is looking at.
+ * empty one.
+ *
+ * **The quantising used to be here and is now in `components/map/query.ts`**, applied once in
+ * `loadSource` to the query the adapter is handed and to the cache key together. Rounding in
+ * two places is how the key and the request come to describe different areas, which is QA
+ * finding QV-04; and the client has to compute the same value to know whether a pan needs a
+ * request at all. One grid, one function, three callers. The privacy property is unchanged —
+ * the coordinate that reaches an upstream is still coarser than the one the reader is looking
+ * at, and many readers looking at roughly the same place still share one call and one cache
+ * entry (ADR 0014 §4).
  */
 function readViewport(url: URL): MapViewport {
   const read = (key: string, limit: number): number | null => {
     const value = Number(url.searchParams.get(key));
-    return Number.isFinite(value) && Math.abs(value) <= limit ? Math.round(value) : null;
+    return Number.isFinite(value) && Math.abs(value) <= limit ? value : null;
   };
   const west = read("w", 180);
   const south = read("s", 90);
@@ -76,6 +83,43 @@ export async function GET(
         lastGoodAt: null,
       },
       { status: 404 },
+    );
+  }
+
+  /*
+   * The per-client ceiling. QA finding QV-05: this route was unauthenticated and unlimited,
+   * and `middleware.ts` matches only `/workspaces/*` and `/admin/*`, so nothing above it
+   * counted anything either. A loop against it drove a registry read and an audit row per
+   * request against the one table in the schema with no natural bound.
+   *
+   * `consumeSafely`, which fails OPEN on a database error. That is the right trade here and
+   * the wrong one inside `lib/connectors`: this limiter protects OUR box, and if the database
+   * is unreachable the request was going to fail anyway. The connector quota protects a third
+   * party's fair-use ceiling and therefore fails closed.
+   */
+  const budget = await consumeSafely("map-layer", clientSubject(request));
+  if (!budget.ok) {
+    /*
+     * `quotaExhausted`, not `rateLimited`. The two are kept apart everywhere in this codebase
+     * because they have opposite fixes and a reader must not conclude the source is
+     * unreliable when we are the ones who stopped: `rateLimited` means the UPSTREAM refused
+     * us. Nothing upstream was involved here at all.
+     */
+    return NextResponse.json(
+      {
+        layerId: layer.id,
+        source: null,
+        ok: false,
+        failure: { kind: "quotaExhausted", resetsAt: budget.resetAt.toISOString() },
+        lastGoodAt: null,
+      },
+      {
+        status: 429,
+        headers: {
+          "cache-control": "no-store",
+          "retry-after": String(Math.max(1, Math.ceil((budget.resetAt.getTime() - Date.now()) / 1000))),
+        },
+      },
     );
   }
 

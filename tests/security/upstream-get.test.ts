@@ -151,18 +151,19 @@ describe("upstreamGet — the byte cap", () => {
   });
 
   /**
-   * DEFECT (QA-V2-03). The cap is enforced AFTER `await response.text()` has already
-   * materialised the whole body in the Node heap. An upstream that omits `Content-Length`
-   * — which is every chunked response, and which `web.archive.org` uses for `id_` captures —
-   * is read in full first and rejected second.
+   * QV-03, fixed. The cap is now applied to the STREAM: `readCappedText` pulls chunk by
+   * chunk and cancels the reader the moment the running total passes `maxBytes`.
    *
-   * The assertion below is deliberately written against the broken behaviour: a body 8x the
-   * cap is fully buffered (proved by the byteLength the stream had to produce) and only then
-   * refused. When the fix lands — a streaming reader that aborts at `maxBytes` — this test
-   * must be inverted to assert that fewer than `maxBytes` were ever pulled from the stream.
+   * This test was written by QA against the defect — a body 8x the cap was fully buffered
+   * and only then refused — and is inverted here. It asserts the property that matters for a
+   * memory-exhaustion control: how many bytes actually reached this process. An upstream
+   * that omits `Content-Length` (every chunked response, and what `web.archive.org` sends
+   * for an `id_` capture) must not be able to spend more than the cap plus what the stream
+   * had already queued.
    */
-  it("DEFECT (QA-V2-03): buffers an unbounded body in full before applying the cap", async () => {
+  it("QA-V2-03: stops pulling a chunked oversize body within a chunk or two of the cap", async () => {
     const CAP = 64 * 1024;
+    const CHUNK = 8 * 1024;
     const OVERSIZE = CAP * 8;
     let bytesPulled = 0;
 
@@ -175,7 +176,7 @@ describe("upstreamGet — the byte cap", () => {
                 controller.close();
                 return;
               }
-              const chunk = new Uint8Array(8 * 1024).fill(97);
+              const chunk = new Uint8Array(CHUNK).fill(97);
               bytesPulled += chunk.byteLength;
               controller.enqueue(chunk);
             },
@@ -189,31 +190,68 @@ describe("upstreamGet — the byte cap", () => {
       upstreamGet({ url: BASE, pinnedHost: PIN, signal: signal(), maxBytes: CAP }),
     ).rejects.toBeInstanceOf(UpstreamStatusError);
 
-    // The refusal happened, but only after the entire oversize body was pulled.
-    expect(bytesPulled).toBeGreaterThanOrEqual(OVERSIZE);
+    expect(bytesPulled).toBeLessThan(OVERSIZE);
+    expect(bytesPulled).toBeLessThanOrEqual(CAP + CHUNK * 4);
   });
 
   /**
-   * DEFECT (QA-V2-03), the compression variant. `fetch` transparently decodes
+   * QV-03, the compression variant, inverted. `fetch` transparently decodes
    * `Content-Encoding: gzip`, and `Content-Length` describes the COMPRESSED size — so a
-   * declared length far under the cap can decompress to far over it, and the check on line
-   * 153 of `lib/connectors/toolbench.ts` passes.
-   *
-   * Modelled here rather than gzipped for real: a small declared length with a large body is
-   * the exact shape a decompression bomb presents to this function.
+   * declared length far under the cap can decode to far over it. The declared-length gate is
+   * now an optimisation rather than the control, and the streaming gate catches this.
    */
-  it("DEFECT (QA-V2-03): a small declared Content-Length lets an oversize decoded body through the first gate", async () => {
+  it("QA-V2-03: a small declared Content-Length does not license an unbounded read", async () => {
     const CAP = 64 * 1024;
-    stub(() =>
-      body("a".repeat(CAP * 4), {
-        "content-length": "1024",
-        "content-encoding": "gzip",
-      }),
+    const CHUNK = 8 * 1024;
+    const OVERSIZE = CAP * 8;
+    let bytesPulled = 0;
+
+    stub(
+      () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (bytesPulled >= OVERSIZE) {
+                controller.close();
+                return;
+              }
+              const chunk = new Uint8Array(CHUNK).fill(97);
+              bytesPulled += chunk.byteLength;
+              controller.enqueue(chunk);
+            },
+          }),
+          { status: 200, headers: { "content-length": "1024", "content-encoding": "gzip" } },
+        ),
     );
-    // It is caught by the SECOND gate only, and only after the whole body is in memory.
+
     await expect(
       upstreamGet({ url: BASE, pinnedHost: PIN, signal: signal(), maxBytes: CAP }),
     ).rejects.toBeInstanceOf(UpstreamStatusError);
+
+    expect(bytesPulled).toBeLessThan(OVERSIZE);
+  });
+
+  /**
+   * The Wayback capture fetch asks for the original bytes. QV-03: transfer compression buys
+   * us nothing on a path we then have to bound, and it makes any declared length meaningless.
+   */
+  it("sends accept-encoding: identity when the caller asks for it", async () => {
+    stub(() => body("PAGE"));
+    await upstreamGet({
+      url: BASE,
+      pinnedHost: PIN,
+      signal: signal(),
+      acceptEncoding: "identity",
+    });
+    const headers = calls[0]?.init?.headers as Record<string, string> | undefined;
+    expect(headers?.["accept-encoding"]).toBe("identity");
+  });
+
+  it("sends no accept-encoding header when the caller does not ask", async () => {
+    stub(() => body("PAGE"));
+    await upstreamGet({ url: BASE, pinnedHost: PIN, signal: signal() });
+    const headers = calls[0]?.init?.headers as Record<string, string> | undefined;
+    expect(headers && "accept-encoding" in headers).toBe(false);
   });
 });
 

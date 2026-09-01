@@ -1,6 +1,10 @@
 import { z } from "zod";
 
+import { sourceUserAgent } from "@/lib/sources/http";
+
 import type { Connector } from "@/db/schema";
+import { countOutboundRequest } from "@/lib/net/outbound-tally";
+
 import { parseRetryAfter, UpstreamStatusError } from "./runtime";
 import type { ConnectorDriver } from "./types";
 
@@ -228,6 +232,14 @@ export const flightsDriver: ConnectorDriver<FlightParams, FlightsPayload> = {
   kind: "flights",
   slug: FLIGHTS_CONNECTOR_SLUG,
   normalise: quantise,
+  /**
+   * NOT per-actor, and this is the case ADR 0014 §4 was written for. A viewport is a
+   * question about the world rather than about the reader: every reader looking at the same
+   * patch of sky asks the same thing, the answer is the same for all of them, and one shared
+   * entry is what holds us inside adsb.lol's fair use. `normalise` quantises the coordinates
+   * before they reach the key, so the key is coarser than the view anyway.
+   */
+  perActor: false,
   cacheKey: (p) => `${p.lat.toFixed(1)},${p.lon.toFixed(1)},${p.radius}`,
 
   async fetch(connector: Connector, params, signal) {
@@ -243,6 +255,9 @@ export const flightsDriver: ConnectorDriver<FlightParams, FlightsPayload> = {
       `/lon/${encodeURIComponent(params.lon)}` +
       `/dist/${encodeURIComponent(params.radius)}`;
 
+    // This driver calls `fetch` directly rather than through `upstreamGet`, so it counts
+    // itself (QV-09). One call per poll today; the counter is what keeps that true.
+    countOutboundRequest();
     const response = await fetch(url, {
       signal,
       // `no-store`: the freshness contract is ours (ADR 0014), and a second cache with its
@@ -253,7 +268,13 @@ export const flightsDriver: ConnectorDriver<FlightParams, FlightsPayload> = {
         // Identifying ourselves is the courteous and the safe thing: an operator who needs
         // to rate-limit or contact us can, rather than blocking an anonymous pattern. It
         // says nothing about the person viewing the page.
-        "user-agent": "cairn-live/1.0 (+server-side; contact via repository)",
+        // Built from `config/brand.ts` via `sourceUserAgent()`, not written out here. The
+        // literal that used to sit on this line broke the one-file rename contract
+        // (the conventions §4, product-brief §7) — a rename would have left this outbound header
+        // still naming the old product to an upstream operator. It also now carries a real
+        // contact address, which NWS and Nominatim ask for and which is the difference
+        // between being throttled and being blocked without warning.
+        "user-agent": sourceUserAgent(),
       },
     });
 

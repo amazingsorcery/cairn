@@ -131,6 +131,11 @@ export const overpassDriver: ConnectorDriver<OverpassParams, OverpassPayload> = 
    * scopes, and the query is the reader's search area. SHA-256 truncated to 128 bits: long
    * enough that a collision is not a thing that happens, short enough to read.
    */
+  /**
+   * Hashed, but still the reader's own query: a hash is a lookup key for anyone who can
+   * guess the query, which is the whole shape of the QV-02 oracle. Private query.
+   */
+  perActor: true,
   cacheKey: (params) => createHash("sha256").update(params.query).digest("hex").slice(0, 32),
 
   async fetch(connector: Connector, params, signal) {

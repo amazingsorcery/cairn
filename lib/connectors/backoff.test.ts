@@ -165,6 +165,7 @@ const driver = {
   kind: "flights" as const,
   slug: "backoff-probe",
   normalise: (raw: unknown) => raw as Record<string, never>,
+  perActor: false,
   cacheKey: () => "probe",
   fetch: async () => {
     throw new Error("the driver must not be called while a cooldown is open");

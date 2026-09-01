@@ -197,7 +197,17 @@ export type ConnectorHealth = {
   name: string;
   enabled: boolean;
   windowHours: number;
+  /** Governed attempts in the window — one per `runConnector` or `pollSource` call. */
   total: number;
+  /**
+   * OUTBOUND HTTP REQUESTS in the window, which is not the same number. QA finding QV-09.
+   *
+   * The DNS driver makes six requests per lookup and RIPEstat four, so a board showing
+   * `total` alone said 20 where Cloudflare saw 120. The two are shown side by side rather
+   * than one replacing the other: `total` is what our quotas count, this is what the upstream
+   * counts, and an operator arguing fair use needs the second one.
+   */
+  outboundRequests: number;
   byOutcome: Record<ConnectorRequestOutcome, number>;
   /**
    * Approximate 95th-percentile latency over the window, in milliseconds. `percentile_disc`
@@ -242,6 +252,7 @@ export async function getConnectorHealth(windowHours = 24): Promise<ConnectorHea
       enabled: connectors.enabled,
       outcome: connectorRequests.outcome,
       count: sql<number>`count(*)::int`,
+      outbound: sql<number>`coalesce(sum(${connectorRequests.upstreamRequests}), 0)::int`,
       p95: sql<
         number | null
       >`percentile_disc(0.95) within group (order by ${connectorRequests.durationMs})`,
@@ -269,6 +280,7 @@ export async function getConnectorHealth(windowHours = 24): Promise<ConnectorHea
       enabled: row.enabled,
       windowHours,
       total: 0,
+      outboundRequests: 0,
       byOutcome: zeroedOutcomes(),
       p95DurationMs: null,
     };
@@ -278,6 +290,7 @@ export async function getConnectorHealth(windowHours = 24): Promise<ConnectorHea
     if (row.outcome) {
       existing.byOutcome[row.outcome] += row.count;
       existing.total += row.count;
+      existing.outboundRequests += Number(row.outbound);
       const p95 = row.p95 === null ? null : Number(row.p95);
       if (p95 !== null && (existing.p95DurationMs === null || p95 > existing.p95DurationMs)) {
         existing.p95DurationMs = p95;

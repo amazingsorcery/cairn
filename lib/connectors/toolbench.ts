@@ -1,5 +1,7 @@
 import brand from "@/config/brand";
 import { logger } from "@/lib/logger";
+import { readCappedText } from "@/lib/net/capped-body";
+import { countOutboundRequest } from "@/lib/net/outbound-tally";
 import type { LookupOutcome } from "@/lib/toolbench/connector-envelope";
 import { isPinnedHost } from "@/lib/toolbench/net-target";
 
@@ -78,6 +80,17 @@ export interface UpstreamGetOptions {
   readonly pinnedHost: string;
   readonly signal: AbortSignal;
   readonly accept?: string;
+  /**
+   * Sent verbatim as `Accept-Encoding`. Omitted entirely when absent, which leaves the
+   * runtime's own default in place.
+   *
+   * The Wayback capture fetch passes `identity`. It wants the archived bytes, and transfer
+   * compression on that path buys nothing while costing two things: `fetch` gunzips
+   * transparently, so a `Content-Length` describes the compressed size and cannot bound the
+   * decoded one, and a compressed body is a decompression bomb's delivery mechanism. The
+   * streaming cap in `readCappedText` holds either way; this removes the ambiguity.
+   */
+  readonly acceptEncoding?: string;
   readonly maxBytes?: number;
   /**
    * Redirect hops to follow, each re-checked against `pinnedHost`. Zero means "a 3xx is an
@@ -119,6 +132,13 @@ export async function upstreamGet(
       throw new UpstreamStatusError(502);
     }
 
+    /*
+     * Counted here, at the request, and once per hop. QV-09: the audit row records outbound
+     * VOLUME, and a redirect we followed is a request we made. Declaring the number in the
+     * driver instead would be right until somebody added a call — which is how the finding
+     * arose in the first place.
+     */
+    countOutboundRequest();
     const response = await fetch(url, {
       signal: options.signal,
       redirect: "manual",
@@ -128,6 +148,9 @@ export async function upstreamGet(
       headers: {
         accept: options.accept ?? "application/json",
         "user-agent": toolbenchUserAgent(),
+        ...(options.acceptEncoding === undefined
+          ? {}
+          : { "accept-encoding": options.acceptEncoding }),
       },
     });
 
@@ -150,23 +173,27 @@ export async function upstreamGet(
       throw new UpstreamStatusError(response.status, parseRetryAfter(response.headers.get("retry-after")));
     }
 
-    const declared = Number(response.headers.get("content-length") ?? Number.NaN);
-    if (Number.isFinite(declared) && declared > maxBytes) {
-      await response.body?.cancel();
+    /*
+     * The cap is applied to the STREAM, not to a string that is already resident (QV-03).
+     * `readCappedText` checks the declared length as a cheap early exit and then reads chunk
+     * by chunk, cancelling the moment the running total passes the cap — so an upstream that
+     * sends no `Content-Length`, or one whose declared length describes gzipped bytes, still
+     * cannot spend more than the cap plus one chunk of this process's memory.
+     */
+    const capped = await readCappedText(response, maxBytes);
+    if (!capped.ok) {
       logger.warn(
-        { scope: "toolbench.connector", declared, maxBytes },
-        "Upstream declared a payload over the cap",
+        { scope: "toolbench.connector", reason: capped.reason, bytes: capped.bytes, maxBytes },
+        "Upstream payload exceeded the cap",
       );
       throw new UpstreamStatusError(502);
     }
 
-    const text = await response.text();
-    if (text.length > maxBytes) {
-      logger.warn({ scope: "toolbench.connector", maxBytes }, "Upstream payload exceeded the cap");
-      throw new UpstreamStatusError(502);
-    }
-
-    return { text, status: response.status, contentType: response.headers.get("content-type") };
+    return {
+      text: capped.text,
+      status: response.status,
+      contentType: response.headers.get("content-type"),
+    };
   }
 }
 

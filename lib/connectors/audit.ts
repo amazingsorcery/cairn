@@ -38,6 +38,22 @@ export type AuditEntry = {
   durationMs: number;
   /** Upstream HTTP status. Null when no request was made, or when it timed out. */
   upstreamStatus: number | null;
+  /**
+   * How many outbound HTTP requests this attempt made. QA finding QV-09.
+   *
+   * NOT optional, deliberately. A default of 1 here would silently reproduce the defect:
+   * every driver that fans out — six DoH queries per DNS lookup, four RIPEstat endpoints,
+   * two Wayback captures plus redirects, an NWS index plus up to twelve zone lookups — would
+   * keep recording one, and the table would keep understating our own rate against somebody
+   * else's fair-use limit. Every caller states it, and the value comes from a counter at the
+   * `fetch` itself rather than from a number a driver declares about itself.
+   *
+   * Zero for a refusal that made no request, matching `durationMs: 0` on the same rows.
+   *
+   * ADR 0013 is untouched. It forbids recording WHAT WAS ASKED FOR; this is volume, the same
+   * class of fact as `durationMs`.
+   */
+  upstreamRequests: number;
   /** The raw subject. Hashed here; never stored or logged in this form. */
   subject: string;
   at?: Date;
@@ -46,8 +62,8 @@ export type AuditEntry = {
 /**
  * Record one outbound attempt.
  *
- * Refusals are logged too — `quotaDenied` and `disabled`, with `duration_ms = 0` and a null
- * status (ADR 0013 §4). A quota denying half its traffic is the single most useful thing
+ * Refusals are logged too — `quotaDenied` and `disabled`, with `duration_ms = 0`, a null
+ * status and `upstream_requests = 0` (ADR 0013 §4). A quota denying half its traffic is the single most useful thing
  * this table can tell an operator, and it is invisible if only successful calls are recorded.
  *
  * A failure to write the log never fails the request: the audit entry is an operational
@@ -65,6 +81,7 @@ export async function recordConnectorRequest(entry: AuditEntry): Promise<void> {
       outcome: entry.outcome,
       durationMs: Math.max(0, Math.round(entry.durationMs)),
       upstreamStatus: entry.upstreamStatus,
+      upstreamRequests: Math.max(0, Math.round(entry.upstreamRequests)),
       actorKey: hashSubject(entry.subject),
       expiresAt,
     });

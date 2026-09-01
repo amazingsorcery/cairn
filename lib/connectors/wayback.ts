@@ -105,6 +105,8 @@ export const waybackTimelineDriver: ConnectorDriver<WaybackTimelineParams, Timel
     return { url: url.value.href };
   },
 
+  /** The cache key is the URL the reader typed. Private query — see QV-02. */
+  perActor: true,
   cacheKey: (params) => `timeline|${params.url}`,
 
   async fetch(connector: Connector, params, signal) {
@@ -190,6 +192,11 @@ export const waybackCapturesDriver: ConnectorDriver<WaybackCapturesParams, Captu
     return { url: url.value.href, before: parsed.before, after: parsed.after };
   },
 
+  /**
+   * The URL and the two capture timestamps the reader chose. The one-hour TTL made this the
+   * longest-lived entry of the six, and therefore the most useful oracle. Private query.
+   */
+  perActor: true,
   cacheKey: (params) => `captures|${params.url}|${params.before}|${params.after}`,
 
   async fetch(_connector: Connector, params, signal) {
@@ -205,6 +212,14 @@ export const waybackCapturesDriver: ConnectorDriver<WaybackCapturesParams, Captu
         pinnedHost: WAYBACK_HOST,
         signal,
         accept: "text/html,text/plain",
+        /*
+         * The original bytes, uncompressed. This tool diffs archived text and gains nothing
+         * from transfer compression it then has to bound: `fetch` gunzips transparently, so
+         * a declared `Content-Length` on a gzipped capture describes the compressed size and
+         * says nothing about what lands in memory. QV-03. The streaming cap below is the
+         * control; this makes the declared length mean what it appears to mean.
+         */
+        acceptEncoding: "identity",
         maxBytes: MAX_CAPTURE_BYTES,
         // The archive redirects to the nearest capture when the exact timestamp is not the
         // one it holds. Each hop is re-checked against the pin.

@@ -6,7 +6,13 @@ import { hashSubject } from "@/lib/rate-limit";
 
 import { adsbLol } from "./adsb-lol";
 import { resetSourceRuntime } from "./http";
-import { healthcheckSource, pollSource, WORKER_ACTOR_SUBJECT, type GovernanceDeps } from "./governed";
+import {
+  healthcheckSource,
+  pollSource,
+  resetGovernanceMemo,
+  WORKER_ACTOR_SUBJECT,
+  type GovernanceDeps,
+} from "./governed";
 
 import fixture from "./__fixtures__/adsb-lol.json";
 import { jsonResponse, testContext } from "./__fixtures__/context";
@@ -70,11 +76,13 @@ function harness(options: { connector?: Connector | null; ceilingOk?: boolean } 
 
 beforeEach(() => {
   resetSourceRuntime();
+  resetGovernanceMemo();
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
   resetSourceRuntime();
+  resetGovernanceMemo();
 });
 
 describe("the kill-switch actually kills", () => {
@@ -292,6 +300,46 @@ describe("the row is authoritative for the TTL", () => {
     expect(poll.attribution.licence).toBe("ODbL 1.0");
     expect(poll.connectorSlug).toBe("adsb-lol");
   });
+
+  /**
+   * QA finding QV-17: two files claimed the row was authoritative for the credit and every
+   * branch returned the adapter's module constant, so editing `connectors.attribution` did
+   * nothing. The strings agreed for every source, so nothing was mis-credited — but
+   * attribution is exactly the field that has to be changeable without a deploy when a licence
+   * changes its required wording.
+   */
+  it("renders the credit the registry row carries, not the adapter's constant", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(fixture));
+    const { deps } = harness({
+      connector: connectorRow({ attribution: "Aircraft data from adsb.lol — revised wording" }),
+    });
+
+    const poll = await pollSource(adsbLol, {}, testContext(), deps);
+    expect(poll.attribution.text).toBe("Aircraft data from adsb.lol — revised wording");
+    /* Only the text is the row's: there is no licence or href column to carry the rest. */
+    expect(poll.attribution.licence).toBe(adsbLol.attribution.licence);
+    expect(poll.attribution.href).toBe(adsbLol.attribution.href);
+  });
+
+  it("falls back to the adapter's credit when the row carries none", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(fixture));
+    /* A blank column is "nobody filled this in", not "no credit is owed". */
+    const { deps } = harness({ connector: connectorRow({ attribution: "   " }) });
+
+    const poll = await pollSource(adsbLol, {}, testContext(), deps);
+    expect(poll.attribution.text).toBe(adsbLol.attribution.text);
+  });
+
+  it("carries the row's credit into a refusal, which is where a layer still has to render it", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    const { deps } = harness({
+      connector: connectorRow({ enabled: false, attribution: "Credit owed even when switched off" }),
+    });
+
+    const poll = await pollSource(adsbLol, {}, testContext(), deps);
+    expect(spy).not.toHaveBeenCalled();
+    expect(poll.attribution.text).toBe("Credit owed even when switched off");
+  });
 });
 
 describe("healthcheckSource", () => {
@@ -313,5 +361,133 @@ describe("healthcheckSource", () => {
     const health = await healthcheckSource(adsbLol, testContext(), deps);
     expect(health.ok).toBe(true);
     expect(health.detail).toContain("features");
+  });
+});
+
+/**
+ * QA finding QV-05. `/map` renders six layers per request and every one of them polled a
+ * source that is switched off, so twenty anonymous page views wrote 120 `connector_requests`
+ * rows and drove 120 `SELECT`s against `connectors` — on the one table `lib/rate-limit.ts`
+ * calls "the only one in the schema with no natural bound", on a box where Postgres shares
+ * the hardware with the app.
+ *
+ * The refusal is now remembered for a bounded window. THE ASYMMETRY IS THE WHOLE POINT and is
+ * asserted below: only a REFUSAL is remembered, so switching a source OFF still takes effect
+ * on the very next poll, and only switching one ON waits out the window.
+ */
+describe("a refusal is remembered, so a page view does not re-ask and re-record it", () => {
+  function countingHarness(connector: Connector | null) {
+    const rows: AuditEntry[] = [];
+    let lookups = 0;
+    const deps: Partial<GovernanceDeps> = {
+      getConnector: () => {
+        lookups += 1;
+        return Promise.resolve(connector);
+      },
+      consumeGlobal: () => Promise.resolve({ ok: true }),
+      audit: (entry) => {
+        rows.push(entry);
+        return Promise.resolve();
+      },
+    };
+    return { rows, deps, lookups: () => lookups };
+  }
+
+  it("reads the registry once and writes one row for twenty polls of a disabled source", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(fixture));
+    const harnessed = countingHarness(connectorRow({ enabled: false }));
+
+    for (let i = 0; i < 20; i += 1) {
+      const poll = await pollSource(adsbLol, {}, testContext(), harnessed.deps);
+      // Every caller still gets the same honest refusal, not a silent success.
+      expect(poll.result.ok).toBe(false);
+      if (poll.result.ok) return;
+      expect(poll.result.failure.kind).toBe("disabled");
+    }
+
+    expect(spy).not.toHaveBeenCalled();
+    // Twenty page views used to be twenty lookups and twenty rows.
+    expect(harnessed.lookups()).toBe(1);
+    expect(harnessed.rows).toHaveLength(1);
+    expect(harnessed.rows[0]?.outcome).toBe("disabled");
+  });
+
+  it("remembers a missing registry row too, which is the shipped state for an unseeded source", async () => {
+    const harnessed = countingHarness(null);
+
+    await pollSource(adsbLol, {}, testContext(), harnessed.deps);
+    await pollSource(adsbLol, {}, testContext(), harnessed.deps);
+
+    expect(harnessed.lookups()).toBe(1);
+    // No row means no `connector_id`, so there was never an audit row to suppress.
+    expect(harnessed.rows).toHaveLength(0);
+  });
+
+  it("still stops on the very next poll when an operator switches a source OFF", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(fixture));
+    let row = connectorRow({ enabled: true });
+    const rows: AuditEntry[] = [];
+    const deps: Partial<GovernanceDeps> = {
+      getConnector: () => Promise.resolve(row),
+      consumeGlobal: () => Promise.resolve({ ok: true }),
+      audit: (entry) => {
+        rows.push(entry);
+        return Promise.resolve();
+      },
+    };
+
+    const first = await pollSource(adsbLol, {}, testContext(), deps);
+    expect(first.result.ok).toBe(true);
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    // 3am, an incident, the kill-switch goes over.
+    row = connectorRow({ enabled: false });
+
+    const second = await pollSource(adsbLol, {}, testContext(), deps);
+    expect(second.result.ok).toBe(false);
+    // No TTL between the flip and the traffic stopping. Nothing is cached on the way in.
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("forgets the refusal when the window passes", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(fixture));
+    let row: Connector | null = connectorRow({ enabled: false });
+    let clock = new Date("2026-09-01T00:00:00.000Z");
+    const deps: Partial<GovernanceDeps> = {
+      getConnector: () => Promise.resolve(row),
+      consumeGlobal: () => Promise.resolve({ ok: true }),
+      audit: () => Promise.resolve(),
+      now: () => clock,
+    };
+
+    await pollSource(adsbLol, {}, testContext(), deps);
+    row = connectorRow({ enabled: true });
+
+    // Inside the window the memo still answers, which is the trade: re-enabling waits.
+    const during = await pollSource(adsbLol, {}, testContext(), deps);
+    expect(during.result.ok).toBe(false);
+    expect(spy).not.toHaveBeenCalled();
+
+    clock = new Date(clock.getTime() + 61_000);
+    const after = await pollSource(adsbLol, {}, testContext(), deps);
+    expect(after.result.ok).toBe(true);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("carries the registry row's TTL and the adapter's credit through a remembered refusal", async () => {
+    const harnessed = countingHarness(connectorRow({ enabled: false, cacheTtlSeconds: 45 }));
+
+    const first = await pollSource(adsbLol, {}, testContext(), harnessed.deps);
+    const second = await pollSource(adsbLol, {}, testContext(), harnessed.deps);
+
+    // A remembered refusal must be indistinguishable from a freshly computed one, or a
+    // caller would render a layer without its credit on the second request and with it on
+    // the first.
+    expect(second.ttlSeconds).toBe(first.ttlSeconds);
+    expect(second.ttlSeconds).toBe(45);
+    expect(second.attribution).toEqual(first.attribution);
+    expect(second.connectorSlug).toBe(first.connectorSlug);
+    if (first.result.ok || second.result.ok) throw new Error("expected two refusals");
+    expect(second.result.failure).toEqual(first.result.failure);
   });
 });

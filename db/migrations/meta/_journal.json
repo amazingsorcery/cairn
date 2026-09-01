@@ -57,6 +57,13 @@
       "when": 1788140591293,
       "tag": "0007_updated_at_triggers",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1788238153465,
+      "tag": "0008_connector_request_upstream_count",
+      "breakpoints": true
     }
   ]
 }

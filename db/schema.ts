@@ -1088,6 +1088,27 @@ export const connectorRequests = pgTable(
     /** Upstream HTTP status. Null when no request was made, or when it timed out. */
     upstreamStatus: integer('upstream_status'),
     /**
+     * How many outbound HTTP requests this one attempt actually made. QA finding QV-09.
+     *
+     * One row did not mean one request. The DNS driver queries six record types per lookup
+     * and RIPEstat four endpoints, so `cloudflare-doh`'s recorded ceiling of 20 lookups a
+     * minute was really 120 requests a minute against Cloudflare, and the table said 20. The
+     * artefact that found v1's Q-02 — where the ratio of `ok` to `429` proved we were
+     * exceeding adsb.lol's rate — was wrong by a constant factor on two connectors, in the
+     * direction that hides the problem.
+     *
+     * THIS IS NOT A BREACH OF ADR 0013. That ADR forbids recording *what was asked for*: no
+     * path, no query string, no bounding box, no response body, because those reconstruct a
+     * reader's research when set beside a timestamp. A count of requests is **volume**, the
+     * same class of fact as `duration_ms`, which this table has always carried. Six is six
+     * whichever domain was resolved.
+     *
+     * Zero when nothing left the building — `disabled`, `quotaDenied`, a cooldown — matching
+     * the `duration_ms = 0` convention for the same rows. The column default is 1 so that a
+     * hand-written INSERT understates nothing.
+     */
+    upstreamRequests: integer('upstream_requests').notNull().default(1),
+    /**
      * `HMAC-SHA256(userId or client IP, RATE_LIMIT_SECRET)`, lowercase hex — the same
      * construction as `rate_limits.key` (ADR 0009). A CHECK constraint requires exactly 64
      * hex characters, so a raw user id, email or IP address is structurally impossible to
@@ -1110,6 +1131,7 @@ export const connectorRequests = pgTable(
      */
     check('connector_requests_outcome_check', oneOf('outcome', CONNECTOR_REQUEST_OUTCOMES)),
     check('connector_requests_duration_check', sql`duration_ms >= 0`),
+    check('connector_requests_upstream_requests_check', sql`upstream_requests >= 0`),
     check(
       'connector_requests_upstream_status_check',
       sql`upstream_status is null or upstream_status between 100 and 599`,

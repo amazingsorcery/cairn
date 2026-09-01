@@ -8,6 +8,7 @@ import { requireAdmin, requireEditor } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { logger } from "@/lib/logger";
 import { TAG } from "@/lib/queries/cache";
+import { resetGovernanceMemo } from "@/lib/sources/governed";
 import {
   cameraIdSchema,
   connectorIdSchema,
@@ -61,9 +62,12 @@ export async function setConnectorEnabled(input: unknown): Promise<ActionResult<
       parsed.data.enabled ? "Connector ENABLED" : "Connector DISABLED (kill-switch)",
     );
 
-    // `getLiveConnector` is deliberately uncached, so the switch takes effect on the next
-    // request with no TTL in between. The `/live` landing page's connector list is cached
-    // and does need purging.
+    // The registry read is deliberately uncached, so switching a source OFF takes effect on
+    // the very next request with no TTL in between. Switching one back ON has to clear the
+    // remembered refusal (QV-05), which is what this call does — in this process. Another
+    // process waits out its own window, at most `MAX_REFUSAL_MEMO_SECONDS`.
+    resetGovernanceMemo();
+    // The `/live` landing page's connector list is cached and does need purging.
     revalidateTag(TAG.connectors);
 
     return ok({ id: row.id });

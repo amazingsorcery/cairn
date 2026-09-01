@@ -56,3 +56,4 @@ public/maplibre/
 # Throwaway verification scripts. Agents write these at the repo root and they should never
 # be committed or linted — one broke the lint gate for everyone else mid-build.
 tmp-*
+.tmp-*

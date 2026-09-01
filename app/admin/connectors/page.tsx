@@ -107,6 +107,14 @@ export default async function AdminConnectorsPage() {
         {connectors.map((connector) => {
           const stats = healthBySlug.get(connector.slug);
           const total = stats?.total ?? 0;
+          /**
+           * Not the same number as `total`, and the difference is the point. One governed
+           * attempt is one row; several drivers fan out inside it — six DoH queries per DNS
+           * lookup, four RIPEstat endpoints, two Wayback captures plus redirects. The board
+           * showed attempts and an operator read them as requests, so a recorded ceiling of
+           * 20 lookups a minute was really 120 requests a minute against Cloudflare. QV-09.
+           */
+          const outbound = stats?.outboundRequests ?? 0;
           const errors = (stats?.byOutcome.upstreamError ?? 0) + (stats?.byOutcome.timeout ?? 0);
           const denied = stats?.byOutcome.quotaDenied ?? 0;
           /**
@@ -142,7 +150,11 @@ export default async function AdminConnectorsPage() {
 
               <CardContent className="space-y-5 text-sm">
                 <dl className="grid grid-cols-2 gap-x-5 gap-y-3 md:grid-cols-4">
-                  <Stat label={`requests (24 h)`} value={String(total)} />
+                  <Stat label={`attempts (24 h)`} value={String(total)} />
+                  <Stat
+                    label="outbound requests (24 h)"
+                    value={outbound === total ? String(outbound) : `${outbound} · ${(outbound / Math.max(total, 1)).toFixed(1)}x`}
+                  />
                   <Stat label="error rate" value={percent(errors, total)} />
                   <Stat label="quota denials" value={`${denied} · ${percent(denied, total)}`} />
                   <Stat

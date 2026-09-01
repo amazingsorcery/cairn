@@ -1,4 +1,6 @@
+import type { Connector } from "@/db/schema";
 import { findAdapter as findSourceAdapter, pollSource } from "@/lib/sources";
+import type { GovernanceDeps } from "@/lib/sources";
 import type {
   Attribution,
   CachedSourceResult,
@@ -8,6 +10,7 @@ import type {
   SourceFeature,
   SourceQuery,
 } from "@/lib/sources/types";
+import { normaliseSourceQuery, sourceQueryKey } from "@/components/map/query";
 import { devStressSource } from "./dev-stress-source";
 
 /**
@@ -19,13 +22,22 @@ import { devStressSource } from "./dev-stress-source";
  * the two things the contract deliberately leaves to the caller — the shared cache and the
  * staleness that only the cache can know.
  *
- * ## The cache is one entry per source, never per viewer
+ * ## The cache is one entry per source AND QUESTION, never per viewer
  *
  * ADR 0014 §4. One shared payload serves every reader, which does three things at once: it
  * holds us inside each upstream's fair-use ceiling, it means the upstream sees our server
  * rather than a pattern of individual users, and it guarantees the cache key cannot encode
  * who asked. A per-user key on a live surface would rebuild the interest graph ADR 0013
  * removed from the audit log.
+ *
+ * **Shared per question, not per source.** The key was the slug alone, which is right for the
+ * five global feeds and was wrong the moment one layer became viewport-scoped: a reader who
+ * opened `/map` inside one TTL of somebody zooming into Tokyo was handed Tokyo's aircraft as
+ * the answer for Europe, marked `fresh`, with a real observation instant under it (QA finding
+ * QV-04). The key is now `slug:normalisedQuery` — the same shape `lib/connectors/runtime.ts`
+ * uses — and the normalised query is what the adapter is handed, so the entry cannot be the
+ * answer to a question nobody asked. A global feed passes `{}` and every reader still shares
+ * `slug:unscoped`, which is what ADR 0014 §4 is actually about.
  *
  * §6 of the same ADR: the payload rests only here, for a bounded time, and never in a table.
  * A module-level `Map` satisfies all of that. What it does not do is survive more than one
@@ -58,6 +70,89 @@ export function resolveAdapter(slug: string): SourceAdapter<SourceFeature> | nul
     return devStressSource;
   }
   return null;
+}
+
+/* ------------------------------------------------------------------ *
+ * Governance for a source that has no upstream
+ * ------------------------------------------------------------------ */
+
+/**
+ * The registry row the **development-only** stress source is authorised against.
+ *
+ * ## Why this exists at all
+ *
+ * `pollSource` resolves a `connectors` row and refuses anything without one — correctly, and
+ * that refusal is the kill-switch working. The synthetic 10,000-point layer has no row, so it
+ * rendered as `disabled` and the renderer measurement the brief requires ("10k+ points
+ * without dropping frames") could not be taken at all. QA hit exactly that.
+ *
+ * ## Why it is a synthetic row rather than a seeded one
+ *
+ * Seeding a row would put a connector for a source that does not exist into the operator's
+ * registry — the one table whose value is that every row is a real upstream with a recorded
+ * legal basis. Instead the row is supplied here, in memory, for one slug, under a
+ * `NODE_ENV` gate the bundler evaluates at build time, so it cannot exist in production.
+ *
+ * The point is that the stress layer still goes through `pollSource` like every other source:
+ * the rule is one governed path, not one governed path plus an exception. Nothing outbound
+ * happens either way — the adapter generates its points in this process — which is also why
+ * the ceiling is nominal and the audit is a no-op below.
+ */
+function stressConnectorRow(): Connector {
+  const now = new Date();
+  return {
+    id: "00000000-0000-4000-8000-00000000de00",
+    slug: devStressSource.slug,
+    name: devStressSource.name,
+    kind: devStressSource.kind,
+    operatorName: "none — generated in this process",
+    homepageUrl: devStressSource.homepage,
+    termsUrl: devStressSource.homepage,
+    attribution: devStressSource.attribution.text,
+    attributionRequired: false,
+    legalBasis:
+      "No upstream exists. The adapter generates synthetic points locally, so there are no terms to satisfy and no operator to credit. Development builds only.",
+    baseUrl: "about:blank",
+    requiresApiKey: false,
+    apiKeyEnvVar: null,
+    perUserQuota: 1000,
+    globalCeiling: 1000,
+    windowSeconds: 60,
+    timeoutMs: 5000,
+    cacheTtlSeconds: devStressSource.ttlSeconds,
+    staleWhileRevalidateSeconds: devStressSource.staleWhileRevalidateSeconds,
+    pollMode: "onDemand",
+    enabled: true,
+    status: "published",
+    lastCheckedAt: now,
+    notes: "Synthetic renderer stress harness. Never present in a production build.",
+    updatedById: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+/**
+ * Governance overrides for one adapter: none, except for the dev-only stress source.
+ *
+ * Both gates are build-time constants, so this whole branch — and the row above it — is
+ * dropped from a production bundle rather than merely unreachable, which is the same
+ * construction `resolveAdapter` and `MAP_LAYERS` use for the same layer.
+ */
+function governanceFor(adapter: SourceAdapter<SourceFeature>): Partial<GovernanceDeps> {
+  if (process.env.NODE_ENV === "production" || adapter.slug !== devStressSource.slug) return {};
+  return {
+    getConnector: async () => stressConnectorRow(),
+    /* No request leaves this process, so there is no upstream fair-use share to spend. */
+    consumeGlobal: async () => ({ ok: true }),
+    /*
+     * No audit row: `connector_requests.connector_id` is a foreign key and this row is not in
+     * the table. Writing one would mean seeding the fiction into the database, which is the
+     * thing this construction exists to avoid — and an audit log records outbound calls, of
+     * which this makes none.
+     */
+    audit: async () => {},
+  };
 }
 
 /* ------------------------------------------------------------------ *
@@ -94,6 +189,36 @@ const globalForCache = globalThis as typeof globalThis & {
 
 const payloadCache = (globalForCache.__cairnMapSourceCache ??= new Map());
 const sideCache = (globalForCache.__cairnMapSideCache ??= new Map());
+
+/**
+ * Hard ceiling on distinct entries, so a crafted stream of viewport parameters cannot grow
+ * this Map without bound on a small VPS. Eviction is oldest-first, and the whole-degree grid
+ * in `normaliseSourceQuery` is the first line of defence: it bounds the key space long before
+ * this does. Same construction and same number as `lib/connectors/runtime.ts`.
+ *
+ * It was not needed while the key was one entry per source. It is needed now.
+ */
+const MAX_CACHE_ENTRIES = 256;
+
+/**
+ * The cache key: the source, plus the question, normalised.
+ *
+ * `sourceQueryKey` and the query handed to `pollSource` come from the same normalisation
+ * (`components/map/query.ts`), so the key cannot describe a different area than the one the
+ * upstream was asked about. The client computes the same key to decide whether a pan needs a
+ * request at all — one function, three callers, no second grid to drift.
+ */
+function cacheKeyFor(adapter: SourceAdapter<SourceFeature>, query: SourceQuery): string {
+  return `${adapter.slug}:${sourceQueryKey(query)}`;
+}
+
+function writeCache(key: string, entry: CacheEntry): void {
+  if (payloadCache.size >= MAX_CACHE_ENTRIES && !payloadCache.has(key)) {
+    const oldest = payloadCache.keys().next();
+    if (!oldest.done) payloadCache.delete(oldest.value);
+  }
+  payloadCache.set(key, entry);
+}
 
 /**
  * The `SourceCache` the contract hands to every adapter.
@@ -165,7 +290,14 @@ export async function loadSource(
   adapter: SourceAdapter<SourceFeature>,
   query: SourceQuery,
 ): Promise<MapSourceLoad> {
-  const cached = payloadCache.get(adapter.slug);
+  /*
+   * NORMALISED ONCE, HERE, AND USED FOR BOTH THE KEY AND THE CALL. Deriving the key from one
+   * value and the request from another is QV-04 in miniature, so there is deliberately no
+   * second expression of the grid below this line.
+   */
+  const normalised = normaliseSourceQuery(query);
+  const key = cacheKeyFor(adapter, normalised);
+  const cached = payloadCache.get(key);
   const now = Date.now();
 
   /*
@@ -197,7 +329,12 @@ export async function loadSource(
     env: (name: string) => process.env[name],
   };
 
-  const { result, ttlSeconds, attribution } = await pollSource(adapter, query, ctx);
+  const { result, ttlSeconds, attribution } = await pollSource(
+    adapter,
+    normalised,
+    ctx,
+    governanceFor(adapter),
+  );
 
   if (result.ok) {
     const entry: CacheEntry = {
@@ -207,7 +344,7 @@ export async function loadSource(
       ttlSeconds,
       attribution,
     };
-    payloadCache.set(adapter.slug, entry);
+    writeCache(key, entry);
     return { result, stale: false, cachedAt: entry.cachedAt, ttlSeconds, attribution };
   }
 
@@ -250,7 +387,7 @@ export async function loadSource(
    * ever-growing age label. A cache is not a place to keep data we have decided not to show.
    */
   const lastGoodAt = cached?.observedAt ?? null;
-  payloadCache.delete(adapter.slug);
+  payloadCache.delete(key);
   return {
     result: { ok: false, failure: result.failure, lastGoodAt },
     stale: false,

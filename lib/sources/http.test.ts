@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { brand } from "@/config/brand";
+
 
 import { describeFailure } from "./adapter";
 import {
@@ -147,6 +149,45 @@ describe("fetchUpstream failure typing", () => {
     expect(result.ok).toBe(false);
   });
 
+  /**
+   * QV-03. The cap has to bite while the body is arriving. The map's six adapters share this
+   * one path with the Toolbench's four connectors, and the finding's own note is that
+   * maintaining the two separately "is how one of them ends up with QV-03 fixed and the
+   * other not" — so both are asserted, in their own suites, against the same helper.
+   */
+  it("stops pulling a chunked oversize body instead of buffering it whole", async () => {
+    const CAP = 4096;
+    const CHUNK = 512;
+    let produced = 0;
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (produced >= CAP * 8) {
+              controller.close();
+              return;
+            }
+            produced += CHUNK;
+            controller.enqueue(new Uint8Array(CHUNK).fill(97));
+          },
+        }),
+        // No content-length: the gate that used to be the only one never fires here.
+        { status: 200 },
+      ),
+    );
+
+    const result = await fetchUpstream({
+      slug: "chunked",
+      url: "https://example.com",
+      signal: signal(),
+      maxBytes: CAP,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(produced).toBeLessThan(CAP * 8);
+    expect(produced).toBeLessThanOrEqual(CAP + CHUNK * 4);
+  });
+
   it("identifies us on every call, because an upstream that cannot contact us just blocks us", async () => {
     const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 200 }));
     await fetchUpstream({ slug: "ua", url: "https://example.com", signal: signal() });
@@ -155,7 +196,10 @@ describe("fetchUpstream failure typing", () => {
     const headers = init?.headers as Record<string, string> | undefined;
     // NWS returns 403 to a default agent, so this is a requirement, not a courtesy.
     expect(headers?.["user-agent"]).toBe(sourceUserAgent());
-    expect(sourceUserAgent()).toContain("cairn");
+    // From `config/brand.ts`, not the literal. A test that hardcodes the product name is one
+    // of the places the conventions §4 names explicitly: a rename would leave this green while the
+    // header it guards had changed, which is worse than no assertion.
+    expect(sourceUserAgent()).toContain(brand.nameLower);
   });
 });
 

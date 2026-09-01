@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   RATE_LIMIT_ACTIONS,
   RATE_LIMIT_POLICIES,
+  clientSubject,
+  clientSubjectFromHeaders,
   deriveKey,
   hashSubject,
   windowEnd,
@@ -156,11 +158,51 @@ describe("RATE_LIMIT_POLICIES", () => {
     }
   });
 
+  /**
+   * QA finding QV-05. `/map` and `/map/data/<layer>` were unauthenticated and unlimited, and
+   * `middleware.ts` matches only `/workspaces/*` and `/admin/*` — so the surface that writes
+   * an audit row per layer per request had nothing counting it.
+   */
+  it("covers the map with a ceiling that fits a real reader and not a loop", () => {
+    const policy = RATE_LIMIT_POLICIES["map-layer"];
+    // Six layers on a five-second tick is 72 requests a minute from one reader with the page
+    // open. The ceiling has to clear that comfortably, because an office range or a shared
+    // NAT is one client to us.
+    expect(policy.windowSeconds).toBe(60);
+    expect(policy.limit).toBeGreaterThanOrEqual(72 * 3);
+    // And it has to be a ceiling rather than a formality.
+    expect(policy.limit).toBeLessThan(1000);
+  });
+
   it("keeps the global connector ceiling above the per-user quota", () => {
     // Otherwise a single user could exhaust the ceiling that exists to protect the
     // upstream's fair use from all of our users combined (ADR 0011 rule 3).
     expect(RATE_LIMIT_POLICIES["connector-global"].limit).toBeGreaterThan(
       RATE_LIMIT_POLICIES["connector-user"].limit,
     );
+  });
+});
+
+describe("clientSubjectFromHeaders", () => {
+  /**
+   * The Server Component half of `clientSubject`. Same rule, same first-entry-only reading of
+   * a header a client can otherwise pad; the value is HMACed by `consume` before it reaches
+   * the database and never leaves this module in the raw (ADR 0009).
+   */
+  it("takes the first entry and ignores a spoofed prefix", () => {
+    const headers = new Headers({ "x-forwarded-for": "198.51.100.7, 203.0.113.99" });
+    expect(clientSubjectFromHeaders(headers)).toBe("198.51.100.7");
+  });
+
+  it("agrees with the Request form, because they are one implementation", () => {
+    const headers = new Headers({ "x-forwarded-for": "198.51.100.7" });
+    const request = new Request("https://example.invalid/map", { headers });
+    expect(clientSubjectFromHeaders(headers)).toBe(clientSubject(request));
+  });
+
+  it("falls back to one shared counter rather than to no counter", () => {
+    // Fail closed: every unattributable caller shares a bucket, which cannot be used to
+    // bypass a limit, only to reach one sooner.
+    expect(clientSubjectFromHeaders(new Headers())).toBe("unknown-client");
   });
 });

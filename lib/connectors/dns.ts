@@ -87,6 +87,8 @@ export const dnsDriver: ConnectorDriver<DnsParams, DnsLookup> = {
     return { name: name.value };
   },
 
+  /** The cache key is the name the reader typed. Private query — see QV-02. */
+  perActor: true,
   cacheKey: (params) => params.name,
 
   async fetch(connector: Connector, params, signal) {

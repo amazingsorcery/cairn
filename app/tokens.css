@@ -14,8 +14,10 @@
  *                           component; only semantic tokens below may reference them.
  *   2. Semantic — dark    — on bare `:root`. Dark is the default theme.
  *   3. Semantic — light   — on `[data-theme="light"]`. Same tokens, same bar.
- *   4. Geometry / motion  — theme-invariant. Defined once; inherited by both themes.
- *   5. @theme blocks      — expose the above to Tailwind v4 utilities.
+ *   4. Permitted pairings — the foreground × surface matrix. An unlisted pair is a
+ *                           question, not a choice.
+ *   5. Geometry / motion  — theme-invariant. Defined once; inherited by both themes.
+ *   6. @theme blocks      — expose the above to Tailwind v4 utilities.
  *
  * RULES
  *   - Every palette token is defined in BOTH themes. A token in only one is a bug.
@@ -24,6 +26,13 @@
  *   - Colour is never the sole carrier of meaning. See the confidence ramp in §2.
  *   - Contrast ratios in the comments were computed with WCAG 2.1 relative luminance,
  *     carried over from docs/brand/colour.md. They are not estimates.
+ *   - **A pair that is not in the §4 matrix has not been measured.** Do not use it; add
+ *     it there, with its computed ratio in both themes, first. Three shipped pages
+ *     independently landed on `--muted-foreground` over an alpha-tinted callout, a pair
+ *     nothing in this file described, and it measured 4.45:1 (audit QV-06).
+ *   - **Opacity is not a colour strategy** (brand/colour.md §8 rule 5). `opacity-*` and
+ *     `/NN` alpha on an ink produce a composite that no token describes and no review of
+ *     this file can catch. The one exception is a genuinely inactive control — see §4.
  * ========================================================================== */
 
 /* -----------------------------------------------------------------------------
@@ -42,6 +51,11 @@
   --slate-500: #586e86;
   --slate-450: #74899e;
   --slate-400: #8296ab;
+  /* Currently unreferenced. It was the light `--muted-foreground` until audit QV-06:
+     5.11:1 on the page is AA in isolation, but only 4.45:1 once a callout tints the
+     surface underneath it. Kept because docs/brand/colour.md §2 defines the palette and
+     this file does not get to delete from it. Do not reintroduce it as an ink without
+     re-running the §4 matrix. */
   --slate-350: #5a6c81;
   --slate-300: #a8b9c9;
   --slate-100: #e5ecf3;
@@ -116,7 +130,9 @@
   --popover-foreground: var(--slate-100); /* 13.63:1 — AAA */
 
   --muted: var(--slate-750); /* #1F2937 — recessed fills, skeletons, muted chips */
-  --muted-foreground: var(--slate-400); /* 6.31:1 on bg · 5.86:1 on card · 4.83:1 on muted — AA */
+  /* 6.31:1 on bg · 5.86:1 on card · 5.34:1 on popover · 4.82:1 on muted — AA.
+     NOT permitted on `--accent` (4.02:1) — the full row is in §4. */
+  --muted-foreground: var(--slate-400);
 
   /* Additive (not in the contract): the third text step. `--foreground` is primary,
      `--muted-foreground` is tertiary; this is the secondary step brand/colour.md §3
@@ -236,7 +252,18 @@
   --popover-foreground: var(--slate-900); /* 19.21:1 — AAA */
 
   --muted: var(--paper-100); /* #EEF2F6 */
-  --muted-foreground: var(--slate-350); /* 5.11:1 on bg · 5.39:1 on card · 4.79:1 on muted — AA */
+  /* CHANGED (audit QV-06): was `--slate-350` (#5A6C81). That value is AA on the three
+     surfaces it was measured against — 5.11:1 on bg, 5.39:1 on card, 4.79:1 on muted —
+     and fails on every surface nobody measured: 4.71:1 on `--info-surface`, 4.63:1 on
+     `--destructive-surface`, 4.45:1 on the alpha tint `alert.tsx` actually renders. A
+     token whose safety depends on which surfaces got written down is not safe.
+     `--slate-600` is the next primitive down (colour.md §2; no new hue) and clears 4.5:1
+     on EVERY surface in the §4 matrix, worst case 6.17:1.
+     7.37:1 on bg · 7.78:1 on card and popover · 6.91:1 on muted · 6.53:1 on accent — AAA.
+     It also puts light in step with dark, where muted ink is 6.31:1 rather than 5.11:1;
+     the light theme was the lax one. Ink-to-ink separation from `--foreground-secondary`
+     is 1.57:1, marginally wider than dark's 1.51:1, so the three-step ramp survives. */
+  --muted-foreground: var(--slate-600);
 
   --foreground-secondary: var(--slate-700); /* 11.61:1 on bg · 12.25:1 on card — AAA */
   --foreground-faint: var(--slate-450); /* 3.42:1 — non-text ornament only */
@@ -278,6 +305,12 @@
   --confidence-verified-foreground: var(--paper-0); /* 10.07:1 — AAA */
   --confidence-verified-surface: var(--mint-050); /* 8.86:1 with the ink */
 
+  /* Same value as `--muted-foreground` in this theme, which is intended and not a merge:
+     colour.md §6 specifies `high` as "the neutral grey — a default state spends no
+     colour", and the neutral grey in light is now `--slate-600`. Nothing is lost, because
+     the chip never carries its value in colour: meter count, border style, icon and word
+     all still differ (§2, confidence ramp). Two names because the roles are independent —
+     restyling body copy must not restyle a confidence claim. */
   --confidence-high: var(--slate-600); /* 7.37:1 on bg · 7.78:1 on card — AAA */
   --confidence-high-foreground: var(--paper-0); /* 7.78:1 — AAA */
   --confidence-high-surface: var(--paper-100); /* 6.91:1 with the ink */
@@ -302,14 +335,136 @@
 }
 
 /* -----------------------------------------------------------------------------
- * 4. GEOMETRY, MOTION, LAYERING — theme-invariant.
+ * 4. PERMITTED PAIRINGS — the foreground × surface matrix
+ *
+ * WHY THIS EXISTS. Until audit QV-06 this file listed tokens and recorded a ratio for
+ * each pairing somebody happened to think of. That is a list of *anticipated* pairs, and
+ * it is silent about the rest — so `/legal/terms`, `/live/cameras` and `/methodology`
+ * each independently put `--muted-foreground` on a tinted callout, measured 4.45:1, and
+ * nothing anywhere said no. A documented ratio nobody measured is worse than none,
+ * because it is believed. Below is the whole grid instead: every pair a component may
+ * use, with both themes' computed ratio, and every pair it may not.
+ *
+ * READ IT AS: `dark / light`. Computed with WCAG 2.1 relative luminance
+ * (0.2126R + 0.7152G + 0.0722B on linearised sRGB), (L1+0.05)/(L2+0.05), two decimals.
+ * Text target 4.5:1 (1.4.3 AA). Non-text target 3:1 (1.4.11).
+ *
+ * 4.1 THE TEXT RAMP ON EVERY TEXT-BEARING SURFACE — all ≥ 4.5:1 in both themes
+ *
+ *   surface                       --foreground   --foreground-secondary  --muted-foreground
+ *   --background                  16.12 / 18.20   9.56 / 11.61            6.31 / 7.37
+ *   --card                        14.98 / 19.21   8.88 / 12.25            5.86 / 7.78
+ *   --popover                     13.63 / 19.21   8.08 / 12.25            5.34 / 7.78
+ *   --muted                       12.32 / 17.07   7.30 / 10.89            4.82 / 6.91
+ *   --accent                      10.28 / 16.12   6.09 / 10.28            4.02 / 6.53  <-- see 4.4
+ *   --info-surface                12.78 / 16.77   7.58 / 10.69            5.00 / 6.79
+ *   --success-surface             13.14 / 17.06   7.79 / 10.88            5.14 / 6.91
+ *   --warning-surface             13.29 / 17.12   7.88 / 10.92            5.20 / 6.93
+ *   --destructive-surface         14.81 / 16.50   8.78 / 10.52            5.80 / 6.68
+ *   --confidence-verified-surface 13.23 / 16.91   7.84 / 10.78            5.18 / 6.85
+ *   --confidence-high-surface     12.32 / 17.07   7.30 / 10.89            4.82 / 6.91
+ *   --confidence-medium-surface   13.29 / 17.12   7.88 / 10.92            5.20 / 6.93
+ *   --confidence-review-surface   14.28 / 17.98   8.46 / 11.46            5.59 / 7.28
+ *
+ * 4.2 ALPHA-TINTED SURFACES — measured because they ship, not because they are approved
+ *
+ * `components/ui/alert.tsx` tints with `bg-<intent>/10` rather than the `-surface` token.
+ * The composite has no name, so §4.1 could not describe it; these are the exact rendered
+ * values. THE MIGRATION TO `--*-surface` IS STILL WANTED (see docs/design/tokens.md §7):
+ * an alpha tint that lands on a `--card` differs from one on a `--background`, which is
+ * two unnamed surfaces per intent instead of one named one.
+ *
+ *   composite                     rendered D / L      --foreground   --fg-secondary  --muted-fg
+ *   bg-info/10 on --background    #16212B / #E1EBF2   13.70 / 15.88   8.12 / 10.13   5.36 / 6.43
+ *   bg-info/10 on --card          #1B2936 / #E8F1F6   12.44 / 16.78   7.37 / 10.70   4.87 / 6.79
+ *   bg-success/10 on --background #172422 / #E1EDE8   13.43 / 15.99   7.96 / 10.20   5.26 / 6.48
+ *   bg-success/10 on --card       #1D2C2D / #E9F2EB   12.15 / 16.80   7.20 / 10.71   4.76 / 6.80
+ *   bg-warning/10 on --background #22221F / #EDEAE4   13.39 / 16.00   7.94 / 10.20   5.24 / 6.48
+ *   bg-warning/10 on --card       #282A2A / #F4F0E7   12.11 / 16.89   7.18 / 10.77   4.74 / 6.84
+ *   bg-destructive/10 on --backgr #231D21 / #F0E5E5   13.89 / 15.59   8.23 /  9.94   5.44 / 6.31
+ *   bg-destructive/10 on --card   #29252C / #F7EAE9   12.63 / 16.37   7.49 / 10.44   4.95 / 6.63
+ *
+ * The light `--muted-fg` column is where QV-06 lived: it read 4.46 / 4.49 / 4.49 / 4.37
+ * before §3 changed the token.
+ *
+ * 4.3 NON-TEXT — `--input`, `--foreground-faint`, `--confidence-track` (one primitive per
+ * theme, three roles). Target 3:1. These carry control boundaries and countable meter
+ * segments, never a word.
+ *
+ *   surface                  ratio D / L     verdict
+ *   --background             3.65 / 3.42     permitted
+ *   --card                   3.39 / 3.61     permitted
+ *   --popover                3.09 / 3.61     permitted
+ *   --muted                  2.79 / 3.21     NOT permitted in dark — fails 1.4.11
+ *   --accent                 2.33 / 3.03     NOT permitted in dark
+ *   --secondary              1.48 / 2.86     NOT permitted in either theme
+ *   any --*-surface tint     2.89–3.35 / 3.10–3.38   NOT permitted in dark
+ *
+ * A bordered control, a checkbox or a confidence meter therefore sits on `--background`,
+ * `--card` or `--popover`. Putting one inside a tinted callout needs a new token, not a
+ * judgement call. No shipped component does; this row exists so the next one cannot.
+ *
+ * 4.4 FORBIDDEN PAIRS — measured, and listed so the absence is loud
+ *
+ *   pair                                        D / L         why not
+ *   --muted-foreground on --accent              4.02 / 6.53   dark fails 1.4.3. `--accent`
+ *       is the hover/selected fill, so this is the pair a hovered row reaches. Use
+ *       `--foreground-secondary` (6.09 / 10.28). `--accent` cannot be darkened without
+ *       making it invisible on `--popover` (see docs/design/tokens.md §2), and no
+ *       primitive between `--slate-400` and `--slate-300` exists, so the muted step
+ *       genuinely does not exist on this surface. ONE SHIPPED VIOLATION:
+ *       components/directory/search-field.tsx:249.
+ *   --foreground-secondary on --secondary       3.87 / 9.71   dark fails.
+ *   --muted-foreground on --secondary           2.56 / 6.17   dark fails badly.
+ *       `--secondary` is a FILL, not a surface: the only ink permitted on it is
+ *       `--secondary-foreground` (6.53 / 15.23). Same for `--primary`, `--destructive`,
+ *       `--success`, `--warning`, `--info` and every `--confidence-*` — each takes only
+ *       its own `-foreground`, and those ratios are in §2 and §3.
+ *   --success as text on bg-success/10          9.83 / 4.32   light fails.
+ *   --warning as text on bg-warning/10          10.19 / 4.23  light fails.
+ *   --primary as text on bg-destructive/10      8.75 / 4.44   light fails. A link inside
+ *       a destructive callout must be `--foreground` with an underline.
+ *       Status hues on a tint of themselves are for the ICON and the border only, where
+ *       the 3:1 non-text bar applies and every one of them clears it. As text they are
+ *       AA in dark and sub-AA in light, which is precisely the asymmetry that made four
+ *       of QV-06's five failures light-theme ones.
+ *
+ * 4.5 OPACITY — when it is allowed, which is almost never
+ *
+ * Alpha on an ink is invisible to every check that reads tokens, including this file:
+ * `--foreground` is 18.20:1 and `opacity-40` renders it at 2.64:1. Both statements are
+ * true at once, which is why the rule has to be structural rather than a review habit.
+ *
+ *   ALLOWED   `disabled:opacity-50` on a control that is GENUINELY inactive — a native
+ *             element carrying the `disabled` attribute, or `aria-disabled="true"` and
+ *             removed from the tab order. WCAG 1.4.3 exempts "text that is part of an
+ *             inactive user interface component", and axe skips them. This is what
+ *             components/ui/{button,input,checkbox,select,tabs,dropdown-menu}.tsx do.
+ *   ALLOWED   `opacity-70` on a decorative icon that duplicates an adjacent word, IF the
+ *             composite still clears 3:1. On `--foreground` ink it does (8.19 / 7.09);
+ *             on `--muted-foreground` ink it is 3.52 / 3.66 — the floor, no margin.
+ *   FORBIDDEN `opacity-60` or lower on anything containing a word. On muted ink that is
+ *             2.98 / 2.85. Two shipped instances, both flagged in
+ *             docs/design/tokens.md §7: breadcrumb.tsx:45, filter-controls.tsx:380.
+ *   FORBIDDEN Any alpha on a <span> or <div> styled to look inactive. Markup that is not
+ *             a control cannot be an "inactive user interface component", so the
+ *             exemption does not reach it and it owes the full 4.5:1. This was QV-06's
+ *             other half: components/directory/pagination.tsx now renders its unavailable
+ *             end in `--muted-foreground` (6.31 / 7.37) with a `--border` outline.
+ *   FORBIDDEN `/NN` alpha as a tint under text. Use the `-surface` tokens. One shipped
+ *             instance beyond alert.tsx: markdown.tsx:23 `text-foreground/90`
+ *             (13.09 / 14.37 — passes, still unmeasurable by name).
+ * -------------------------------------------------------------------------- */
+
+/* -----------------------------------------------------------------------------
+ * 5. GEOMETRY, MOTION, LAYERING — theme-invariant.
  *
  * Defined once on `:root`; both themes inherit them. Only the palette is
  * re-declared under `[data-theme="light"]`.
  * -------------------------------------------------------------------------- */
 
 :root {
-  /* Base radius. `--radius-xs|sm|md|lg|xl|2xl` derive from it in §5. */
+  /* Base radius. `--radius-xs|sm|md|lg|xl|2xl` derive from it in §6. */
   --radius: 0.5rem; /* 8px */
 
   /* Motion. `app/globals.css` consumes these by name in .dm-fade / .dm-pop. */
@@ -340,7 +495,7 @@
 }
 
 /* -----------------------------------------------------------------------------
- * 5. TAILWIND v4 THEME EXPOSURE
+ * 6. TAILWIND v4 THEME EXPOSURE
  *
  * `@theme inline` — the utility gets `var(--token)` verbatim, so switching
  * `data-theme` on <html> re-resolves every utility. Used for anything that changes
@@ -494,7 +649,7 @@
 }
 
 /* -----------------------------------------------------------------------------
- * 6. TOKEN-LEVEL BASE RULES
+ * 7. TOKEN-LEVEL BASE RULES
  *
  * Only rules that are inseparable from a token live here. Everything else is in
  * `app/globals.css`, which the maintainer owns.

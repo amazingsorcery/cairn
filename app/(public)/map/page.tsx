@@ -1,3 +1,5 @@
+import { headers } from "next/headers";
+
 import { Breadcrumb } from "@/components/ui/breadcrumb";
 import { MapSurface } from "@/components/map/map-surface";
 import {
@@ -8,6 +10,7 @@ import {
 } from "@/components/map/registry";
 import { ageSeconds } from "@/components/live/live-format";
 import { pageMetadata } from "@/lib/metadata";
+import { clientSubjectFromHeaders, consumeSafely } from "@/lib/rate-limit";
 import { buildLayerPayload } from "./payloads";
 
 /**
@@ -69,9 +72,46 @@ const INITIAL_VIEW = { longitude: 0, latitude: 20, zoom: 1.4 } as const;
 const INITIAL_BOUNDS = { west: -180, south: -85, east: 180, north: 85 } as const;
 
 export default async function MapPage() {
-  const payloads = await Promise.all(
-    MAP_LAYERS.map((layer) => buildLayerPayload(layer, layerQuery(layer, INITIAL_BOUNDS))),
-  );
+  /*
+   * The per-client ceiling, once for the whole render rather than once per layer. QA finding
+   * QV-05: this route is `force-dynamic`, unauthenticated, and `middleware.ts` matches only
+   * `/workspaces/*` and `/admin/*`, so nothing counted anything and a loop against it drove
+   * six registry reads and six audit rows per request.
+   *
+   * ONE `consume` per render, deliberately. Calling it inside `buildLayerPayload` would be
+   * six `rate_limits` upserts per page view — more database traffic than the six reads it is
+   * here to prevent, which would be a limiter that costs more than the thing it limits.
+   *
+   * It is NOT a session read: `sitemap.md` §10.1's invariant for public routes is about
+   * per-reader *content*, and every reader still gets the identical payload from the same
+   * shared cache entry. The client address is used to count and is HMACed before it reaches
+   * the database (ADR 0009), exactly as on every other limited surface.
+   */
+  const budget = await consumeSafely("map-layer", clientSubjectFromHeaders(await headers()));
+
+  const payloads = budget.ok
+    ? await Promise.all(
+        MAP_LAYERS.map((layer) => buildLayerPayload(layer, layerQuery(layer, INITIAL_BOUNDS))),
+      )
+    : /*
+       * Over the ceiling: the page still renders, with every layer in the state that says
+       * plainly whose limit was met. A 429 for the whole document would take the explanation
+       * with it, and this reader may simply be behind a large NAT.
+       *
+       * `quotaExhausted`, not `rateLimited` — the two are kept apart everywhere in this
+       * codebase because `rateLimited` means the UPSTREAM refused us, and a reader who cannot
+       * tell them apart concludes the sources are unreliable when we are the ones who
+       * stopped. Nothing upstream was involved here at all.
+       */
+      MAP_LAYERS.map(
+        (layer): LayerPayloadDto => ({
+          layerId: layer.id,
+          source: null,
+          ok: false,
+          failure: { kind: "quotaExhausted", resetsAt: budget.resetAt },
+          lastGoodAt: null,
+        }),
+      );
 
   const byId: Record<string, LayerPayloadDto> = {};
   const ages: Record<string, number | null> = {};

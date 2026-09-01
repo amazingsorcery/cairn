@@ -1,6 +1,8 @@
 import type { Connector } from "@/db/schema";
 import { recordConnectorRequest, type AuditEntry } from "@/lib/connectors/audit";
+import { isLive, notLiveReason } from "@/lib/connectors/liveness";
 import { logger } from "@/lib/logger";
+import { tallyOutbound } from "@/lib/net/outbound-tally";
 import { getConnectorBySlug } from "@/lib/queries/live";
 import { consume } from "@/lib/rate-limit";
 
@@ -71,7 +73,12 @@ export interface GovernedPoll<T extends SourceFeature> {
   readonly result: SourceResult<T>;
   /** Cache lifetime the caller must honour. The registry row wins over the adapter. */
   readonly ttlSeconds: number;
-  /** Returned so a caller cannot render a layer without the credit its licence requires. */
+  /**
+   * Returned so a caller cannot render a layer without the credit its licence requires.
+   *
+   * The row's `attribution` column supplies the **text** when it is set; `licence` and `href`
+   * are the adapter's, because no column carries them. See `resolveAttribution`.
+   */
   readonly attribution: Attribution;
   /** The registry row this poll was authorised against. */
   readonly connectorSlug: string;
@@ -100,29 +107,106 @@ const realDeps: GovernanceDeps = {
   now: () => new Date(),
 };
 
-/**
- * Is this row live? The same four conditions `getLiveConnector` applies, checked **by slug**
- * because one `kind` may now hold several sources (ADR 0024).
+/*
+ * `isLive` and `notLiveReason` are IMPORTED, not defined here.
  *
- * `termsUrl` and `legalBasis` are part of the test, not decoration: a source published
- * without a recorded basis for calling it is exactly what ADR 0012's CHECK constraints exist
- * to prevent, and re-checking here means the governed path cannot be the place that slips.
+ * They used to be a second copy of the same four conditions, sitting beside a third copy in
+ * `lib/queries/live.ts`'s SQL. When `runConnector` was refactored to resolve by slug, the
+ * copy it relied on was deleted and nothing replaced it: every connector then called its
+ * upstream while `enabled = false`, which is QA finding QV-01. One predicate, one file.
  */
-function isLive(connector: Connector): boolean {
-  return (
-    connector.enabled &&
-    connector.status === "published" &&
-    connector.termsUrl !== null &&
-    connector.legalBasis !== null
-  );
+
+/* ------------------------------------------------------------------ *
+ * The remembered refusal — QA finding QV-05
+ * ------------------------------------------------------------------ */
+
+/**
+ * A refusal we have already computed and already recorded, held for a bounded window.
+ *
+ * WHY. `/map` renders six layers per request, and with every connector in its shipped state
+ * (`enabled = false, status = 'draft'`) each of those six did a `SELECT` against `connectors`
+ * and an `INSERT` into `connector_requests`. Twenty anonymous page views wrote 120 rows into
+ * the one table `lib/rate-limit.ts` describes as "the only [table] in the schema with no
+ * natural bound". At a hundred requests a second that is tens of millions of rows a day on a
+ * box where Postgres shares the hardware with the app — and the audit log's signal, which is
+ * the artefact that found v1's Q-02, is buried under refusals nobody asked for.
+ *
+ * WHAT IS AND IS NOT CACHED, because this is the part that must not be got wrong. **Only a
+ * refusal is remembered.** There is no positive cache here: a live row is looked up on every
+ * poll, so an operator who switches a source OFF stops the traffic on the very next poll with
+ * no TTL in between. That is the property `lib/queries/live.ts` deliberately paid for by
+ * leaving the registry read uncached, and it is preserved exactly. What now waits out a
+ * window is switching a source back ON, which is a scheduled decision made in daylight rather
+ * than an incident response at 3am.
+ *
+ * The refusal is still audited — once per window rather than once per render. ADR 0013 §4
+ * wants a control that denies traffic to be visible; one row per source per window shows an
+ * operator that the source is off and stays off, without the surrounding noise.
+ */
+interface RememberedRefusal {
+  readonly until: number;
+  readonly reason: string;
+  readonly ttlSeconds: number;
+  /**
+   * The credit as `resolveAttribution` computed it, carried so a remembered refusal is
+   * byte-for-byte the refusal the first caller got. Recomputing it from the adapter constant
+   * would print the module's credit on the second request and the operator's edited one on
+   * the first, which is the divergence QV-17 is about, rebuilt one layer along.
+   */
+  readonly attribution: Attribution;
 }
 
-/** Why a row is not live, in one sentence fit to render. Never speculative. */
-function disabledReason(connector: Connector | null, slug: string): string {
-  if (!connector) return `${slug} has no registry row, so there is no recorded basis to call it`;
-  if (!connector.enabled) return "an operator switched this source off";
-  if (connector.status !== "published") return `this source is ${connector.status}, not published`;
-  return "this source has no recorded terms or legal basis";
+const globalForMemo = globalThis as typeof globalThis & {
+  __cairnSourceRefusalMemo__?: Map<string, RememberedRefusal>;
+};
+const refusalMemo: Map<string, RememberedRefusal> = (globalForMemo.__cairnSourceRefusalMemo__ ??=
+  new Map());
+
+/**
+ * How long a refusal is remembered: the registry row's own cache TTL, capped.
+ *
+ * The row's TTL is the number an operator already tunes for this source, and the cap keeps
+ * the delay on re-enabling a source to something a human will wait through rather than
+ * something they will assume is broken. A source with no row at all gets the cap.
+ */
+const MAX_REFUSAL_MEMO_SECONDS = 60;
+
+function rememberRefusal(
+  slug: string,
+  reason: string,
+  ttlSeconds: number,
+  attribution: Attribution,
+  now: Date,
+): void {
+  const seconds = Math.max(1, Math.min(ttlSeconds, MAX_REFUSAL_MEMO_SECONDS));
+  refusalMemo.set(slug, {
+    until: now.getTime() + seconds * 1000,
+    reason,
+    ttlSeconds,
+    attribution,
+  });
+}
+
+function recallRefusal(slug: string, now: Date): RememberedRefusal | null {
+  const entry = refusalMemo.get(slug);
+  if (!entry) return null;
+  if (entry.until <= now.getTime()) {
+    refusalMemo.delete(slug);
+    return null;
+  }
+  return entry;
+}
+
+/**
+ * Forget every remembered refusal.
+ *
+ * Called by the admin kill-switch so re-enabling a source takes effect immediately in this
+ * process, and by tests. It is in-process, like every other cache in this subtree, so a
+ * second process still waits out its own window — which is the honest bound on the trade and
+ * is written into ADR 0012's consequences rather than left for someone to discover.
+ */
+export function resetGovernanceMemo(): void {
+  refusalMemo.clear();
 }
 
 /**
@@ -162,6 +246,38 @@ function auditOutcome<T extends SourceFeature>(
   }
 }
 
+/**
+ * The credit to render: **the registry row's wording when it has one**, the adapter's
+ * constant otherwise.
+ *
+ * ## Why this is not just the adapter constant (QA finding QV-17)
+ *
+ * `connectors.attribution` is documented as the string we are obliged to render, and
+ * `connectors_attribution_check` makes it impossible to store a row that owes attribution
+ * without one. It was nevertheless never read: every branch here returned
+ * `adapter.attribution`, so an operator could edit the column and watch nothing change while
+ * two files claimed the row was authoritative. The strings happen to agree for every source
+ * today, so nothing was mis-credited — but attribution is precisely the field that has to be
+ * changeable without a deploy, because a licence can change its required wording and an
+ * operator can be asked for a different form of credit at short notice. The same argument
+ * that made `cache_ttl_seconds` the row's (ADR 0024) applies here unchanged.
+ *
+ * **Only the text comes from the row.** There is no `licence` or `attribution_href` column,
+ * so `licence` and `href` stay the adapter's — and this is a limit worth stating rather than
+ * papering over: the row can change the credit we print, not the licence we claim to be
+ * printing it under.
+ */
+function resolveAttribution<T extends SourceFeature>(
+  adapter: SourceAdapter<T>,
+  connector: Connector | null,
+): Attribution {
+  const rowText = connector?.attribution?.trim();
+  /* A blank column is "nobody filled this in", not "no credit is owed": fall back. */
+  if (!rowText) return adapter.attribution;
+  if (rowText === adapter.attribution.text) return adapter.attribution;
+  return { ...adapter.attribution, text: rowText };
+}
+
 /** A refusal that made no request. */
 function refused<T extends SourceFeature>(
   adapter: SourceAdapter<T>,
@@ -171,7 +287,7 @@ function refused<T extends SourceFeature>(
   return {
     result: { ok: false, failure: { kind: "disabled", reason }, lastGoodAt: null },
     ttlSeconds: connector?.cacheTtlSeconds ?? adapter.ttlSeconds,
-    attribution: adapter.attribution,
+    attribution: resolveAttribution(adapter, connector),
     connectorSlug: adapter.slug,
   };
 }
@@ -201,6 +317,21 @@ export async function pollSource<T extends SourceFeature>(
 
   /* 1. Registry and kill-switch -------------------------------------- */
 
+  /*
+   * A refusal we have already computed and already recorded, inside its window. No registry
+   * read, no audit row, no request — and the same refusal the first caller got, so a caller
+   * cannot tell a remembered one from a fresh one. QV-05.
+   */
+  const remembered = recallRefusal(adapter.slug, now);
+  if (remembered) {
+    return {
+      result: { ok: false, failure: { kind: "disabled", reason: remembered.reason }, lastGoodAt: null },
+      ttlSeconds: remembered.ttlSeconds,
+      attribution: remembered.attribution,
+      connectorSlug: adapter.slug,
+    };
+  }
+
   let connector: Connector | null = null;
   try {
     connector = await d.getConnector(adapter.slug);
@@ -210,11 +341,21 @@ export async function pollSource<T extends SourceFeature>(
       { scope: "source.poll", slug: adapter.slug, err: error },
       "Registry lookup failed; refusing to call upstream",
     );
+    // Deliberately NOT remembered: this is a database fault, not a decision about the
+    // source, and holding it would keep a healthy source dark for a window after the
+    // database came back.
     return refused(adapter, "the source registry is unavailable, so no call was authorised");
   }
 
   if (!connector || !isLive(connector)) {
-    const reason = disabledReason(connector, adapter.slug);
+    const reason = notLiveReason(connector, adapter.slug);
+    rememberRefusal(
+      adapter.slug,
+      reason,
+      connector?.cacheTtlSeconds ?? adapter.ttlSeconds,
+      resolveAttribution(adapter, connector),
+      now,
+    );
     /**
      * A kill-switch that does not kill is worse than none. **Return before any request.**
      * The refusal is still audited — ADR 0013 §4: a control denying traffic is the single
@@ -227,6 +368,7 @@ export async function pollSource<T extends SourceFeature>(
         outcome: "disabled",
         durationMs: 0,
         upstreamStatus: null,
+        upstreamRequests: 0,
         subject: WORKER_ACTOR_SUBJECT,
         at: now,
       });
@@ -252,6 +394,7 @@ export async function pollSource<T extends SourceFeature>(
         outcome: "quotaDenied",
         durationMs: 0,
         upstreamStatus: null,
+        upstreamRequests: 0,
         subject: WORKER_ACTOR_SUBJECT,
         at: now,
       });
@@ -273,7 +416,7 @@ export async function pollSource<T extends SourceFeature>(
           lastGoodAt: null,
         },
         ttlSeconds: connector.cacheTtlSeconds,
-        attribution: adapter.attribution,
+        attribution: resolveAttribution(adapter, connector),
         connectorSlug: connector.slug,
       };
     }
@@ -287,6 +430,7 @@ export async function pollSource<T extends SourceFeature>(
       outcome: "quotaDenied",
       durationMs: 0,
       upstreamStatus: null,
+      upstreamRequests: 0,
       subject: WORKER_ACTOR_SUBJECT,
       at: now,
     });
@@ -295,9 +439,34 @@ export async function pollSource<T extends SourceFeature>(
 
   /* 3. The call, then the audit row ----------------------------------- */
 
+  /**
+   * The adapter runs inside an outbound tally (QV-09). One poll is not one request: the NWS
+   * adapter makes an index call plus up to twelve zone lookups, and the audit row said one.
+   * Counted at the `fetch` in `lib/sources/http.ts`, so an adapter cannot misdeclare it.
+   */
   const started = Date.now();
-  const result = await adapter.fetch(query, ctx);
+  const attempt = await tallyOutbound(() => adapter.fetch(query, ctx));
   const durationMs = Date.now() - started;
+
+  /*
+   * An adapter is code this module does not own and `pollSource` has never caught for it;
+   * rethrowing preserves that. The count is still taken, because requests made before the
+   * throw were still made.
+   */
+  if (!attempt.ok) {
+    await d.audit({
+      connectorId: connector.id,
+      outcome: "upstreamError",
+      durationMs,
+      upstreamStatus: lastUpstreamStatus(adapter.slug),
+      upstreamRequests: attempt.outboundRequests,
+      subject: WORKER_ACTOR_SUBJECT,
+      at: new Date(),
+    });
+    throw attempt.error;
+  }
+
+  const result = attempt.value;
 
   const { outcome, upstreamStatus, called } = auditOutcome(result, adapter.slug);
   await d.audit({
@@ -306,15 +475,19 @@ export async function pollSource<T extends SourceFeature>(
     // Zero when nothing left the building, matching the convention for every other refusal.
     durationMs: called ? durationMs : 0,
     upstreamStatus,
+    // `called` is the adapter's own report that it declined before calling (no API key, for
+    // instance). The tally is what actually happened, and the two agree by construction.
+    upstreamRequests: called ? attempt.outboundRequests : 0,
     subject: WORKER_ACTOR_SUBJECT,
     at: new Date(),
   });
 
   return {
     result,
-    // The row wins. See `GovernedPoll.ttlSeconds`.
+    // The row wins, for the TTL and for the credit's wording. See `GovernedPoll.ttlSeconds`
+    // and `resolveAttribution`.
     ttlSeconds: connector.cacheTtlSeconds,
-    attribution: adapter.attribution,
+    attribution: resolveAttribution(adapter, connector),
     connectorSlug: connector.slug,
   };
 }

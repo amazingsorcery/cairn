@@ -2,6 +2,7 @@ import type { Connector } from "@/db/schema";
 import { logger } from "@/lib/logger";
 import { getConnectorBySlug } from "@/lib/queries/live";
 import { isLive, notLiveReason } from "./liveness";
+import { tallyOutbound } from "@/lib/net/outbound-tally";
 import { consume } from "@/lib/rate-limit";
 import { recordConnectorRequest } from "./audit";
 import { e2eOverride } from "./e2e-override";
@@ -21,14 +22,22 @@ import type { ActorIdentity, ConnectorDriver, ConnectorEnvelope } from "./types"
  *
  *   1. registry lookup     — is there a published, enabled connector with a recorded legal
  *                            basis for this surface? (kill-switch, ADR 0012 §1)
- *   2. global ceiling      — would this call breach the upstream's fair use across ALL our
- *                            users? Checked before the per-user quota because it protects a
- *                            third party rather than us, and a user under their own quota
- *                            must still be refused when the ceiling is reached.
- *   3. per-user quota      — ADR 0011 rule 3.
- *   4. the call itself     — with an AbortSignal armed to the connector's `timeout_ms`.
+ *   1b. per-user quota     — FOR A `perActor` DRIVER ONLY, and before the cache is read.
+ *                            QA finding QV-02: on those drivers the cache key is the reader's
+ *                            own query, so a free cache read is an oracle for what other
+ *                            readers looked up. Paying for the answer is what closes it.
+ *   2. cache               — a fresh entry is served without calling anyone.
+ *   3. global ceiling      — would this call breach the upstream's fair use across ALL our
+ *                            users? Checked before the per-user quota (on a shared driver)
+ *                            because it protects a third party rather than us, and a user
+ *                            under their own quota must still be refused when the ceiling is
+ *                            reached. It is consumed only when a call is actually made, so it
+ *                            keeps meaning "outbound calls", which is what fair use counts.
+ *   4. per-user quota      — ADR 0011 rule 3, for a shared driver.
+ *   5. the call itself     — with an AbortSignal armed to the connector's `timeout_ms`.
  *
- * Every one of those, including the two refusals, is written to the audit log.
+ * Every one of those, including the refusals, is written to the audit log — except a cache
+ * hit, which is not an outbound call and is not recorded as one (ADR 0013, QV-05).
  *
  * NOTHING HERE THROWS for an expected failure. It returns a degraded envelope, because
  * ADR 0011 rule 5 requires the surface to state what is wrong and how old the data is, and
@@ -78,19 +87,51 @@ const payloadCache: Map<string, CacheEntry> = (globalForCache.__cairnConnectorCa
 
 /**
  * Hard ceiling on distinct cache entries, so a crafted stream of viewport parameters cannot
- * grow this Map without bound on a 2 GB box. Eviction is oldest-first; the driver's
+ * grow this Map without bound on a small box. Eviction is oldest-first; the driver's
  * `normalise` is the first line of defence, quantising parameters so the key space is small.
  */
-const MAX_CACHE_ENTRIES = 256;
+const MAX_CACHE_ENTRIES = 512;
+
+/**
+ * And a per-connector share of it.
+ *
+ * A single global ceiling with oldest-first eviction means one connector can evict every
+ * other connector's entries: 256 crafted DNS lookups used to flush the aircraft layer and
+ * every other reader's Toolbench answers, turning a cache into a cross-connector denial of
+ * service. QV-02 records it as a secondary consequence of the same design. Each connector now
+ * evicts its own oldest entry first and cannot reach past its own prefix.
+ *
+ * The global ceiling above stays as the backstop: seven connector slugs at 64 each is 448,
+ * inside the 512, so neither number is doing the other's job today — and if an eighth slug is
+ * added the global ceiling still bounds the Map.
+ */
+const MAX_ENTRIES_PER_CONNECTOR = 64;
 
 function readCache(key: string): CacheEntry | undefined {
   return payloadCache.get(key);
 }
 
-function writeCache(key: string, entry: CacheEntry): void {
-  if (payloadCache.size >= MAX_CACHE_ENTRIES && !payloadCache.has(key)) {
-    const oldest = payloadCache.keys().next();
-    if (!oldest.done) payloadCache.delete(oldest.value);
+/** Oldest key belonging to this connector, or undefined. `Map` iterates in insertion order. */
+function oldestKeyFor(slug: string): string | undefined {
+  const prefix = `${slug}:`;
+  let count = 0;
+  let oldest: string | undefined;
+  for (const key of payloadCache.keys()) {
+    if (!key.startsWith(prefix)) continue;
+    count += 1;
+    oldest ??= key;
+  }
+  return count >= MAX_ENTRIES_PER_CONNECTOR ? oldest : undefined;
+}
+
+function writeCache(slug: string, key: string, entry: CacheEntry): void {
+  if (!payloadCache.has(key)) {
+    const ownOldest = oldestKeyFor(slug);
+    if (ownOldest !== undefined) payloadCache.delete(ownOldest);
+    if (payloadCache.size >= MAX_CACHE_ENTRIES) {
+      const oldest = payloadCache.keys().next();
+      if (!oldest.done) payloadCache.delete(oldest.value);
+    }
   }
   payloadCache.set(key, entry);
 }
@@ -163,6 +204,32 @@ export function clearCooldowns(): void {
 /** Age of a payload in seconds, from the timestamp stamped at the upstream response. */
 function ageSeconds(fetchedAt: Date, now: Date): number {
   return (now.getTime() - fetchedAt.getTime()) / 1000;
+}
+
+/**
+ * The instant a `perActor` connector reports to the caller: the real one, rounded DOWN to the
+ * start of the cache window it falls in, epoch-aligned like `windowStart` in the limiter.
+ *
+ * QV-02's second half. The exact millisecond a payload was fetched is a fact about *another
+ * reader's request*, and on a small deployment with a known user list "somebody here resolved
+ * whistleblower-host.example at 03:46:34" is close to attribution. Rounded to the window, the
+ * value says only "this answer belongs to the current cache window" — which a cache hit
+ * already tells you, so it leaks nothing further.
+ *
+ * Rounded DOWN, never up or to nearest, and applied to the caller's own fresh fetch as well
+ * as to a hit. Down, because the resulting age is then never *younger* than the truth: the
+ * error can make a reader re-check, never make them over-trust a stale answer. To both,
+ * because otherwise "exact timestamp" versus "rounded timestamp" would itself distinguish a
+ * miss from a hit, which is the oracle again with an extra step.
+ *
+ * A shared live layer keeps the exact instant. There the age IS the product — a 40-second-old
+ * aircraft position is a different claim from a 4-second-old one — and the timestamp says
+ * nothing about any reader, because every reader is asking the same question.
+ */
+function quantiseInstant(at: Date, windowSeconds: number): Date {
+  if (!Number.isFinite(windowSeconds) || windowSeconds <= 0) return at;
+  const ms = Math.floor(windowSeconds) * 1000;
+  return new Date(Math.floor(at.getTime() / ms) * ms);
 }
 
 function unavailable<T>(
@@ -278,6 +345,8 @@ export async function runConnector<Params, Result>(
         outcome: "disabled",
         durationMs: 0,
         upstreamStatus: null,
+        // Nothing left the building, which is the whole point of the row.
+        upstreamRequests: 0,
         subject: actor.subject,
         at: now,
       });
@@ -321,14 +390,99 @@ export async function runConnector<Params, Result>(
     );
   }
 
+  /*
+   * How a quota is spent, in one place, so the three call sites below cannot drift on the
+   * fail-closed rule. `consume`, not `consumeSafely`: `consumeSafely` fails OPEN on a
+   * database error, which is right for our own surfaces and wrong here — an uncounted call
+   * against somebody else's fair-use limit is a call we had no right to make.
+   */
+  const spendQuota = async (
+    action: "connector-user" | "connector-global",
+    subject: string,
+    policy: { limit: number; windowSeconds: number },
+  ): Promise<"ok" | "denied" | "unmeasurable"> => {
+    try {
+      const result = await consume(action, subject, { policy, now });
+      return result.ok ? "ok" : "denied";
+    } catch (error) {
+      logger.error(
+        { scope: "connector.run", slug: connector.slug, action, err: error },
+        "Quota check failed",
+      );
+      return "unmeasurable";
+    }
+  };
+
+  const auditQuotaDenied = async (): Promise<void> => {
+    await recordConnectorRequest({
+      connectorId: connector.id,
+      outcome: "quotaDenied",
+      durationMs: 0,
+      upstreamStatus: null,
+      upstreamRequests: 0,
+      subject: actor.subject,
+      at: now,
+    });
+  };
+
+  const userPolicy = { limit: connector.perUserQuota, windowSeconds: connector.windowSeconds };
+
+  /* 1b. Per-actor quota, BEFORE the cache is read -------------------- */
+
+  /**
+   * QA finding QV-02. On a `perActor` driver the cache key IS the caller's question, so a
+   * free cache read answers "has anybody here looked this up recently?" for anyone who can
+   * send an HTTP request. Charging the read a quota unit is what removes the free oracle
+   * while keeping ADR 0014 §4's shared entry: the upstream still sees one call for many
+   * readers, and the cache key still encodes nothing about who asked.
+   *
+   * NOTHING IS SERVED FROM THE CACHE ON A DENIAL — not even a stale payload. Serving stale
+   * data to a spent actor would rebuild the same oracle one layer down: the answer would
+   * again depend on whether somebody else had asked. A spent actor gets the identical
+   * refusal for a cached term and for one nobody has ever typed, which is the property the
+   * regression test asserts.
+   */
+  if (driver.perActor) {
+    const spent = await spendQuota(
+      "connector-user",
+      `${connector.slug}:${actor.subject}`,
+      userPolicy,
+    );
+    if (spent !== "ok") {
+      await auditQuotaDenied();
+      return unavailable(
+        connector.slug,
+        "quota-exhausted",
+        spent === "denied"
+          ? "You have reached this source's request limit. Try again shortly."
+          : "This live source is temporarily unavailable.",
+        attribution,
+      );
+    }
+  }
+
   const key = `${connector.slug}:${driver.cacheKey(params)}`;
   const cached = readCache(key);
 
+  /**
+   * The instant this caller is told about. Quantised for a per-actor connector so it cannot
+   * carry another reader's request time; exact for a shared live layer, where the age is the
+   * product and says nothing about any reader. See `quantiseInstant`.
+   */
+  const outwardInstant = (at: Date): Date =>
+    driver.perActor ? quantiseInstant(at, connector.cacheTtlSeconds) : at;
+
   /* 2. Serve from cache while fresh ---------------------------------- */
 
+  /*
+   * No audit row for a hit. An entry in `connector_requests` means an outbound attempt was
+   * made or refused, and a cache hit is neither — recording one would overstate our rate
+   * against the fair-use limit the table exists to let us verify (ADR 0013, QV-05). The
+   * quota above is what accounts for the read.
+   */
   if (cached && ageSeconds(cached.fetchedAt, now) <= connector.cacheTtlSeconds) {
     return {
-      fetchedAt: cached.fetchedAt,
+      fetchedAt: outwardInstant(cached.fetchedAt),
       state: "fresh",
       data: cached.payload as Result,
       connectorSlug: connector.slug,
@@ -358,11 +512,11 @@ export async function runConnector<Params, Result>(
         "upstream-down",
         message,
         attribution,
-        cached?.fetchedAt ?? null,
+        cached ? outwardInstant(cached.fetchedAt) : null,
       );
     }
     return {
-      fetchedAt: staleUsable.fetchedAt,
+      fetchedAt: outwardInstant(staleUsable.fetchedAt),
       state: "stale",
       data: staleUsable.payload as Result,
       connectorSlug: connector.slug,
@@ -399,6 +553,9 @@ export async function runConnector<Params, Result>(
       outcome: "rateLimited",
       durationMs: 0,
       upstreamStatus: null,
+      // We stood down: no request was made this time. The 429 that opened the cooldown is a
+      // separate row and carries its own count.
+      upstreamRequests: 0,
       subject: actor.subject,
       at: now,
     });
@@ -406,7 +563,7 @@ export async function runConnector<Params, Result>(
     const message = `This source asked us to slow down. Waiting ${cooling}s before trying again.`;
     return staleUsable
       ? {
-          fetchedAt: staleUsable.fetchedAt,
+          fetchedAt: outwardInstant(staleUsable.fetchedAt),
           state: "stale",
           data: staleUsable.payload as Result,
           connectorSlug: connector.slug,
@@ -419,87 +576,71 @@ export async function runConnector<Params, Result>(
           "rate-limited",
           message,
           attribution,
-          cached?.fetchedAt ?? null,
+          cached ? outwardInstant(cached.fetchedAt) : null,
         );
   }
 
   /* 3. Quotas -------------------------------------------------------- */
 
   /**
-   * The global ceiling first. It protects the UPSTREAM's fair-use limit from all of our
-   * users combined (ADR 0011 rule 3), so it must bite even for a user well within their own
-   * quota. Both counters use the ADR 0009 limiter, whose subject is hashed — the ceiling's
-   * subject is the connector slug, which is not a person.
+   * The global ceiling. It protects the UPSTREAM's fair-use limit from all of our users
+   * combined (ADR 0011 rule 3), so it must bite even for a user well within their own quota.
+   * Both counters use the ADR 0009 limiter, whose subject is hashed — the ceiling's subject
+   * is the connector slug, which is not a person.
    *
-   * These call `consume`, not `consumeSafely`. `consumeSafely` fails OPEN on a database
-   * error, which is right for our own surfaces and wrong here: an uncounted call against
-   * somebody else's fair-use limit is a call we had no right to make.
+   * It is consumed HERE, past the cache, and not before it: the ceiling counts outbound
+   * calls, and a cache hit is not one. Counting hits against it would make the one number an
+   * operator uses to argue fair use with an upstream describe something else entirely.
    */
-  const policy = { limit: connector.globalCeiling, windowSeconds: connector.windowSeconds };
-  const userPolicy = { limit: connector.perUserQuota, windowSeconds: connector.windowSeconds };
+  const globalPolicy = { limit: connector.globalCeiling, windowSeconds: connector.windowSeconds };
 
-  try {
-    const global = await consume("connector-global", connector.slug, { policy, now });
-    if (!global.ok) {
-      await recordConnectorRequest({
-        connectorId: connector.id,
-        outcome: "quotaDenied",
-        durationMs: 0,
-        upstreamStatus: null,
-        subject: actor.subject,
-        at: now,
-      });
-      return staleUsable
-        ? degradeToStale("This source is at its shared rate limit; showing the last data we have.")
-        : unavailable(
-            connector.slug,
-            "quota-exhausted",
-            "This source is at its shared rate limit. Try again shortly.",
-            attribution,
-          );
-    }
-
-    const perUser = await consume("connector-user", `${connector.slug}:${actor.subject}`, {
-      policy: userPolicy,
-      now,
-    });
-    if (!perUser.ok) {
-      await recordConnectorRequest({
-        connectorId: connector.id,
-        outcome: "quotaDenied",
-        durationMs: 0,
-        upstreamStatus: null,
-        subject: actor.subject,
-        at: now,
-      });
-      return staleUsable
-        ? degradeToStale("You have reached this source's request limit; showing the last data we have.")
-        : unavailable(
-            connector.slug,
-            "quota-exhausted",
-            "You have reached this source's request limit. Try again shortly.",
-            attribution,
-          );
-    }
-  } catch (error) {
-    // Fail CLOSED: we could not prove we are inside the ceiling, so we do not call.
-    logger.error({ scope: "connector.run", slug: connector.slug, err: error }, "Quota check failed");
-    await recordConnectorRequest({
-      connectorId: connector.id,
-      outcome: "quotaDenied",
-      durationMs: 0,
-      upstreamStatus: null,
-      subject: actor.subject,
-      at: now,
-    });
+  const global = await spendQuota("connector-global", connector.slug, globalPolicy);
+  if (global !== "ok") {
+    await auditQuotaDenied();
+    // Fail CLOSED on `unmeasurable`: we could not prove we are inside the ceiling.
+    const message =
+      global === "denied"
+        ? "This source is at its shared rate limit"
+        : "Rate limiting is unavailable";
     return staleUsable
-      ? degradeToStale("Rate limiting is unavailable; showing the last data we have.")
+      ? degradeToStale(`${message}; showing the last data we have.`)
       : unavailable(
           connector.slug,
           "quota-exhausted",
-          "This live source is temporarily unavailable.",
+          global === "denied"
+            ? "This source is at its shared rate limit. Try again shortly."
+            : "This live source is temporarily unavailable.",
           attribution,
         );
+  }
+
+  /**
+   * The per-user quota, for a SHARED driver only — a per-actor driver spent it above, before
+   * the cache read, and charging it twice would halve the quota an operator configured.
+   */
+  if (!driver.perActor) {
+    const perUser = await spendQuota(
+      "connector-user",
+      `${connector.slug}:${actor.subject}`,
+      userPolicy,
+    );
+    if (perUser !== "ok") {
+      await auditQuotaDenied();
+      const message =
+        perUser === "denied"
+          ? "You have reached this source's request limit"
+          : "Rate limiting is unavailable";
+      return staleUsable
+        ? degradeToStale(`${message}; showing the last data we have.`)
+        : unavailable(
+            connector.slug,
+            "quota-exhausted",
+            perUser === "denied"
+              ? "You have reached this source's request limit. Try again shortly."
+              : "This live source is temporarily unavailable.",
+            attribution,
+          );
+    }
   }
 
   /* 4. The call ------------------------------------------------------ */
@@ -508,8 +649,26 @@ export async function runConnector<Params, Result>(
   const timer = setTimeout(() => controller.abort(), connector.timeoutMs);
   const started = Date.now();
 
+  /**
+   * The driver runs inside an outbound tally (QV-09). One `runConnector` is not one request:
+   * the DNS driver makes six, RIPEstat four, a Wayback diff two plus redirect hops. The
+   * count is taken at each `fetch` rather than declared by the driver, so it cannot drift
+   * when a driver adds a call — which is exactly how the undercount arose.
+   */
+  const attempt = await tallyOutbound(() =>
+    driver.fetch(connector, params, controller.signal),
+  );
+
+  /*
+   * `Math.max(1, ...)` on a completed attempt, not on a refusal. A driver that reaches its
+   * upstream through some path this counter does not see would otherwise record zero, which
+   * would understate the volume — and understating is the direction of the original defect.
+   */
+  const outboundRequests = Math.max(1, attempt.outboundRequests);
+
   try {
-    const { data, upstreamStatus } = await driver.fetch(connector, params, controller.signal);
+    if (!attempt.ok) throw attempt.error;
+    const { data, upstreamStatus } = attempt.value;
     const durationMs = Date.now() - started;
     const fetchedAt = new Date();
 
@@ -518,14 +677,17 @@ export async function runConnector<Params, Result>(
       outcome: "ok",
       durationMs,
       upstreamStatus,
+      upstreamRequests: outboundRequests,
       subject: actor.subject,
       at: fetchedAt,
     });
 
-    writeCache(key, { fetchedAt, payload: data });
+    // The REAL instant is what goes into the cache: the TTL is measured against it, and a
+    // rounded value stored here would extend or shorten every reader's window.
+    writeCache(connector.slug, key, { fetchedAt, payload: data });
 
     return {
-      fetchedAt,
+      fetchedAt: outwardInstant(fetchedAt),
       state: "fresh",
       data,
       connectorSlug: connector.slug,
@@ -553,6 +715,8 @@ export async function runConnector<Params, Result>(
       // Null on a timeout: no status was received. On an upstream error the driver throws
       // an UpstreamStatusError carrying one.
       upstreamStatus: !aborted && error instanceof UpstreamStatusError ? error.status : null,
+      // A driver that made four requests and then failed made four requests.
+      upstreamRequests: outboundRequests,
       subject: actor.subject,
       at: new Date(),
     });

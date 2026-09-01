@@ -32,6 +32,7 @@ export const RATE_LIMIT_ACTIONS = [
   "workspace-export",
   "connector-user",
   "connector-global",
+  "map-layer",
 ] as const;
 export type RateLimitAction = (typeof RATE_LIMIT_ACTIONS)[number];
 
@@ -89,6 +90,22 @@ export const RATE_LIMIT_POLICIES: Readonly<Record<RateLimitAction, RateLimitPoli
   "connector-user": { limit: 30, windowSeconds: 60 },
   /** Global ceiling so we cannot breach an upstream's fair use even under load. */
   "connector-global": { limit: 600, windowSeconds: 60 },
+  /**
+   * `/map` and `/map/data/<layer>`, per client. QA finding QV-05.
+   *
+   * Both were unauthenticated and unlimited, and `middleware.ts` matches only
+   * `/workspaces/*` and `/admin/*`, so nothing above them counted anything. A single
+   * anonymous client could drive a `SELECT` and an `INSERT` per layer per request against
+   * `connector_requests` — the one table in this schema with no natural bound.
+   *
+   * THE ARITHMETIC. The map polls six layers on a five-second tick, which is 72 requests a
+   * minute from one reader with the page open. 240 leaves room for three readers sharing one
+   * address — an office range or a shared NAT is one client to us — and is ruinous for a
+   * loop, which does thousands. It is a ceiling on abuse, not a throttle on use: a reader who
+   * meets it is either running a script or sitting behind a very large NAT, and the surface
+   * says which of our limits they met rather than blaming the sources.
+   */
+  "map-layer": { limit: 240, windowSeconds: 60 },
 };
 
 export type RateLimitResult = {
@@ -290,8 +307,18 @@ export async function sweepExpired(
  * bypass a limit, only to hit one sooner.
  */
 export function clientSubject(request: Request): string {
-  const forwarded = request.headers.get("x-forwarded-for");
+  return clientSubjectFromHeaders(request.headers);
+}
+
+/**
+ * The same, for a Server Component, which is handed `headers()` rather than a `Request`.
+ *
+ * One implementation, because "take the first entry and ignore the rest" is the security
+ * property and a second copy of it is a second place for it to be got wrong.
+ */
+export function clientSubjectFromHeaders(headers: Headers): string {
+  const forwarded = headers.get("x-forwarded-for");
   const first = forwarded?.split(",")[0]?.trim();
   if (first) return first;
-  return request.headers.get("x-real-ip")?.trim() || "unknown-client";
+  return headers.get("x-real-ip")?.trim() || "unknown-client";
 }

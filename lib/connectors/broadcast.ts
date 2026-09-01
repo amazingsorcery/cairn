@@ -84,6 +84,12 @@ export const broadcastDriver: ConnectorDriver<BroadcastFilters, BroadcastPayload
   normalise: (raw) => broadcastFilterSchema.parse(raw),
 
   /** The query and nothing about who asked. ADR 0014 §4. */
+  /**
+   * A station search is a private query: the cache key is the name, country or tag the
+   * reader typed. QV-02 — the quota is spent before the cache is read, so a hit costs the
+   * caller a unit and cannot be used to learn what somebody else searched for.
+   */
+  perActor: true,
   cacheKey: filtersCacheKey,
 
   async fetch(connector: Connector, params, signal) {

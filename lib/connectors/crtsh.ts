@@ -114,6 +114,8 @@ export const crtShDriver: ConnectorDriver<CrtShParams, CertificateSummary> = {
     return { domain: domain.value, excludeExpired: parsed.excludeExpired };
   },
 
+  /** The cache key is the domain the reader typed. Private query — see QV-02. */
+  perActor: true,
   cacheKey: (params) => `${params.domain}|${params.excludeExpired ? "unexpired" : "all"}`,
 
   async fetch(connector: Connector, params, signal) {

@@ -82,6 +82,10 @@ async function runAgainst(row: Connector | null): Promise<{
   const driver: ConnectorDriver<Record<string, never>, { leaked: boolean }> = {
     kind: "infrastructure",
     slug: "qa-killswitch-connector",
+    // The kill-switch runs before either quota, so this fixture is unaffected by the
+    // per-actor ordering QV-02 introduced. Declared explicitly because the contract requires
+    // every driver to state which kind of question it asks.
+    perActor: false,
     normalise: () => ({}) as Record<string, never>,
     cacheKey: () => `k${Math.random()}`,
     fetch: fetchSpy,
