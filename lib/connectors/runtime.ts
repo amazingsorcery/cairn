@@ -1,6 +1,6 @@
 import type { Connector } from "@/db/schema";
 import { logger } from "@/lib/logger";
-import { getLiveConnector } from "@/lib/queries/live";
+import { getConnectorBySlug } from "@/lib/queries/live";
 import { consume } from "@/lib/rate-limit";
 import { recordConnectorRequest } from "./audit";
 import { e2eOverride } from "./e2e-override";
@@ -198,7 +198,23 @@ export async function runConnector<Params, Result>(
 
   /* 1. Registry, kill-switch and legal basis ------------------------- */
 
-  const connector = options.connector ?? (await getLiveConnector(driver.kind));
+  /*
+   * Resolve by SLUG, never by kind.
+   *
+   * This previously read `getLiveConnector(driver.kind)`, which returns the first enabled row
+   * of that kind. Once more than one connector shared a kind that became a real defect, and
+   * both tools-engineers hit it independently on the same day: the Overpass driver was handed
+   * the Cloudflare DNS row and POSTed an Overpass query at that base URL.
+   *
+   * A request went out to an operator we had not decided to call, under someone else's
+   * recorded legal basis, spending someone else's quota, and the reader saw the wrong
+   * attribution. It surfaced as an ordinary "source unreachable", which is why it survived —
+   * the failure looks exactly like the upstream having a bad day.
+   *
+   * A driver knows which connector it is. A kind is a category, and a category was never an
+   * identity.
+   */
+  const connector = options.connector ?? (await getConnectorBySlug(driver.slug));
 
   /*
    * TEST-ONLY STATE OVERRIDE - see `./e2e-override.ts`.

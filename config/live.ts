@@ -30,8 +30,21 @@
  */
 export const mapTiles = {
   origin: "https://tiles.openfreemap.org",
-  urlTemplate: "https://tiles.openfreemap.org/styles/dark",
-  maxZoom: 20,
+
+  /**
+   * A MapLibre STYLE url — vector. There is deliberately no `urlTemplate` here.
+   *
+   * The field used to be called `urlTemplate` and held a raster `{z}/{x}/{y}` pattern for
+   * `tile.openstreetmap.org`. When that endpoint was removed (its usage policy forbids
+   * production use) the value became an OpenFreeMap style URL under the same name, and every
+   * `L.tileLayer(mapTiles.urlTemplate)` call site kept compiling and silently stopped
+   * rendering: Leaflet requested the same style JSON for every tile and drew nothing.
+   *
+   * OpenFreeMap is vector-only and publishes no raster endpoint, so the name is now
+   * `styleUrl` and a raster consumer gets a type error instead of a blank map.
+   */
+  styleUrl: "https://tiles.openfreemap.org/styles/dark",
+
   /** Rendered visibly on the map, not in a footer. Required by the licence. */
   attribution: "© OpenFreeMap contributors, © OpenMapTiles, © OpenStreetMap contributors",
   attributionUrl: "https://openfreemap.org/",
