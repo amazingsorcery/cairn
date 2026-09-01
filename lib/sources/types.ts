@@ -62,6 +62,25 @@ export type SourceFailure =
    * entry. This codebase keeps meeting it; the answer is always to keep them apart.
    */
   | { readonly kind: "quotaExhausted"; readonly resetsAt?: Date }
+  /**
+   * THEY MOVED, AND WE DO NOT FOLLOW. QA finding QV-18.
+   *
+   * The upstream answered a 3xx pointing at a different host, and `fetchUpstream` refused it
+   * rather than walking it: "the upstream is trustworthy" is exactly the assumption an SSRF
+   * exploits, and an open redirect on an otherwise honest service is enough.
+   *
+   * Its own kind rather than an `upstreamError`, for the reason this union exists at all: an
+   * operator reads these under pressure, and "they moved" and "they are down" lead to
+   * opposite investigations. A source that has moved is fixed by updating a URL in
+   * `lib/sources/<slug>.ts` after checking where it now points; a source that is down is
+   * fixed by waiting. Reporting the first as the second sends somebody looking for an outage
+   * that is not there.
+   *
+   * NO PAYLOAD, deliberately. The destination host is upstream-controlled text and would end
+   * up rendered; it goes to the structured log (`scope: "source.http"`, `redirectHost`) where
+   * an operator can find it and no reader can be shown it.
+   */
+  | { readonly kind: "redirected" }
   | { readonly kind: "schemaChanged"; readonly message: string }
   | { readonly kind: "timeout"; readonly afterMs: number }
   | { readonly kind: "notConfigured"; readonly missingEnvVar: string }

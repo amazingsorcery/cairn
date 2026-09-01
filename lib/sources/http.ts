@@ -1,4 +1,5 @@
 import brand from "@/config/brand";
+import { logger } from "@/lib/logger";
 import { readCappedText } from "@/lib/net/capped-body";
 import { countOutboundRequest } from "@/lib/net/outbound-tally";
 import { connectorHost, isPinnedHost } from "@/lib/toolbench/net-target";
@@ -285,18 +286,32 @@ export async function fetchUpstream(options: FetchOptions): Promise<HttpOutcome>
     let response: Response;
     for (let hop = 0; ; hop += 1) {
       if (pinnedHost === null || !isPinnedHost(target, pinnedHost)) {
-        // Nothing is sent: not the request, and therefore not our User-Agent either.
-        return {
-          ok: false,
-          failure: {
-            kind: "upstreamError",
-            // No status: on the first pass nothing was requested at all, and on a hop the
-            // 3xx we refused to follow is not the failure — our refusal is.
-            // Never the URL either: a `Location` is upstream-controlled text and this
-            // message is rendered and logged.
-            message: "upstream redirected off its own host, so the request was not made",
+        /*
+         * Nothing is sent: not the request, and therefore not our User-Agent either.
+         *
+         * `redirected` is its OWN failure kind, not an `upstreamError`. An operator reads
+         * these under pressure and "they moved" and "they are down" lead to opposite
+         * investigations — one is fixed by checking where the source now points and updating
+         * a module constant, the other by waiting. Reporting the first as the second sends
+         * somebody hunting an outage that is not there, which is how several findings in this
+         * build began.
+         *
+         * The destination host goes in the LOG, where an operator can find it, and not in the
+         * failure: it is upstream-controlled text and the failure is rendered.
+         */
+        logger.error(
+          {
+            scope: "source.http",
+            slug,
+            reason: "offHostRedirect",
+            pinnedHost,
+            // The hostname only — never the path, which can echo back what we asked for.
+            redirectHost: safeHost(target),
+            hop,
           },
-        };
+          "Upstream redirected off its pinned host; refused rather than followed",
+        );
+        return { ok: false, failure: { kind: "redirected" } };
       }
 
       // Counted at the request itself (QV-09). The NWS adapter makes one index call plus up
@@ -317,6 +332,10 @@ export async function fetchUpstream(options: FetchOptions): Promise<HttpOutcome>
       });
 
       if (response.status < 300 || response.status >= 400) break;
+
+      // Recorded before the branch, so `auditOutcome` can put the real 3xx on the row rather
+      // than a null or a status left over from the previous poll.
+      lastStatus.set(slug, response.status);
 
       const location = response.headers.get("location");
       if (location === null || hop >= maxRedirects) {

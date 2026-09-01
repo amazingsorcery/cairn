@@ -10,6 +10,7 @@ import {
   PowerOff,
   Radio,
   Settings2,
+  Shuffle,
   TimerOff,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -61,6 +62,9 @@ const FAILURE_ICON: Record<SourceFailure["kind"], LucideIcon> = {
   upstreamError: CloudOff,
   rateLimited: Info,
   quotaExhausted: Info,
+  // They moved. `FileWarning` would read as our parser's problem and `CloudOff` as an
+  // outage; this is neither — it is a source that now points somewhere we will not follow.
+  redirected: Shuffle,
   schemaChanged: FileWarning,
   timeout: TimerOff,
   notConfigured: Settings2,
@@ -84,6 +88,12 @@ const FAILURE_TONE: Record<SourceFailure["kind"], "destructive" | "warning" | "i
   rateLimited: "info",
   // Our own ceiling, deliberately set. Nothing is broken and nobody misbehaved.
   quotaExhausted: "info",
+  /*
+   * `warning`, like `schemaChanged` and for the same reason: the upstream did something it
+   * is entitled to do and our recorded URL has not caught up. It is not their outage and it
+   * is not a fault of the reader's, but somebody does have to go and look.
+   */
+  redirected: "warning",
   schemaChanged: "warning",
   timeout: "destructive",
   notConfigured: "info",
@@ -105,6 +115,13 @@ const FAILURE_RETRYABLE: Record<SourceFailure["kind"], boolean> = {
   // Retrying spends a budget that is already spent. Offering it would be a lie about the
   // reader's options — and unlike rateLimited, the fix here is ours to make, not theirs.
   quotaExhausted: false,
+  /*
+   * True. A redirect can be a maintenance window as easily as a permanent move, and the
+   * retry costs one request, paced at the source's own TTL like every other retryable
+   * failure. If it is permanent the layer keeps saying so until somebody updates the URL —
+   * which is the honest outcome, because nothing else in this product will notice.
+   */
+  redirected: true,
   schemaChanged: false,
   timeout: true,
   notConfigured: false,
@@ -145,6 +162,13 @@ export function failureSentence(failure: SourceFailure, sourceName: string): str
       return failure.resetsAt !== undefined
         ? `We reached the polling budget we set ourselves for ${sourceName}, so this layer paused until ${formatTimestamp(failure.resetsAt)}. The source is fine; the limit is ours.`
         : `We reached the polling budget we set ourselves for ${sourceName}, so this layer paused. The source is fine; the limit is ours.`;
+    case "redirected":
+      /*
+       * Says what happened and what it means, and does NOT name the destination: the host
+       * comes from a `Location` header we did not choose, and this string is rendered. An
+       * operator gets the host from the structured log instead.
+       */
+      return `${sourceName} answered by redirecting us to another host, which we do not follow — an open redirect is how a trusted source becomes a request somewhere else. Nothing was fetched. This is ours to check: either they have moved, or something is answering for them.`;
     case "schemaChanged":
       return `${sourceName} sent a response in a shape we do not recognise, so we stopped reading it rather than guess at it. This is our parser to fix, not their outage, and the fix needs a deploy.`;
     case "timeout":

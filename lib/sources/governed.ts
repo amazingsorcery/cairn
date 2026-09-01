@@ -237,6 +237,15 @@ function auditOutcome<T extends SourceFeature>(
       return { outcome: "timeout", upstreamStatus: null, called: true };
     case "upstreamError":
       return { outcome: "upstreamError", upstreamStatus: failure.status ?? status, called: true };
+    case "redirected":
+      /*
+       * `upstreamError` on the board, because `connector_requests.outcome` is a closed
+       * database enum and a redirect is not worth a migration — but `called: true` and the
+       * real 3xx as the status, so the row reads "they answered 302 and we did not follow"
+       * rather than hiding behind a null. The distinct sentence is in the failure kind, which
+       * is what the operator sees on the layer.
+       */
+      return { outcome: "upstreamError", upstreamStatus: status, called: true };
     case "schemaChanged":
       return { outcome: "upstreamError", upstreamStatus: status, called: true };
     case "notConfigured":

@@ -156,6 +156,11 @@ export function describeFailure(failure: SourceFailure): string {
       return failure.retryAfterSeconds
         ? `rate limited by the upstream; retrying in ${failure.retryAfterSeconds}s`
         : "rate limited by the upstream";
+    case "redirected":
+      // Names the event, not the destination: the host is upstream-controlled and is logged
+      // rather than rendered. "Refused, not attempted" is the part an operator needs — no
+      // second request was made and nothing left the building after the first.
+      return "upstream redirected to another host; refused rather than followed";
     case "schemaChanged":
       return `upstream changed shape: ${failure.message}`;
     case "timeout":

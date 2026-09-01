@@ -12,9 +12,21 @@ import { clientSubject } from "@/lib/rate-limit";
  * the world they are looking at — which is precisely the interest-graph leak product-brief
  * §3.2 constraint 4 exists to prevent. Everything about this endpoint follows from that.
  *
- * It always returns 200 with an envelope, even when the upstream is down. ADR 0011 rule 5
- * and ADR 0014: the surface must say what is wrong and how old the data is. An HTTP error
- * would hand the client an error boundary and lose both.
+ * It returns 200 with an envelope even when the upstream is down. ADR 0011 rule 5 and
+ * ADR 0014: the surface must say what is wrong and how old the data is, and an empty error
+ * response would lose both.
+ *
+ * ── THE ONE EXCEPTION: 429 WHEN A QUOTA OF OURS REFUSED THE CALLER ─────────
+ * Rule 5 governs the BODY, and a 429 that carries the same renderable envelope satisfies it
+ * completely — the client reads `reason` exactly as before. The status code is the half that
+ * monitoring, a reverse proxy and a CDN can act on, and `/map/data/[slug]` already answers
+ * 429 for this condition (QA finding QV-05). Two routes answering one condition with two
+ * status codes was the inconsistency, not the 429.
+ *
+ * It is deliberately narrow. `disabled` stays 200: a kill-switch is a decision, not a limit,
+ * and no amount of waiting clears it. `rate-limited` stays 200: that is a refusal THEY made,
+ * and telling a client to retry against our own header would be us advertising somebody
+ * else's limit as ours.
  */
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -51,6 +63,21 @@ export async function GET(request: Request): Promise<Response> {
    * time is wrong the moment the response is a second old, and this is the one number on the
    * page that must never be wrong.
    */
+  /**
+   * `Retry-After` in whole seconds, rounded UP and taken from the limiter's own reset instant
+   * (`quotaResetsAt`) rather than recomputed from a window length here. Rounded up because a
+   * client that waits the rounded-down value arrives one request short of the reset and is
+   * refused again, which teaches clients to ignore the header.
+   *
+   * Absent when the reset instant is unknown — the limiter itself failed and we refused fail
+   * closed. A 429 with no `Retry-After` is honest; a guessed one is not.
+   */
+  const refused = envelope.reason === "quota-exhausted";
+  const retryAfterSeconds =
+    refused && envelope.quotaResetsAt
+      ? Math.max(1, Math.ceil((envelope.quotaResetsAt.getTime() - Date.now()) / 1000))
+      : null;
+
   return NextResponse.json(
     {
       state: envelope.state,
@@ -60,7 +87,19 @@ export async function GET(request: Request): Promise<Response> {
       reason: envelope.reason,
       message: envelope.lastError,
       connector: envelope.connectorSlug,
+      /**
+       * Sent in the body as well as the header so the surface can render "try again at
+       * 08:26" rather than a bare count, and so the client is not made to parse a header it
+       * would otherwise never read. Null unless a quota refused this caller.
+       */
+      quotaResetsAt: refused ? (envelope.quotaResetsAt?.toISOString() ?? null) : null,
     },
-    { headers: NO_STORE },
+    {
+      status: refused ? 429 : 200,
+      headers: {
+        ...NO_STORE,
+        ...(retryAfterSeconds === null ? {} : { "Retry-After": String(retryAfterSeconds) }),
+      },
+    },
   );
 }

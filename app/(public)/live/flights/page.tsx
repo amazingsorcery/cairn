@@ -7,7 +7,7 @@ import { auth } from "@/lib/auth";
 import { FLIGHTS_CONNECTOR_SLUG, flightsDriver, runConnector } from "@/lib/connectors";
 import { pageMetadata } from "@/lib/metadata";
 import { getConnectorBySlug } from "@/lib/queries/live";
-import { clientSubject, windowEnd, windowStart } from "@/lib/rate-limit";
+import { clientSubject } from "@/lib/rate-limit";
 
 /**
  * `/live/flights`. sitemap.md §3, ADR 0014 §5, ADR 0016 §1.
@@ -98,11 +98,15 @@ export default async function LiveFlightsPage({
    * When a fixed-window quota is what refused the call, the reader can be told exactly when it
    * clears — the ADR 0009 limiter aligns its windows to the Unix epoch, so the end of the
    * current window is a real instant and not an estimate.
+   *
+   * Taken from the envelope, which carries the REFUSING COUNTER'S own `resetAt`. This used to
+   * recompute it from `connectors.window_seconds` with a second copy of the epoch-alignment
+   * arithmetic — and that copy is wrong whenever the counter that actually refused is not the
+   * per-user quota. Since QV-25 it often is not: the entry limiter has its own 60-second
+   * window and refuses before the connector row is even read. Two copies of one calculation
+   * is how they come to disagree, which is the failure this audit round is about.
    */
-  const quotaResetAt =
-    envelope.reason === "quota-exhausted" && connector
-      ? windowEnd(windowStart(now, connector.windowSeconds), connector.windowSeconds).toISOString()
-      : null;
+  const quotaResetAt = envelope.quotaResetsAt?.toISOString() ?? null;
 
   return (
     <div className="mx-auto w-full max-w-[80rem] px-4 py-10 md:px-6 md:py-14">

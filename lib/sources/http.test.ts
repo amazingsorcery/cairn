@@ -2,12 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { brand } from "@/config/brand";
 
 
+import { failureSentence } from "@/components/map/layer-status";
+
 import { describeFailure } from "./adapter";
 import {
   cooldownRemaining,
   DEFAULT_COOLDOWN_SECONDS,
   fetchUpstream,
   isRateLimitStatus,
+  lastUpstreamStatus,
   openCooldown,
   parseRetryAfter,
   requireApiKey,
@@ -247,8 +250,70 @@ describe("fetchUpstream failure typing", () => {
       expect(result.ok).toBe(false);
       // One request: the hop was refused rather than followed.
       expect(spy).toHaveBeenCalledTimes(1);
+      // And it is its OWN failure kind, not a generic upstream error. See below.
+      expect(result.ok === false && result.failure.kind).toBe("redirected");
     });
   }
+
+  /**
+   * A LAYER GOING DARK MUST NAME ITS REASON — the maintainer's ruling on this fix.
+   *
+   * The first version of the pin returned `upstreamError`, which is what `fetchUpstream`
+   * returns when a source is *down*. `failureSentence` renders that as "<source> could not be
+   * reached", and `auditOutcome` records `upstreamError` on the board. So an operator looking
+   * at a source that had simply **moved** would have been told it was broken, and would have
+   * gone looking for an outage that was not there. Several of this build's findings started
+   * exactly that way: a surface that reads as authoritative while describing something else.
+   *
+   * `redirected` is therefore its own kind, all the way through: the typed failure, the
+   * operator sentence in `describeFailure`, the reader sentence in `failureSentence`, and the
+   * `upstream_status` on the audit row, which carries the real 3xx.
+   */
+  it("names the redirect as its own failure, distinguishable from an outage", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(null, { status: 302, headers: { location: "https://elsewhere.example/" } }),
+    );
+
+    const result = await fetchUpstream({ slug: "moved", url: "https://example.com/a", signal: signal() });
+    if (result.ok) throw new Error("expected a failure");
+    expect(result.failure.kind).toBe("redirected");
+
+    // The operator's sentence says they moved, not that they are down.
+    const sentence = describeFailure(result.failure);
+    expect(sentence).toMatch(/redirect/i);
+    expect(sentence).not.toMatch(/could not be reached|did not respond/i);
+
+    // The reader's sentence, from the map's own copy, says the same thing in its own voice.
+    const reader = failureSentence(result.failure, "USGS earthquakes");
+    expect(reader).toMatch(/redirect|another host|somewhere else/i);
+    expect(reader).not.toMatch(/could not be reached/i);
+    expect(reader).toContain("USGS earthquakes");
+  });
+
+  it("records the 3xx as the last upstream status, so the audit row says which code it was", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(null, { status: 301, headers: { location: "https://elsewhere.example/" } }),
+    );
+    await fetchUpstream({ slug: "moved-permanently", url: "https://example.com/a", signal: signal() });
+    expect(lastUpstreamStatus("moved-permanently")).toBe(301);
+  });
+
+  it("does not put the destination host into anything that renders", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(null, {
+        status: 302,
+        headers: { location: "https://attacker-chosen-name.example/" },
+      }),
+    );
+    const result = await fetchUpstream({ slug: "quiet", url: "https://example.com/a", signal: signal() });
+    if (result.ok) throw new Error("expected a failure");
+    // The host is upstream-controlled text. It goes to the structured log, where an operator
+    // can find it, and never into a sentence we render. `describeFailure`'s own contract:
+    // "Never an upstream body, stack or URL."
+    expect(JSON.stringify(result.failure)).not.toContain("attacker-chosen-name");
+    expect(describeFailure(result.failure)).not.toContain("attacker-chosen-name");
+    expect(failureSentence(result.failure, "A source")).not.toContain("attacker-chosen-name");
+  });
 
   it("stops walking a redirect chain rather than following it forever", async () => {
     const spy = vi

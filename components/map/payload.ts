@@ -45,6 +45,14 @@ const failureSchema = z.discriminatedUnion("kind", [
    * the exact trap `components/live/live-format.ts` documents for cached `Date` columns.
    */
   z.object({ kind: z.literal("quotaExhausted"), resetsAt: z.coerce.date().optional() }),
+  /*
+   * No payload. The destination host is upstream-controlled and never crosses this boundary
+   * (QV-18); an operator reads it in the structured log instead. A member with no fields
+   * still has to be listed here, because a `redirected` failure that this union rejected
+   * would reach the client as an unparseable payload — a blank row for a state that has a
+   * perfectly good sentence.
+   */
+  z.object({ kind: z.literal("redirected") }),
   z.object({ kind: z.literal("schemaChanged"), message: z.string() }),
   z.object({ kind: z.literal("timeout"), afterMs: z.number().int().nonnegative() }),
   z.object({ kind: z.literal("notConfigured"), missingEnvVar: z.string().min(1) }),

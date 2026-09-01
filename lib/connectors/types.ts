@@ -34,6 +34,24 @@ export type ConnectorEnvelope<T> = {
   lastError: string | null;
   /** Distinguishes the four degraded states so the UI can say what is wrong. ADR 0011 rule 5. */
   reason: DegradedReason | null;
+  /**
+   * When the counter that refused this caller next resets, or null.
+   *
+   * Non-null only alongside `reason: "quota-exhausted"`, and it is the limiter's OWN
+   * `resetAt` rather than a number recomputed from a window length — whichever of the three
+   * counters refused (the entry limiter, the per-user quota, the global ceiling) is the one
+   * that answers, and none of them has to agree with the others about window size.
+   *
+   * It exists because two surfaces were deriving it independently: `/api/live/flights` needs
+   * it for a `Retry-After` header and `/live/flights/page.tsx` was recomputing it from
+   * `connectors.window_seconds` with its own copy of the epoch-alignment arithmetic. Two
+   * copies of one calculation is how they come to disagree, which is the failure this whole
+   * audit round is about.
+   *
+   * It leaks nothing: a fixed window boundary is a pure function of the clock and the policy,
+   * identical for every caller in that window.
+   */
+  quotaResetsAt: Date | null;
 };
 
 export type ConnectorState = "fresh" | "stale" | "unavailable";

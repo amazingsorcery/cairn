@@ -331,6 +331,13 @@ function unavailable<T>(
   message: string,
   attribution: string | null = null,
   fetchedAt: Date | null = null,
+  /**
+   * Only ever supplied alongside `quota-exhausted`, and only when the limiter told us — it is
+   * the counter's own `resetAt`, never a number recomputed here. Null when the limiter itself
+   * failed and we refused fail-closed: we do not know when it clears, and a guessed
+   * `Retry-After` is a number we cannot stand behind.
+   */
+  quotaResetsAt: Date | null = null,
 ): ConnectorEnvelope<T> {
   return {
     fetchedAt,
@@ -340,6 +347,7 @@ function unavailable<T>(
     attribution,
     lastError: message,
     reason,
+    quotaResetsAt,
   };
 }
 
@@ -381,11 +389,11 @@ export async function runConnector<Params, Result>(
    * module is a second thing to stub wrongly.)
    */
   let entryAllowed = true;
-  let entryResetAt = now;
+  let entryKnownResetAt: Date | null = null;
   try {
     const entry = await consume("connector-entry", actor.subject, { now });
     entryAllowed = entry.ok !== false;
-    entryResetAt = entry.resetAt ?? now;
+    entryKnownResetAt = entry.resetAt ?? null;
   } catch (error) {
     logger.error(
       { scope: "connector.run", slug: driver.slug, err: error },
@@ -394,7 +402,7 @@ export async function runConnector<Params, Result>(
   }
   if (!entryAllowed) {
     logger.warn(
-      { scope: "connector.run", slug: driver.slug, resetsAt: entryResetAt.toISOString() },
+      { scope: "connector.run", slug: driver.slug, resetsAt: entryKnownResetAt?.toISOString() ?? null },
       "Refused before reading the registry: caller is over the connector entry limit",
     );
     /*
@@ -409,6 +417,9 @@ export async function runConnector<Params, Result>(
       driver.slug,
       "quota-exhausted",
       "You have made too many requests to our live sources. Try again shortly.",
+      null,
+      null,
+      entryKnownResetAt,
     );
   }
 
@@ -573,6 +584,13 @@ export async function runConnector<Params, Result>(
    * database error, which is right for our own surfaces and wrong here — an uncounted call
    * against somebody else's fair-use limit is a call we had no right to make.
    */
+  /**
+   * Returns the counter's OWN `resetAt` on a denial, so the surface can say when the caller
+   * may ask again without recomputing the window from a length. Null on `unmeasurable`: we
+   * could not reach the counter, so we do not know, and saying a number anyway would be a
+   * guess wearing a header.
+   */
+  let quotaResetsAt: Date | null = null;
   const spendQuota = async (
     action: "connector-user" | "connector-global",
     subject: string,
@@ -580,12 +598,14 @@ export async function runConnector<Params, Result>(
   ): Promise<"ok" | "denied" | "unmeasurable"> => {
     try {
       const result = await consume(action, subject, { policy, now });
+      if (!result.ok) quotaResetsAt = result.resetAt ?? null;
       return result.ok ? "ok" : "denied";
     } catch (error) {
       logger.error(
         { scope: "connector.run", slug: connector.slug, action, err: error },
         "Quota check failed",
       );
+      quotaResetsAt = null;
       return "unmeasurable";
     }
   };
@@ -640,6 +660,8 @@ export async function runConnector<Params, Result>(
         ? "You have reached this source's request limit. Try again shortly."
         : "This live source is temporarily unavailable.",
       attribution,
+      null,
+      quotaResetsAt,
     );
   }
 
@@ -670,6 +692,7 @@ export async function runConnector<Params, Result>(
       attribution,
       lastError: null,
       reason: null,
+      quotaResetsAt: null,
     };
   }
 
@@ -704,6 +727,7 @@ export async function runConnector<Params, Result>(
       attribution,
       lastError: message,
       reason: "stale",
+      quotaResetsAt: null,
     };
   };
 
@@ -751,6 +775,7 @@ export async function runConnector<Params, Result>(
           attribution,
           lastError: message,
           reason: "rate-limited",
+          quotaResetsAt: null,
         }
       : unavailable(
           connector.slug,
@@ -792,6 +817,8 @@ export async function runConnector<Params, Result>(
             ? "This source is at its shared rate limit. Try again shortly."
             : "This live source is temporarily unavailable.",
           attribution,
+          null,
+          quotaResetsAt,
         );
   }
 
@@ -855,6 +882,7 @@ export async function runConnector<Params, Result>(
       attribution,
       lastError: null,
       reason: null,
+      quotaResetsAt: null,
     };
   } catch (error) {
     const durationMs = Date.now() - started;
@@ -918,6 +946,7 @@ export async function runConnector<Params, Result>(
             attribution,
             lastError: message,
             reason: "rate-limited",
+            quotaResetsAt: null,
           }
         : unavailable(
             connector.slug,
