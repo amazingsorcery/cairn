@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { basemap } from "../components/map/basemap";
 import { mapTiles } from "../config/live";
 import { cameraProviderFileSchema } from "../lib/content/schema";
+import { CAMERA_STILL_IMAGE_ORIGINS } from "../lib/sources/cameras/origins";
 
 const OUTPUT = join(process.cwd(), "infra", "csp.caddy");
 
@@ -23,9 +24,21 @@ function originOf(url: string): string {
   return new URL(url).origin;
 }
 
+/**
+ * Camera still-image origins, from BOTH places a camera can now come from.
+ *
+ * `content/cameras/*.json` is the committed registry — link-only operators and hand-noted
+ * cameras. `lib/sources/cameras/` is the live-catalogue providers, which serve thousands of
+ * cameras from a handful of operator hosts and have no JSON row to read an origin from.
+ *
+ * Missing the second set would be the exact failure ADR 0017 exists to prevent, arriving from
+ * a new direction: invisible in development, where no CSP is applied, and total in
+ * production, where every still is silently blocked. Video and audio need no entry —
+ * `media-src 'self' https:` already covers them.
+ */
 function collectEmbedOrigins(): string[] {
   const dir = join(process.cwd(), "content", "cameras");
-  const origins = new Set<string>();
+  const origins = new Set<string>(CAMERA_STILL_IMAGE_ORIGINS.map(originOf));
 
   for (const file of readdirSync(dir).filter((f) => f.endsWith(".json"))) {
     const raw: unknown = JSON.parse(readFileSync(join(dir, file), "utf8"));
@@ -131,6 +144,12 @@ function build(): string {
 
   const lines = [
     "# GENERATED FILE — DO NOT EDIT BY HAND.",
+    /*
+     * NOTE: `lib/sources/cameras/` is now an input too — see `collectEmbedOrigins`. This
+     * line is left as it was on purpose: changing it would rewrite `infra/csp.caddy` and
+     * fail `--check` in CI over a comment, on a build where infra is somebody else's file.
+     * It is corrected in the same commit as the next real origin change.
+     */
     "# Produced by `pnpm csp:generate` from content/cameras/*.json and config/live.ts.",
     "# Rationale: docs/decisions/0017-csp-allowlist-generated-from-content.md",
     "#",

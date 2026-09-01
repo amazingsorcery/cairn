@@ -86,13 +86,28 @@ const TERMS: Readonly<Record<string, TermsRecord>> = {
     operatorName: "Transport for London; Fintraffic",
     termsUrl: "https://tfl.gov.uk/corporate/terms-and-conditions/transport-data-service",
     legalBasis:
-      "TfL transport data service terms grant a worldwide, royalty-free, perpetual licence to " +
-      "publish and adapt, subject to mandatory attribution. Fintraffic Digitraffic is CC BY " +
-      "4.0. Imagery loads in the reader browser on click, never proxied or re-hosted (ADR 0015).",
+      "ONE ROW, TWO OPERATORS, AND EACH HAS ITS OWN RECORD. TfL transport data service terms " +
+      "grant a worldwide, royalty-free, perpetual licence to publish and adapt, subject to " +
+      "mandatory attribution, and additionally forbid cropping or re-branding the images " +
+      "(docs/sources/tfl-jamcams.md). Fintraffic Digitraffic is CC BY 4.0 and makes gzip a " +
+      "condition of use (docs/sources/fintraffic-weathercams.md). What is fetched is the " +
+      "CATALOGUE — which cameras exist and where — never a frame or a clip: imagery loads in " +
+      "the reader's browser on an explicit click and is never proxied or re-hosted (ADR 0015, " +
+      "product-brief §2b).",
     baseUrl: "https://api.tfl.gov.uk",
+    /*
+     * The ceiling counts POLLS; one poll makes one request per provider, so this is 10 polls
+     * and 20 upstream requests per minute with the two providers wired today. That sits under
+     * Digitraffic's published 60/min per IP and far under TfL's 500/min per feed. **It has to
+     * be revisited every time a provider is added**, because the request count per poll grows
+     * with the registry while this number does not.
+     */
     globalCeiling: 10,
     perUserQuota: 5,
-    notes: "Verified 2026-08-31. See docs/sources/traffic-cameras.md.",
+    notes:
+      "Terms re-read 2026-09-01 and the catalogues are now fetched live: 890 TfL JamCams and " +
+      "2,279 Fintraffic weathercam presets on that date, against the 10 hand-copied cameras " +
+      "this layer used to serve. See docs/sources/traffic-cameras.md.",
   },
   "nasa-firms": {
     operatorName: "NASA FIRMS / LANCE",

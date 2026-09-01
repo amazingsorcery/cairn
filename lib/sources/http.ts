@@ -106,6 +106,23 @@ export function lastUpstreamStatus(slug: string): number | null {
 }
 
 /**
+ * Record a status against a slug that did not make the request itself.
+ *
+ * One caller: the cameras adapter, which is one `SourceAdapter` over several operators. It
+ * fetches under **per-provider** slugs so that one operator's 429 opens a cooldown against
+ * that operator alone and not against every camera network on the map. The audit row,
+ * though, is written per adapter (`governed.ts` reads `lastUpstreamStatus(adapter.slug)`), so
+ * without this the one column an operator uses to tell a 429 from a 502 would be null on
+ * every camera poll.
+ *
+ * It writes the same in-process map `fetchUpstream` writes, so "the last thing that happened
+ * on this slug" keeps meaning exactly that.
+ */
+export function recordUpstreamStatus(slug: string, status: number): void {
+  lastStatus.set(slug, status);
+}
+
+/**
  * Used when a 429 carries no `Retry-After`. Deliberately longer than any adapter's TTL: an
  * upstream that refused us needs materially longer to refill than our own poll interval, and
  * backing off for less than one interval just re-enters the burst that caused the refusal.

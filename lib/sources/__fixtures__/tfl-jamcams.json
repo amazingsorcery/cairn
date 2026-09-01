@@ -1,0 +1,1172 @@
+[
+ {
+  "$type": "Tfl.Api.Presentation.Entities.Place, Tfl.Api.Presentation.Entities",
+  "id": "JamCams_00002.00865",
+  "url": "/Place/JamCams_00002.00865",
+  "commonName": "A406 Billet Upass E",
+  "placeType": "JamCam",
+  "additionalProperties": [
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "available",
+    "sourceSystemKey": "JamCams",
+    "value": "true",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "imageUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00002.00865.jpg",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "videoUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00002.00865.mp4",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "cameraView",
+    "key": "view",
+    "sourceSystemKey": "JamCams",
+    "value": "West",
+    "modified": "2026-08-27T16:13:30.067Z"
+   }
+  ],
+  "children": [],
+  "childrenUrls": [],
+  "lat": 51.60067,
+  "lon": -0.01594
+ },
+ {
+  "$type": "Tfl.Api.Presentation.Entities.Place, Tfl.Api.Presentation.Entities",
+  "id": "JamCams_00001.02151",
+  "url": "/Place/JamCams_00001.02151",
+  "commonName": "Romford Rd / Tennyson Rd",
+  "placeType": "JamCam",
+  "additionalProperties": [
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "available",
+    "sourceSystemKey": "JamCams",
+    "value": "true",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "imageUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.02151.jpg",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "videoUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.02151.mp4",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "cameraView",
+    "key": "view",
+    "sourceSystemKey": "JamCams",
+    "value": "ZOOM WEST-The Grove",
+    "modified": "2026-08-27T16:13:30.067Z"
+   }
+  ],
+  "children": [],
+  "childrenUrls": [],
+  "lat": 51.5421,
+  "lon": 0.00524
+ },
+ {
+  "$type": "Tfl.Api.Presentation.Entities.Place, Tfl.Api.Presentation.Entities",
+  "id": "JamCams_00001.07450",
+  "url": "/Place/JamCams_00001.07450",
+  "commonName": "Piccadilly Circus",
+  "placeType": "JamCam",
+  "additionalProperties": [
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "available",
+    "sourceSystemKey": "JamCams",
+    "value": "true",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "imageUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.07450.jpg",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "videoUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.07450.mp4",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "cameraView",
+    "key": "view",
+    "sourceSystemKey": "JamCams",
+    "value": "Piccadilly Circus",
+    "modified": "2026-08-27T16:13:30.067Z"
+   }
+  ],
+  "children": [],
+  "childrenUrls": [],
+  "lat": 51.5096,
+  "lon": -0.13484
+ },
+ {
+  "$type": "Tfl.Api.Presentation.Entities.Place, Tfl.Api.Presentation.Entities",
+  "id": "JamCams_00001.03675",
+  "url": "/Place/JamCams_00001.03675",
+  "commonName": "Blackheath Rd/Greenwich High Rd",
+  "placeType": "JamCam",
+  "additionalProperties": [
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "available",
+    "sourceSystemKey": "JamCams",
+    "value": "true",
+    "modified": "2026-08-29T17:15:46.593Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "imageUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.03675.jpg",
+    "modified": "2026-08-29T17:15:46.593Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "videoUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.03675.mp4",
+    "modified": "2026-08-29T17:15:46.593Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "cameraView",
+    "key": "view",
+    "sourceSystemKey": "JamCams",
+    "value": "Zoom west - Deptford Bridge",
+    "modified": "2026-08-29T17:15:46.593Z"
+   }
+  ],
+  "children": [],
+  "childrenUrls": [],
+  "lat": 51.4742,
+  "lon": -0.02073
+ },
+ {
+  "$type": "Tfl.Api.Presentation.Entities.Place, Tfl.Api.Presentation.Entities",
+  "id": "JamCams_00001.09747",
+  "url": "/Place/JamCams_00001.09747",
+  "commonName": "Edgware Way / Broadfields Ave",
+  "placeType": "JamCam",
+  "additionalProperties": [
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "available",
+    "sourceSystemKey": "JamCams",
+    "value": "true",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "imageUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.09747.jpg",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "videoUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.09747.mp4",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "cameraView",
+    "key": "view",
+    "sourceSystemKey": "JamCams",
+    "value": "EAST ZOOM - Kenilworth Road footbridge",
+    "modified": "2026-08-27T16:13:30.067Z"
+   }
+  ],
+  "children": [],
+  "childrenUrls": [],
+  "lat": 51.6216,
+  "lon": -0.27384
+ },
+ {
+  "$type": "Tfl.Api.Presentation.Entities.Place, Tfl.Api.Presentation.Entities",
+  "id": "JamCams_00001.06600",
+  "url": "/Place/JamCams_00001.06600",
+  "commonName": "Cromwell Rd/Earls Court Rd",
+  "placeType": "JamCam",
+  "additionalProperties": [
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "available",
+    "sourceSystemKey": "JamCams",
+    "value": "true",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "imageUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.06600.jpg",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "videoUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.06600.mp4",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "cameraView",
+    "key": "view",
+    "sourceSystemKey": "JamCams",
+    "value": "South (Earls Court Road)",
+    "modified": "2026-08-27T16:13:30.067Z"
+   }
+  ],
+  "children": [],
+  "childrenUrls": [],
+  "lat": 51.4946,
+  "lon": -0.1957
+ },
+ {
+  "$type": "Tfl.Api.Presentation.Entities.Place, Tfl.Api.Presentation.Entities",
+  "id": "JamCams_00001.08858",
+  "url": "/Place/JamCams_00001.08858",
+  "commonName": "Oxford St/Orchard St",
+  "placeType": "JamCam",
+  "additionalProperties": [
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "available",
+    "sourceSystemKey": "JamCams",
+    "value": "true",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "imageUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.08858.jpg",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "videoUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.08858.mp4",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "cameraView",
+    "key": "view",
+    "sourceSystemKey": "JamCams",
+    "value": "Zoom-Selfridges Ped X",
+    "modified": "2026-08-27T16:13:30.067Z"
+   }
+  ],
+  "children": [],
+  "childrenUrls": [],
+  "lat": 51.514,
+  "lon": -0.15409
+ },
+ {
+  "$type": "Tfl.Api.Presentation.Entities.Place, Tfl.Api.Presentation.Entities",
+  "id": "JamCams_00001.03758",
+  "url": "/Place/JamCams_00001.03758",
+  "commonName": "A205 Tulse Hill/ Thurlow Park Rd",
+  "placeType": "JamCam",
+  "additionalProperties": [
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "available",
+    "sourceSystemKey": "JamCams",
+    "value": "true",
+    "modified": "2026-09-01T09:18:12.637Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "imageUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.03758.jpg",
+    "modified": "2026-09-01T09:18:12.637Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "videoUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.03758.mp4",
+    "modified": "2026-09-01T09:18:12.637Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "cameraView",
+    "key": "view",
+    "sourceSystemKey": "JamCams",
+    "value": "East zoom - A205 low bridge",
+    "modified": "2026-09-01T09:18:12.637Z"
+   }
+  ],
+  "children": [],
+  "childrenUrls": [],
+  "lat": 51.441,
+  "lon": -0.10633
+ },
+ {
+  "$type": "Tfl.Api.Presentation.Entities.Place, Tfl.Api.Presentation.Entities",
+  "id": "JamCams_00001.04235",
+  "url": "/Place/JamCams_00001.04235",
+  "commonName": "Horseferry Rd/Marsham St",
+  "placeType": "JamCam",
+  "additionalProperties": [
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "available",
+    "sourceSystemKey": "JamCams",
+    "value": "true",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "imageUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.04235.jpg",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "videoUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.04235.mp4",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "cameraView",
+    "key": "view",
+    "sourceSystemKey": "JamCams",
+    "value": "North - Marsham St twds P Sq",
+    "modified": "2026-08-27T16:13:30.067Z"
+   }
+  ],
+  "children": [],
+  "childrenUrls": [],
+  "lat": 51.4949,
+  "lon": -0.12891
+ },
+ {
+  "$type": "Tfl.Api.Presentation.Entities.Place, Tfl.Api.Presentation.Entities",
+  "id": "JamCams_00001.04353",
+  "url": "/Place/JamCams_00001.04353",
+  "commonName": "George St/Wellesley Rd",
+  "placeType": "JamCam",
+  "additionalProperties": [
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "available",
+    "sourceSystemKey": "JamCams",
+    "value": "true",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "imageUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.04353.jpg",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "videoUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.04353.mp4",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "cameraView",
+    "key": "view",
+    "sourceSystemKey": "JamCams",
+    "value": "Zoom north - Lansdowne Road jct",
+    "modified": "2026-08-27T16:13:30.067Z"
+   }
+  ],
+  "children": [],
+  "childrenUrls": [],
+  "lat": 51.3741,
+  "lon": -0.09646
+ },
+ {
+  "$type": "Tfl.Api.Presentation.Entities.Place, Tfl.Api.Presentation.Entities",
+  "id": "JamCams_00002.00635",
+  "url": "/Place/JamCams_00002.00635",
+  "commonName": "Ferry Lane",
+  "placeType": "JamCam",
+  "additionalProperties": [
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "available",
+    "sourceSystemKey": "JamCams",
+    "value": "true",
+    "modified": "2026-08-29T22:15:37.367Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "imageUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00002.00635.jpg",
+    "modified": "2026-08-29T22:15:37.367Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "videoUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00002.00635.mp4",
+    "modified": "2026-08-29T22:15:37.367Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "cameraView",
+    "key": "view",
+    "sourceSystemKey": "JamCams",
+    "value": "Met",
+    "modified": "2026-08-29T22:15:37.367Z"
+   }
+  ],
+  "children": [],
+  "childrenUrls": [],
+  "lat": 51.51188,
+  "lon": 0.18383
+ },
+ {
+  "$type": "Tfl.Api.Presentation.Entities.Place, Tfl.Api.Presentation.Entities",
+  "id": "JamCams_00001.04568",
+  "url": "/Place/JamCams_00001.04568",
+  "commonName": "A23 Purley Way/Edgehill Rd",
+  "placeType": "JamCam",
+  "additionalProperties": [
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "available",
+    "sourceSystemKey": "JamCams",
+    "value": "true",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "imageUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.04568.jpg",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "videoUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.04568.mp4",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "cameraView",
+    "key": "view",
+    "sourceSystemKey": "JamCams",
+    "value": "ZOOM-near old Croydon Airport",
+    "modified": "2026-08-27T16:13:30.067Z"
+   }
+  ],
+  "children": [],
+  "childrenUrls": [],
+  "lat": 51.3456,
+  "lon": -0.11434
+ },
+ {
+  "$type": "Tfl.Api.Presentation.Entities.Place, Tfl.Api.Presentation.Entities",
+  "id": "JamCams_00001.07929",
+  "url": "/Place/JamCams_00001.07929",
+  "commonName": "A41 Hendon Way/Cricklewood Lane",
+  "placeType": "JamCam",
+  "additionalProperties": [
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "available",
+    "sourceSystemKey": "JamCams",
+    "value": "true",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "imageUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.07929.jpg",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "videoUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.07929.mp4",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "cameraView",
+    "key": "view",
+    "sourceSystemKey": "JamCams",
+    "value": "Zoom-The Vale jct",
+    "modified": "2026-08-27T16:13:30.067Z"
+   }
+  ],
+  "children": [],
+  "childrenUrls": [],
+  "lat": 51.5613,
+  "lon": -0.20345
+ },
+ {
+  "$type": "Tfl.Api.Presentation.Entities.Place, Tfl.Api.Presentation.Entities",
+  "id": "JamCams_00001.06649",
+  "url": "/Place/JamCams_00001.06649",
+  "commonName": "Goldhawk Rd/Hammersmith Grove",
+  "placeType": "JamCam",
+  "additionalProperties": [
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "available",
+    "sourceSystemKey": "JamCams",
+    "value": "true",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "imageUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.06649.jpg",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "videoUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.06649.mp4",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "cameraView",
+    "key": "view",
+    "sourceSystemKey": "JamCams",
+    "value": "Zoom east - tube station",
+    "modified": "2026-08-27T16:13:30.067Z"
+   }
+  ],
+  "children": [],
+  "childrenUrls": [],
+  "lat": 51.5021,
+  "lon": -0.22886
+ },
+ {
+  "$type": "Tfl.Api.Presentation.Entities.Place, Tfl.Api.Presentation.Entities",
+  "id": "JamCams_00001.03762",
+  "url": "/Place/JamCams_00001.03762",
+  "commonName": "A205 Christchurch Rd/A23 Brixton H",
+  "placeType": "JamCam",
+  "additionalProperties": [
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "available",
+    "sourceSystemKey": "JamCams",
+    "value": "true",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "imageUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.03762.jpg",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "videoUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.03762.mp4",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "cameraView",
+    "key": "view",
+    "sourceSystemKey": "JamCams",
+    "value": "Zoom - Atkins Rd jct",
+    "modified": "2026-08-27T16:13:30.067Z"
+   }
+  ],
+  "children": [],
+  "childrenUrls": [],
+  "lat": 51.4452,
+  "lon": -0.12418
+ },
+ {
+  "$type": "Tfl.Api.Presentation.Entities.Place, Tfl.Api.Presentation.Entities",
+  "id": "JamCams_00001.06519",
+  "url": "/Place/JamCams_00001.06519",
+  "commonName": "Buckingham Palace Rd/Eaton Lane",
+  "placeType": "JamCam",
+  "additionalProperties": [
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "available",
+    "sourceSystemKey": "JamCams",
+    "value": "true",
+    "modified": "2026-09-01T09:18:12.637Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "imageUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.06519.jpg",
+    "modified": "2026-09-01T09:18:12.637Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "videoUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.06519.mp4",
+    "modified": "2026-09-01T09:18:12.637Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "cameraView",
+    "key": "view",
+    "sourceSystemKey": "JamCams",
+    "value": "SOUTH - BPR twds Victoria station",
+    "modified": "2026-09-01T09:18:12.637Z"
+   }
+  ],
+  "children": [],
+  "childrenUrls": [],
+  "lat": 51.4972,
+  "lon": -0.14465
+ },
+ {
+  "$type": "Tfl.Api.Presentation.Entities.Place, Tfl.Api.Presentation.Entities",
+  "id": "JamCams_00001.04214",
+  "url": "/Place/JamCams_00001.04214",
+  "commonName": "Southwark St/Southwark Bdge Rd",
+  "placeType": "JamCam",
+  "additionalProperties": [
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "available",
+    "sourceSystemKey": "JamCams",
+    "value": "true",
+    "modified": "2026-09-01T07:18:04.703Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "imageUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.04214.jpg",
+    "modified": "2026-09-01T07:18:04.703Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "videoUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.04214.mp4",
+    "modified": "2026-09-01T07:18:04.703Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "cameraView",
+    "key": "view",
+    "sourceSystemKey": "JamCams",
+    "value": "South - Southwark Bridge Road",
+    "modified": "2026-09-01T07:18:04.703Z"
+   }
+  ],
+  "children": [],
+  "childrenUrls": [],
+  "lat": 51.5048,
+  "lon": -0.09535
+ },
+ {
+  "$type": "Tfl.Api.Presentation.Entities.Place, Tfl.Api.Presentation.Entities",
+  "id": "JamCams_00001.06511",
+  "url": "/Place/JamCams_00001.06511",
+  "commonName": "Victoria St/Wilton Rd",
+  "placeType": "JamCam",
+  "additionalProperties": [
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "available",
+    "sourceSystemKey": "JamCams",
+    "value": "true",
+    "modified": "2026-09-01T07:18:04.703Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "imageUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.06511.jpg",
+    "modified": "2026-09-01T07:18:04.703Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "videoUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.06511.mp4",
+    "modified": "2026-09-01T07:18:04.703Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "cameraView",
+    "key": "view",
+    "sourceSystemKey": "JamCams",
+    "value": "Zoom - Victoria station",
+    "modified": "2026-09-01T07:18:04.703Z"
+   }
+  ],
+  "children": [],
+  "childrenUrls": [],
+  "lat": 51.4963,
+  "lon": -0.14243
+ },
+ {
+  "$type": "Tfl.Api.Presentation.Entities.Place, Tfl.Api.Presentation.Entities",
+  "id": "JamCams_00001.03757",
+  "url": "/Place/JamCams_00001.03757",
+  "commonName": "A205 E of Sydenham Hill",
+  "placeType": "JamCam",
+  "additionalProperties": [
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "available",
+    "sourceSystemKey": "JamCams",
+    "value": "true",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "imageUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.03757.jpg",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "videoUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.03757.mp4",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "cameraView",
+    "key": "view",
+    "sourceSystemKey": "JamCams",
+    "value": "West (A205 twds Dulwich)",
+    "modified": "2026-08-27T16:13:30.067Z"
+   }
+  ],
+  "children": [],
+  "childrenUrls": [],
+  "lat": 51.4408,
+  "lon": -0.06361
+ },
+ {
+  "$type": "Tfl.Api.Presentation.Entities.Place, Tfl.Api.Presentation.Entities",
+  "id": "JamCams_00001.03819",
+  "url": "/Place/JamCams_00001.03819",
+  "commonName": "A21 London Rd/Tweedy Rd",
+  "placeType": "JamCam",
+  "additionalProperties": [
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "available",
+    "sourceSystemKey": "JamCams",
+    "value": "true",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "imageUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.03819.jpg",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "videoUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.03819.mp4",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "cameraView",
+    "key": "view",
+    "sourceSystemKey": "JamCams",
+    "value": "A222 London Road (twds Bromley High Street)",
+    "modified": "2026-08-27T16:13:30.067Z"
+   }
+  ],
+  "children": [],
+  "childrenUrls": [],
+  "lat": 51.4089,
+  "lon": 0.01086
+ },
+ {
+  "$type": "Tfl.Api.Presentation.Entities.Place, Tfl.Api.Presentation.Entities",
+  "id": "JamCams_00001.04640",
+  "url": "/Place/JamCams_00001.04640",
+  "commonName": "Wandsworth Common North",
+  "placeType": "JamCam",
+  "additionalProperties": [
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "available",
+    "sourceSystemKey": "JamCams",
+    "value": "true",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "imageUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.04640.jpg",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "videoUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.04640.mp4",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "cameraView",
+    "key": "view",
+    "sourceSystemKey": "JamCams",
+    "value": "SOUTH - A214 Trinity Rd",
+    "modified": "2026-08-27T16:13:30.067Z"
+   }
+  ],
+  "children": [],
+  "childrenUrls": [],
+  "lat": 51.458,
+  "lon": -0.18139
+ },
+ {
+  "$type": "Tfl.Api.Presentation.Entities.Place, Tfl.Api.Presentation.Entities",
+  "id": "JamCams_00001.04331",
+  "url": "/Place/JamCams_00001.04331",
+  "commonName": "Kennington Oval",
+  "placeType": "JamCam",
+  "additionalProperties": [
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "available",
+    "sourceSystemKey": "JamCams",
+    "value": "true",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "imageUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.04331.jpg",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "videoUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.04331.mp4",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "cameraView",
+    "key": "view",
+    "sourceSystemKey": "JamCams",
+    "value": "Kennington Oval - N\\/West",
+    "modified": "2026-08-27T16:13:30.067Z"
+   }
+  ],
+  "children": [],
+  "childrenUrls": [],
+  "lat": 51.483,
+  "lon": -0.11599
+ },
+ {
+  "$type": "Tfl.Api.Presentation.Entities.Place, Tfl.Api.Presentation.Entities",
+  "id": "JamCams_00001.04653",
+  "url": "/Place/JamCams_00001.04653",
+  "commonName": "A24 South of Trevelyan Rd",
+  "placeType": "JamCam",
+  "additionalProperties": [
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "available",
+    "sourceSystemKey": "JamCams",
+    "value": "false",
+    "modified": "2026-09-01T10:18:58.983Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "imageUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.04653.jpg",
+    "modified": "2026-09-01T10:18:58.983Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "videoUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.04653.mp4",
+    "modified": "2026-09-01T10:18:58.983Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "cameraView",
+    "key": "view",
+    "sourceSystemKey": "JamCams",
+    "value": "SOUTH - A24 jct Blackshaw Road",
+    "modified": "2026-09-01T10:18:58.983Z"
+   }
+  ],
+  "children": [],
+  "childrenUrls": [],
+  "lat": 51.424,
+  "lon": -0.17185
+ },
+ {
+  "$type": "Tfl.Api.Presentation.Entities.Place, Tfl.Api.Presentation.Entities",
+  "id": "JamCams_00001.04565",
+  "url": "/Place/JamCams_00001.04565",
+  "commonName": "Stafford Rd/Epsom Rd",
+  "placeType": "JamCam",
+  "additionalProperties": [
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "available",
+    "sourceSystemKey": "JamCams",
+    "value": "false",
+    "modified": "2026-09-01T10:18:58.983Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "imageUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.04565.jpg",
+    "modified": "2026-09-01T10:18:58.983Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "videoUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.04565.mp4",
+    "modified": "2026-09-01T10:18:58.983Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "cameraView",
+    "key": "view",
+    "sourceSystemKey": "JamCams",
+    "value": "WEST (A232 twds Fiveways)",
+    "modified": "2026-09-01T10:18:58.983Z"
+   }
+  ],
+  "children": [],
+  "childrenUrls": [],
+  "lat": 51.3672,
+  "lon": -0.11608
+ },
+ {
+  "$type": "Tfl.Api.Presentation.Entities.Place, Tfl.Api.Presentation.Entities",
+  "id": "JamCams_00001.06602",
+  "url": "/Place/JamCams_00001.06602",
+  "commonName": "North End Rd/Talgarth Rd",
+  "placeType": "JamCam",
+  "additionalProperties": [
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "available",
+    "sourceSystemKey": "JamCams",
+    "value": "false",
+    "modified": "2026-09-01T07:18:04.703Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "imageUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.06602.jpg",
+    "modified": "2026-09-01T07:18:04.703Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "videoUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.06602.mp4",
+    "modified": "2026-09-01T07:18:04.703Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "cameraView",
+    "key": "view",
+    "sourceSystemKey": "JamCams",
+    "value": "E\\/B VMS 11\\/716",
+    "modified": "2026-09-01T07:18:04.703Z"
+   }
+  ],
+  "children": [],
+  "childrenUrls": [],
+  "lat": 51.4908,
+  "lon": -0.20694
+ },
+ {
+  "$type": "Tfl.Api.Presentation.Entities.Place, Tfl.Api.Presentation.Entities",
+  "id": "JamCams_00001.03751",
+  "url": "/Place/JamCams_00001.03751",
+  "commonName": "A205 Brownhill Rd/Plassey Rd",
+  "placeType": "JamCam",
+  "additionalProperties": [
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "available",
+    "sourceSystemKey": "JamCams",
+    "value": "false",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "imageUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.03751.jpg",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "payload",
+    "key": "videoUrl",
+    "sourceSystemKey": "JamCams",
+    "value": "https://s3-eu-west-1.amazonaws.com/jamcams.tfl.gov.uk/00001.03751.mp4",
+    "modified": "2026-08-27T16:13:30.067Z"
+   },
+   {
+    "$type": "Tfl.Api.Presentation.Entities.AdditionalProperties, Tfl.Api.Presentation.Entities",
+    "category": "cameraView",
+    "key": "view",
+    "sourceSystemKey": "JamCams",
+    "value": "1 East-A205 brown hill road",
+    "modified": "2026-08-27T16:13:30.067Z"
+   }
+  ],
+  "children": [],
+  "childrenUrls": [],
+  "lat": 51.4459,
+  "lon": -0.01723
+ }
+]

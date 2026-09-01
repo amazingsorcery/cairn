@@ -1,0 +1,876 @@
+{
+ "type": "FeatureCollection",
+ "dataUpdatedTime": "2026-09-01T16:00:46Z",
+ "features": [
+  {
+   "type": "Feature",
+   "id": "C01503",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     23.99616,
+     60.05374,
+     0
+    ]
+   },
+   "properties": {
+    "id": "C01503",
+    "name": "kt51_Inkoo",
+    "collectionStatus": "GATHERING",
+    "dataUpdatedTime": "2026-09-01T15:25:35Z",
+    "presets": [
+     {
+      "id": "C0150301",
+      "inCollection": true
+     },
+     {
+      "id": "C0150302",
+      "inCollection": true
+     },
+     {
+      "id": "C0150309",
+      "inCollection": true
+     }
+    ],
+    "state": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "C01504",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     24.235601,
+     60.536727,
+     0
+    ]
+   },
+   "properties": {
+    "id": "C01504",
+    "name": "vt2_Karkkila_Korpi",
+    "collectionStatus": "GATHERING",
+    "dataUpdatedTime": "2026-09-01T15:26:52Z",
+    "presets": [
+     {
+      "id": "C0150401",
+      "inCollection": true
+     },
+     {
+      "id": "C0150402",
+      "inCollection": true
+     },
+     {
+      "id": "C0150409",
+      "inCollection": true
+     }
+    ],
+    "state": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "C01505",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     23.303264,
+     60.061798,
+     0
+    ]
+   },
+   "properties": {
+    "id": "C01505",
+    "name": "kt52_Raasepori_Tenhola",
+    "collectionStatus": "GATHERING",
+    "dataUpdatedTime": "2026-09-01T15:27:36Z",
+    "presets": [
+     {
+      "id": "C0150501",
+      "inCollection": true
+     },
+     {
+      "id": "C0150502",
+      "inCollection": true
+     },
+     {
+      "id": "C0150509",
+      "inCollection": true
+     }
+    ],
+    "state": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "C01506",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     24.241007,
+     60.311546,
+     0
+    ]
+   },
+   "properties": {
+    "id": "C01506",
+    "name": "vt25_Myllylampi",
+    "collectionStatus": "GATHERING",
+    "dataUpdatedTime": "2026-09-01T15:27:34Z",
+    "presets": [
+     {
+      "id": "C0150601",
+      "inCollection": true
+     },
+     {
+      "id": "C0150602",
+      "inCollection": true
+     },
+     {
+      "id": "C0150603",
+      "inCollection": true
+     },
+     {
+      "id": "C0150604",
+      "inCollection": true
+     },
+     {
+      "id": "C0150609",
+      "inCollection": true
+     }
+    ],
+    "state": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "C01507",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     23.021452,
+     59.856454,
+     0
+    ]
+   },
+   "properties": {
+    "id": "C01507",
+    "name": "vt25_Hanko",
+    "collectionStatus": "GATHERING",
+    "dataUpdatedTime": "2026-09-01T15:25:58Z",
+    "presets": [
+     {
+      "id": "C0150701",
+      "inCollection": true
+     },
+     {
+      "id": "C0150702",
+      "inCollection": true
+     },
+     {
+      "id": "C0150709",
+      "inCollection": true
+     }
+    ],
+    "state": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "C01508",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     25.350988,
+     60.671599,
+     0
+    ]
+   },
+   "properties": {
+    "id": "C01508",
+    "name": "vt4_Mäntsälä",
+    "collectionStatus": "GATHERING",
+    "dataUpdatedTime": "2026-09-01T15:25:59Z",
+    "presets": [
+     {
+      "id": "C0150801",
+      "inCollection": true
+     },
+     {
+      "id": "C0150802",
+      "inCollection": true
+     },
+     {
+      "id": "C0150803",
+      "inCollection": true
+     },
+     {
+      "id": "C0150804",
+      "inCollection": true
+     },
+     {
+      "id": "C0150809",
+      "inCollection": true
+     },
+     {
+      "id": "C0150811",
+      "inCollection": true
+     }
+    ],
+    "state": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "C01509",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     24.818794,
+     60.566139,
+     0
+    ]
+   },
+   "properties": {
+    "id": "C01509",
+    "name": "vt3_Hyvinkää_Noppo",
+    "collectionStatus": "GATHERING",
+    "dataUpdatedTime": "2026-09-01T15:26:19Z",
+    "presets": [
+     {
+      "id": "C0150901",
+      "inCollection": true
+     },
+     {
+      "id": "C0150902",
+      "inCollection": true
+     },
+     {
+      "id": "C0150903",
+      "inCollection": true
+     },
+     {
+      "id": "C0150904",
+      "inCollection": true
+     },
+     {
+      "id": "C0150906",
+      "inCollection": true
+     },
+     {
+      "id": "C0150907",
+      "inCollection": true
+     },
+     {
+      "id": "C0150909",
+      "inCollection": true
+     }
+    ],
+    "state": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "C01510",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     23.904879,
+     60.385844,
+     0
+    ]
+   },
+   "properties": {
+    "id": "C01510",
+    "name": "st110_Lohja_Oinola",
+    "collectionStatus": "GATHERING",
+    "dataUpdatedTime": "2026-09-01T15:27:27Z",
+    "presets": [
+     {
+      "id": "C0151001",
+      "inCollection": true
+     },
+     {
+      "id": "C0151002",
+      "inCollection": true
+     },
+     {
+      "id": "C0151009",
+      "inCollection": true
+     }
+    ],
+    "state": "REPAIR_MAINTENANCE_DONE"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "C01513",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     24.948435,
+     60.244449,
+     0
+    ]
+   },
+   "properties": {
+    "id": "C01513",
+    "name": "st101_Helsinki_Pakila",
+    "collectionStatus": "GATHERING",
+    "dataUpdatedTime": "2026-09-01T15:26:24Z",
+    "presets": [
+     {
+      "id": "C0151301",
+      "inCollection": true
+     },
+     {
+      "id": "C0151302",
+      "inCollection": true
+     },
+     {
+      "id": "C0151303",
+      "inCollection": true
+     },
+     {
+      "id": "C0151309",
+      "inCollection": true
+     }
+    ],
+    "state": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "C01521",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     24.809299,
+     60.199721,
+     0
+    ]
+   },
+   "properties": {
+    "id": "C01521",
+    "name": "st101_Turvesuontie",
+    "collectionStatus": "GATHERING",
+    "dataUpdatedTime": "2026-09-01T15:27:29Z",
+    "presets": [
+     {
+      "id": "C0152101",
+      "inCollection": true
+     },
+     {
+      "id": "C0152102",
+      "inCollection": true
+     },
+     {
+      "id": "C0152104",
+      "inCollection": true
+     },
+     {
+      "id": "C0152105",
+      "inCollection": true
+     },
+     {
+      "id": "C0152109",
+      "inCollection": true
+     }
+    ],
+    "state": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "C01522",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     24.808657,
+     60.186893,
+     0
+    ]
+   },
+   "properties": {
+    "id": "C01522",
+    "name": "st101_Kalevalantie",
+    "collectionStatus": "GATHERING",
+    "dataUpdatedTime": "2026-09-01T15:27:25Z",
+    "presets": [
+     {
+      "id": "C0152201",
+      "inCollection": true
+     },
+     {
+      "id": "C0152202",
+      "inCollection": true
+     },
+     {
+      "id": "C0152209",
+      "inCollection": true
+     }
+    ],
+    "state": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "C01523",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     25.06072,
+     60.247251,
+     0
+    ]
+   },
+   "properties": {
+    "id": "C01523",
+    "name": "vt4_Helsinki_Tattarisuo",
+    "collectionStatus": "GATHERING",
+    "dataUpdatedTime": "2026-09-01T15:26:24Z",
+    "presets": [
+     {
+      "id": "C0152301",
+      "inCollection": true
+     },
+     {
+      "id": "C0152302",
+      "inCollection": true
+     },
+     {
+      "id": "C0152309",
+      "inCollection": true
+     }
+    ],
+    "state": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "C01524",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     24.511089,
+     60.133523,
+     0
+    ]
+   },
+   "properties": {
+    "id": "C01524",
+    "name": "kt51_Kirkkonummi_Jorvas",
+    "collectionStatus": "GATHERING",
+    "dataUpdatedTime": "2026-09-01T15:27:43Z",
+    "presets": [
+     {
+      "id": "C0152401",
+      "inCollection": true
+     },
+     {
+      "id": "C0152402",
+      "inCollection": true
+     },
+     {
+      "id": "C0152403",
+      "inCollection": true
+     },
+     {
+      "id": "C0152404",
+      "inCollection": true
+     },
+     {
+      "id": "C0152409",
+      "inCollection": true
+     }
+    ],
+    "state": "OK"
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "C01526",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     24.645423,
+     60.220069,
+     0
+    ]
+   },
+   "properties": {
+    "id": "C01526",
+    "name": "vt1_Espoo_Kehä_III",
+    "collectionStatus": "GATHERING",
+    "dataUpdatedTime": "2026-09-01T15:25:40Z",
+    "presets": [
+     {
+      "id": "C0152600",
+      "inCollection": true
+     }
+    ],
+    "state": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "C01527",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     24.567094,
+     60.244194,
+     0
+    ]
+   },
+   "properties": {
+    "id": "C01527",
+    "name": "vt1_Espoo_Hista",
+    "collectionStatus": "GATHERING",
+    "dataUpdatedTime": "2026-09-01T15:27:27Z",
+    "presets": [
+     {
+      "id": "C0152700",
+      "inCollection": true
+     }
+    ],
+    "state": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "C01528",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     24.45371,
+     60.273886,
+     0
+    ]
+   },
+   "properties": {
+    "id": "C01528",
+    "name": "vt1_Kirkkonummi_Veikkola",
+    "collectionStatus": "GATHERING",
+    "dataUpdatedTime": "2026-09-01T15:26:23Z",
+    "presets": [
+     {
+      "id": "C0152800",
+      "inCollection": true
+     }
+    ],
+    "state": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "C01529",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     24.366624,
+     60.293397,
+     0
+    ]
+   },
+   "properties": {
+    "id": "C01529",
+    "name": "vt1_Vihti_Palojärvi",
+    "collectionStatus": "GATHERING",
+    "dataUpdatedTime": "2026-09-01T15:27:30Z",
+    "presets": [
+     {
+      "id": "C0152900",
+      "inCollection": true
+     }
+    ],
+    "state": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "C01530",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     24.271469,
+     60.303066,
+     0
+    ]
+   },
+   "properties": {
+    "id": "C01530",
+    "name": "vt1_Lohja_Hevoskallio",
+    "collectionStatus": "GATHERING",
+    "dataUpdatedTime": "2026-09-01T15:25:30Z",
+    "presets": [
+     {
+      "id": "C0153000",
+      "inCollection": true
+     }
+    ],
+    "state": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "C01531",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     24.218153,
+     60.301546,
+     0
+    ]
+   },
+   "properties": {
+    "id": "C01531",
+    "name": "vt1_Lohja_Muijala",
+    "collectionStatus": "GATHERING",
+    "dataUpdatedTime": "2026-09-01T15:25:21Z",
+    "presets": [
+     {
+      "id": "C0153100",
+      "inCollection": true
+     }
+    ],
+    "state": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "C01532",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     25.114463,
+     60.360185,
+     0
+    ]
+   },
+   "properties": {
+    "id": "C01532",
+    "name": "vt4_Vantaa_Leppäkorpi",
+    "collectionStatus": "GATHERING",
+    "dataUpdatedTime": "2026-09-01T15:25:29Z",
+    "presets": [
+     {
+      "id": "C0153201",
+      "inCollection": true
+     },
+     {
+      "id": "C0153202",
+      "inCollection": true
+     },
+     {
+      "id": "C0153203",
+      "inCollection": true
+     },
+     {
+      "id": "C0153204",
+      "inCollection": true
+     },
+     {
+      "id": "C0153209",
+      "inCollection": true
+     }
+    ],
+    "state": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "C01539",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     25.170316,
+     60.224998,
+     0
+    ]
+   },
+   "properties": {
+    "id": "C01539",
+    "name": "VUO_SAT",
+    "collectionStatus": "REMOVED_TEMPORARILY",
+    "dataUpdatedTime": "2026-09-01T15:26:31Z",
+    "presets": [
+     {
+      "id": "C0153900",
+      "inCollection": true
+     }
+    ],
+    "state": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "C04769",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     25.281987,
+     61.004725,
+     1
+    ]
+   },
+   "properties": {
+    "id": "C04769",
+    "name": "vt12 Hollola Hämeenkoski",
+    "collectionStatus": "REMOVED_TEMPORARILY",
+    "dataUpdatedTime": "2026-09-01T15:25:30Z",
+    "presets": [
+     {
+      "id": "C0476901",
+      "inCollection": true
+     },
+     {
+      "id": "C0476902",
+      "inCollection": true
+     },
+     {
+      "id": "C0476909",
+      "inCollection": true
+     }
+    ],
+    "state": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "C06526",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     29.271119,
+     61.926271,
+     0
+    ]
+   },
+   "properties": {
+    "id": "C06526",
+    "name": "kt71_Kerimäki",
+    "collectionStatus": "REMOVED_TEMPORARILY",
+    "dataUpdatedTime": "2026-09-01T15:25:41Z",
+    "presets": [
+     {
+      "id": "C0652601",
+      "inCollection": true
+     },
+     {
+      "id": "C0652602",
+      "inCollection": true
+     },
+     {
+      "id": "C0652609",
+      "inCollection": true
+     }
+    ],
+    "state": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "C01632",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     26.263,
+     60.47487,
+     0
+    ]
+   },
+   "properties": {
+    "id": "C01632",
+    "name": "vt7_Loviisa_Itä",
+    "collectionStatus": "GATHERING",
+    "dataUpdatedTime": "2026-09-01T15:27:43Z",
+    "presets": [
+     {
+      "id": "C0163201",
+      "inCollection": false
+     },
+     {
+      "id": "C0163202",
+      "inCollection": true
+     },
+     {
+      "id": "C0163209",
+      "inCollection": false
+     }
+    ],
+    "state": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "C03590",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     26.491219,
+     60.489682,
+     0
+    ]
+   },
+   "properties": {
+    "id": "C03590",
+    "name": "st170_Pyhtää_Ahvenkoski2",
+    "collectionStatus": "GATHERING",
+    "dataUpdatedTime": "2026-09-01T15:25:32Z",
+    "presets": [
+     {
+      "id": "C0359001",
+      "inCollection": true
+     },
+     {
+      "id": "C0359002",
+      "inCollection": false
+     }
+    ],
+    "state": null
+   }
+  },
+  {
+   "type": "Feature",
+   "id": "C04509",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     23.584856,
+     61.48815,
+     0
+    ]
+   },
+   "properties": {
+    "id": "C04509",
+    "name": "vt3_Nokia_Pitkäniemi",
+    "collectionStatus": "GATHERING",
+    "dataUpdatedTime": "2026-09-01T15:27:36Z",
+    "presets": [
+     {
+      "id": "C0450901",
+      "inCollection": true
+     },
+     {
+      "id": "C0450902",
+      "inCollection": true
+     },
+     {
+      "id": "C0450903",
+      "inCollection": false
+     },
+     {
+      "id": "C0450904",
+      "inCollection": true
+     },
+     {
+      "id": "C0450909",
+      "inCollection": true
+     }
+    ],
+    "state": null
+   }
+  }
+ ]
+}
