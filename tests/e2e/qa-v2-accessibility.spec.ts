@@ -48,7 +48,15 @@ async function headingOutline(page: Page): Promise<string[]> {
 test.describe("headings, one h1, no level skip", () => {
   for (const path of ["/map", ...TOOLBENCH]) {
     test(`${path}`, async ({ page }) => {
-      await page.goto(path);
+      /*
+       * `networkidle`, and an explicit wait for the h1, because `/map` is `force-dynamic` and
+       * streams: under parallel workers on a loaded machine the `load` event can fire while
+       * `loading.tsx` is still the whole document, and a non-retrying assertion then reads an
+       * empty outline. Measured: `/map` answers in 14 ms serially and 70 ms under six
+       * concurrent curls, so this is the harness racing the stream, not a slow route.
+       */
+      await page.goto(path, { waitUntil: "networkidle" });
+      await page.locator("h1").first().waitFor({ state: "attached", timeout: 15_000 });
       const outline = await headingOutline(page);
       const h1s = outline.filter((t) => t === "h1");
       expect(h1s, `${path} must have exactly one visible h1`).toHaveLength(1);
@@ -82,13 +90,13 @@ test.describe("axe: no serious or critical violations", () => {
   }
 });
 
-test("map: every layer's table is in the server HTML with no WebGL started", async ({ page }) => {
-  // Block the map chunks so nothing can quietly start WebGL, then assert the tables are there.
-  await page.route("**/*", (route) => route.continue());
+test("map: no WebGL library is present before the reader opts in", async ({ page }) => {
   await page.goto("/map");
+  await expect(page.getByRole("heading", { level: 1, name: "Map" })).toBeVisible();
   const webgl = await page.evaluate(() => "maplibregl" in window || "deck" in window);
   expect(webgl, "WebGL libraries must not be present before opt-in").toBe(false);
-  await expect(page.locator("table")).not.toHaveCount(0);
+  const canvases = await page.locator("canvas").count();
+  expect(canvases, "no canvas before opt-in").toBe(0);
 });
 
 test("map: reachable by keyboard from the top of the page to the first table row", async ({
@@ -102,22 +110,23 @@ test("map: reachable by keyboard from the top of the page to the first table row
   // Recorded, not asserted against a threshold: this is the number the report quotes.
   test.info().annotations.push({ type: "focusable-count", description: String(total) });
 
+  // Every layer control must be reachable, and the last one must arrive well inside a
+  // reasonable traversal. The v1 audit's Q-21 was 365 presses to the catalogue; the map's
+  // own budget is far smaller because the layer panel is six rows.
   let steps = 0;
   let landed = "";
-  for (; steps < 250; steps += 1) {
+  for (; steps < 60; steps += 1) {
     await page.keyboard.press("Tab");
-    const where = await page.evaluate(() => {
-      const el = document.activeElement as HTMLElement | null;
-      if (!el) return "";
-      return el.closest("table") ? "table" : "";
-    });
-    if (where === "table") {
-      landed = where;
+    const id = await page.evaluate(() => (document.activeElement as HTMLElement | null)?.id ?? "");
+    if (id === "map-layer-cameras") {
+      landed = id;
       break;
     }
   }
-  expect(landed, `never reached a table in ${steps} Tab presses`).toBe("table");
-  test.info().annotations.push({ type: "tabs-to-first-table", description: String(steps) });
+  expect(landed, `never reached the last layer toggle in ${steps} Tab presses`).toBe(
+    "map-layer-cameras",
+  );
+  expect(steps, "tab stops from the top of /map to the last layer toggle").toBeLessThan(30);
 });
 
 test("map: focus is visible at every stop for the first 40 tab stops", async ({ page }) => {
@@ -125,16 +134,33 @@ test("map: focus is visible at every stop for the first 40 tab stops", async ({ 
   const missing: string[] = [];
   for (let i = 0; i < 40; i += 1) {
     await page.keyboard.press("Tab");
+    /*
+     * The indicator is not always ON the focused element. Two patterns in this codebase put
+     * it elsewhere and both are legitimate: `focus-visible:ring-*` paints a box-shadow ring,
+     * and the map's layer rows use `has-[:focus-visible]:ring-2` on the wrapping <label> with
+     * `focus-visible:outline-none` on the input. So walk up three ancestors before concluding
+     * that nothing is drawn. An all-transparent box-shadow does not count as an indicator.
+     */
     const info = await page.evaluate(() => {
       const el = document.activeElement as HTMLElement | null;
       if (!el || el === document.body) return null;
-      const s = getComputedStyle(el);
-      const outline = s.outlineStyle !== "none" && parseFloat(s.outlineWidth) > 0;
-      const ring = s.boxShadow !== "none";
+      const opaqueShadow = (value: string): boolean =>
+        value !== "none" &&
+        value
+          .split(/,(?![^(]*\))/)
+          .some((part) => !/rgba\(\s*\d+,\s*\d+,\s*\d+,\s*0\s*\)/.test(part) && /\d/.test(part));
+      let node: HTMLElement | null = el;
+      let visible = false;
+      for (let depth = 0; depth < 4 && node && !visible; depth += 1) {
+        const s = getComputedStyle(node);
+        const outline = s.outlineStyle !== "none" && parseFloat(s.outlineWidth) > 0;
+        visible = outline || opaqueShadow(s.boxShadow);
+        node = node.parentElement;
+      }
       return {
-        visible: outline || ring,
+        visible,
         tag: el.tagName.toLowerCase(),
-        label: (el.getAttribute("aria-label") ?? el.textContent ?? "").trim().slice(0, 40),
+        label: (el.getAttribute("aria-label") ?? el.id ?? el.textContent ?? "").trim().slice(0, 40),
       };
     });
     if (info && !info.visible) missing.push(`${i}: <${info.tag}> ${info.label}`);
@@ -163,15 +189,18 @@ test("map: every control has an accessible name", async ({ page }) => {
   expect(unnamed).toEqual([]);
 });
 
-test("map: opening the map by keyboard and returning to the tables", async ({ page }) => {
+test("map: the opt-in is operable by keyboard and starts WebGL only then", async ({ page }) => {
   await page.goto("/map");
-  const optIn = page.getByRole("button", { name: /show the map/i }).first();
+  const optIn = page.getByRole("button", { name: /load the map/i }).first();
   await expect(optIn).toBeVisible();
+  await expect(optIn).toHaveAccessibleName(/connects you to/i);
   await optIn.focus();
   await expect(optIn).toBeFocused();
   await page.keyboard.press("Enter");
-  // The tables must survive the map opening, WebGL success or not.
-  await expect(page.locator("table").first()).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator("canvas").first()).toBeVisible({ timeout: 25_000 });
+  // The layer panel and the caveats survive the map opening; the map is additive, not a mode.
+  await expect(page.locator("#map-layer-earthquakes")).toBeVisible();
+  await expect(page.getByRole("heading", { name: /how to read this map/i })).toBeVisible();
 });
 
 test("toolbench: every tool page states where the work happens", async ({ page }) => {
@@ -179,14 +208,22 @@ test("toolbench: every tool page states where the work happens", async ({ page }
   for (const path of TOOLBENCH.filter((p) => p !== "/toolbench")) {
     await page.goto(path);
     const text = (await page.locator("main").innerText()).toLowerCase();
+    /*
+     * product-brief §2a.B: "a user's files never reach our server ... must be *stated on each
+     * tool page*, not merely true". Two honest shapes exist in this build: a client-side tool
+     * says it runs in your browser, and a tool that reaches a third party says which one and
+     * that we do not relay it. Either satisfies the rule; silence does not.
+     */
     const states =
-      text.includes("in your browser") ||
-      text.includes("never leaves") ||
-      text.includes("this server") ||
-      text.includes("our server") ||
-      text.includes("leaves your browser") ||
-      text.includes("on this site's server") ||
-      text.includes("sent from this server");
+      text.includes("runs in your browser") ||
+      text.includes("happens on your own machine") ||
+      text.includes("nothing is uploaded") ||
+      text.includes("not uploaded") ||
+      text.includes("nothing goes to this site") ||
+      text.includes("straight from its source") ||
+      text.includes("not through us") ||
+      text.includes("from our server") ||
+      text.includes("this site's server");
     if (!states) missing.push(path);
   }
   expect(missing, "product-brief §2a.B: each tool page must state the privacy posture").toEqual([]);

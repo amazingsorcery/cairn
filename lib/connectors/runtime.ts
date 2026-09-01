@@ -1,6 +1,7 @@
 import type { Connector } from "@/db/schema";
 import { logger } from "@/lib/logger";
 import { getConnectorBySlug } from "@/lib/queries/live";
+import { isLive, notLiveReason } from "./liveness";
 import { consume } from "@/lib/rate-limit";
 import { recordConnectorRequest } from "./audit";
 import { e2eOverride } from "./e2e-override";
@@ -249,14 +250,42 @@ export async function runConnector<Params, Result>(
     return forcedState;
   }
 
-  if (!connector) {
-    // No published, enabled connector with a recorded legal basis. This is a decision
-    // somebody made, not a fault, and the copy must say so.
-    logger.info({ scope: "connector.run", kind: driver.kind }, "No live connector for surface");
+  /*
+   * THE KILL-SWITCH. Checked here, before anything else, because everything below this line
+   * makes a real outbound request.
+   *
+   * `getConnectorBySlug` returns a row regardless of state — that is deliberate, so an
+   * operator surface can read a disabled row. The predicate it replaced (`getLiveConnector`)
+   * applied these four conditions inside its SQL, and when it was swapped out the filter was
+   * not carried across. For a period every connector sat `enabled = false, status = 'draft'`
+   * and called its upstream anyway, on anonymous requests, including two whose own recorded
+   * legal basis says an operator must decide deliberately first.
+   *
+   * `isLive` now lives in one file and is imported by both governed paths. Do not re-express
+   * it here, and do not assume a row returned from a query is a row you may call.
+   */
+  if (connector === null || !isLive(connector)) {
+    const reason = notLiveReason(connector, driver.slug);
+    logger.info(
+      { scope: "connector.run", slug: driver.slug, reason },
+      "Refused before calling upstream: connector is not live",
+    );
+    // Audit the refusal. An operator asking "did we stop calling them?" needs the answer to
+    // be a row, not the absence of one — an absence is indistinguishable from nobody asking.
+    if (connector !== null) {
+      await recordConnectorRequest({
+        connectorId: connector.id,
+        outcome: "disabled",
+        durationMs: 0,
+        upstreamStatus: null,
+        subject: actor.subject,
+        at: now,
+      });
+    }
     return unavailable(
       driver.slug,
       "disabled",
-      "This live source is switched off. No request was made.",
+      `This live source is switched off — ${reason}. No request was made.`,
     );
   }
 
