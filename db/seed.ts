@@ -67,6 +67,7 @@ import {
 } from "@/lib/actions/search-keywords";
 import { closeDb, db, type Db } from "@/lib/db";
 import { FLIGHTS_CONNECTOR_SEED } from "@/lib/connectors/flights";
+import { SOURCE_CONNECTOR_SEEDS } from "@/lib/sources/connector-seeds";
 import {
   CAMERA_SUBJECT_TO_VIEW_KIND,
   assertCameraSubjectsMapped,
@@ -716,6 +717,51 @@ async function upsertFlightsConnector(tx: Db): Promise<void> {
     });
 }
 
+/**
+ * Registry rows for every wired live source.
+ *
+ * Without these `pollSource` refuses each adapter before any request — correctly, since
+ * §3.3 requires a recorded basis — and `/map` ships with every layer permanently
+ * unavailable on a fresh database. The map engineer found that exactly this had happened to
+ * earthquakes and weather.
+ *
+ * Seeded `draft` and `enabled: false` like the flights connector, for the same reason: these
+ * make real outbound calls, so an operator reads the recorded legal basis and turns each one
+ * on deliberately. A re-seed never resets `enabled`, `status` or `lastCheckedAt` — those are
+ * the operator's, not ours.
+ */
+async function upsertSourceConnectors(tx: Db): Promise<number> {
+  for (const seed of SOURCE_CONNECTOR_SEEDS) {
+    await tx
+      .insert(connectors)
+      .values({ ...seed, lastCheckedAt: toUtcDate("2026-08-31") })
+      .onConflictDoUpdate({
+        target: connectors.slug,
+        set: {
+          name: seed.name,
+          operatorName: seed.operatorName,
+          homepageUrl: seed.homepageUrl,
+          termsUrl: seed.termsUrl,
+          attribution: seed.attribution,
+          attributionRequired: seed.attributionRequired,
+          legalBasis: seed.legalBasis,
+          baseUrl: seed.baseUrl,
+          requiresApiKey: seed.requiresApiKey,
+          apiKeyEnvVar: seed.apiKeyEnvVar,
+          perUserQuota: seed.perUserQuota,
+          globalCeiling: seed.globalCeiling,
+          windowSeconds: seed.windowSeconds,
+          timeoutMs: seed.timeoutMs,
+          cacheTtlSeconds: seed.cacheTtlSeconds,
+          staleWhileRevalidateSeconds: seed.staleWhileRevalidateSeconds,
+          notes: seed.notes,
+          updatedAt: new Date(),
+        },
+      });
+  }
+  return SOURCE_CONNECTOR_SEEDS.length;
+}
+
 async function upsertCameras(
   tx: Db,
   files: LoadedCameraFile[],
@@ -844,6 +890,7 @@ async function main(): Promise<void> {
    * untouched — there is no half-seeded state to reason about, and a failure at camera 14 of
    * 16 does not leave a catalogue that looks complete.
    */
+  let liveSourceConnectors = 0;
   const counts: Counts = await db.transaction(async (tx) => {
     const categoryIds = await upsertCategories(tx, toolFiles);
     const tagIds = await upsertTags(tx, [...tagSlugs]);
@@ -858,6 +905,7 @@ async function main(): Promise<void> {
 
     const connectorIds = await upsertCameraConnectors(tx, cameraFiles);
     await upsertFlightsConnector(tx);
+    liveSourceConnectors = await upsertSourceConnectors(tx);
     const camerasWritten = await upsertCameras(tx, cameraFiles, connectorIds, now);
 
     /**
@@ -873,7 +921,7 @@ async function main(): Promise<void> {
       tags: tagIds.size,
       tools: toolIds.length,
       playbooks: playbookIds.length,
-      connectors: connectorIds.size + 1,
+      connectors: connectorIds.size + 1 + liveSourceConnectors,
       cameras: camerasWritten,
     };
   });

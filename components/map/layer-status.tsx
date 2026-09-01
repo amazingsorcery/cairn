@@ -113,6 +113,12 @@ const TONE_CLASS = {
  * there is nothing to do, why. No apology and no "something went wrong"
  * (`docs/design/states.md` §0).
  */
+/** Ends a clause with a full stop, without doubling one that is already there. */
+function endSentence(clause: string): string {
+  const trimmed = clause.trim();
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
 export function failureSentence(failure: SourceFailure, sourceName: string): string {
   switch (failure.kind) {
     case "upstreamError":
@@ -136,7 +142,25 @@ export function failureSentence(failure: SourceFailure, sourceName: string): str
     case "notConfigured":
       return `This layer needs ${failure.missingEnvVar}, which this deployment does not set. It is switched off rather than broken, and no request was made.`;
     case "disabled":
-      return `We have switched this layer off: ${failure.reason} It stays off until we turn it back on; it is not a fault at ${sourceName}'s end.`;
+      /*
+       * `reason` comes from `disabledReason` in `lib/sources/governed.ts` and is a clause, not
+       * a sentence — "an operator switched this source off", with no full stop. Concatenating
+       * it produced "…switched this source off It stays off…", a run-on that undermines the
+       * one thing this component is for: a distinct, readable sentence per failure. Whoever
+       * writes the reason should not have to know how we punctuate it.
+       *
+       * The possessive is gone too. "it is not a fault at USGS earthquakes's end" is what a
+       * template gets when a source name is a plural noun phrase rather than a company.
+       *
+       * AND THE OPENING CLAUSE IS NEUTRAL ON PURPOSE. `disabledReason` covers four different
+       * conditions — an operator flipped the switch, the row is not published, the row has no
+       * recorded terms, or there is no row at all — and the first draft opened every one of
+       * them with "We have switched this layer off", which is simply false for three of the
+       * four. Nobody switched off a source that was never registered. `SourceFailure` carries
+       * only a string here, so the honest move is a frame that is true of all four: it is off,
+       * the decision is ours, and the source is not at fault.
+       */
+      return `This layer is off, and that is a decision on our side rather than a fault at the source's end: ${endSentence(failure.reason)} It stays off until we change it.`;
   }
 }
 

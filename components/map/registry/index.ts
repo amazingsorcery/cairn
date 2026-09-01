@@ -92,9 +92,9 @@ export function layerQuery(layer: MapLayerDefinition, viewport: MapViewport): So
  * is the one with the upstream in front of it. The layer function is a bridge, not a
  * competitor, and it should be deleted from a layer once its adapter sets the field.
  */
-export function featurePrecision(
-  layer: MapLayerDefinition,
-  feature: SourceFeature,
+export function featurePrecision<F extends SourceFeature>(
+  layer: MapLayerDefinition<F>,
+  feature: F,
 ): PositionalPrecision | null {
   return feature.precision ?? layer.precision?.(feature) ?? null;
 }

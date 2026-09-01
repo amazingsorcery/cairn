@@ -174,3 +174,56 @@ describe("LayerStatus", () => {
     expect(document.querySelector(".animate-spin")).toBeNull();
   });
 });
+
+/**
+ * Punctuation, because the run-on it prevents is not cosmetic on this surface.
+ *
+ * `disabledReason` in `lib/sources/governed.ts` returns a CLAUSE — "an operator switched this
+ * source off" — with no full stop, and the first version of the disabled sentence concatenated
+ * it straight into the next one: "…switched this source off It stays off until…". A component
+ * whose entire job is one distinct, readable sentence per failure cannot ship a run-on, and
+ * whoever writes the reason should not have to know how we punctuate it.
+ */
+describe("the disabled sentence reads as a sentence", () => {
+  it("terminates a reason that arrives without a full stop", () => {
+    const sentence = failureSentence(
+      { kind: "disabled", reason: "an operator switched this source off" },
+      "USGS earthquakes",
+    );
+    expect(sentence).toContain("switched this source off. It stays off");
+  });
+
+  it("does not double a full stop on a reason that already has one", () => {
+    const sentence = failureSentence(
+      { kind: "disabled", reason: "the terms are under review." },
+      "USGS earthquakes",
+    );
+    expect(sentence).not.toContain("..");
+  });
+
+  it("does not claim an operator acted when no row ever existed", () => {
+    /*
+     * `disabledReason` covers four conditions and only one of them is somebody flipping a
+     * switch. Opening every one with "we have switched this layer off" was false for the
+     * other three — nobody switched off a source that was never registered.
+     */
+    const sentence = failureSentence(
+      { kind: "disabled", reason: "nws-alerts has no registry row, so there is no recorded basis to call it" },
+      "NWS active weather alerts",
+    );
+    expect(sentence).not.toContain("We have switched this layer off");
+    expect(sentence).toContain("a decision on our side");
+    expect(sentence).toContain("rather than a fault at the source's end");
+  });
+
+  it("does not build a possessive out of the source name", () => {
+    // "it is not a fault at USGS earthquakes's end" is what a template gets when the source
+    // name is a plural noun phrase rather than a company.
+    const sentence = failureSentence(
+      { kind: "disabled", reason: "an operator switched this source off" },
+      "USGS earthquakes",
+    );
+    expect(sentence).not.toContain("earthquakes's");
+    expect(sentence).toContain("fault at the source's end");
+  });
+});
