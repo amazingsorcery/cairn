@@ -32,9 +32,18 @@ import type { ConnectorDriver } from "./types";
  *    returns `notexample.com` and `example.com.attacker.example`. `lib/toolbench/ct.ts`
  *    separates in-scope names from the rest rather than presenting all of them as subdomains.
  *
- * 4. **404 means "no rows", not "wrong URL".** crt.sh answers a search with no matches with an
- *    HTTP 404 and an HTML body. Since the path is a constant we build, a 404 here can only
- *    mean an empty result, and it is translated into one rather than into an error state.
+ * 4. **A 404 IS NOT AN EMPTY RESULT, and treating it as one was a real bug.** crt.sh answers
+ *    an identity search that matched nothing with HTTP 404 — and it *also* answers 404 from
+ *    its Apache front end when the query fails behind it. During verification a search for
+ *    `ripe.net`, a domain with over four thousand logged certificates, returned 404 while the
+ *    service was under load; the tool rendered "no logged certificates mention ripe.net",
+ *    which is the exact false negative this product exists not to produce.
+ *
+ *    So a 404 is now an upstream failure. The cost is a domain genuinely absent from the logs
+ *    reading as "the source did not answer" rather than as "nothing found" — a wrong status,
+ *    which the reader can retry and check. The alternative was a wrong finding, which they
+ *    cannot. The empty-result path remains for a 200 carrying an empty array, which is the
+ *    unambiguous form.
  *
  * 5. **502 is routine.** Ten consecutive requests during verification all returned 502 Bad
  *    Gateway, the first after a 60-second hang. crt.sh is a single free service under heavy
@@ -107,27 +116,19 @@ export const crtShDriver: ConnectorDriver<CrtShParams, CertificateSummary> = {
     const query = new URLSearchParams({ q: params.domain, output: "json" });
     if (params.excludeExpired) query.set("exclude", "expired");
 
-    let response: Awaited<ReturnType<typeof upstreamGet>>;
-    try {
-      response = await upstreamGet({
-        url: `${base}/?${query.toString()}`,
-        pinnedHost: connectorHost(connector.baseUrl),
-        signal,
-      });
-    } catch (error) {
-      /**
-       * A search with no matches answers 404. The path is a constant we build from the
-       * registry row, so a 404 cannot mean "wrong URL" — it means the log has nothing for
-       * this name, which is a real and reportable result rather than a failure.
-       */
-      if (error instanceof UpstreamStatusError && error.status === 404) {
-        return {
-          data: summariseCertificates([], params.domain, { truncated: false }),
-          upstreamStatus: 404,
-        };
-      }
-      throw error;
-    }
+    /**
+     * NOTHING catches a 404 here, deliberately. See point 4 in the header: crt.sh returns
+     * 404 both for a search that matched nothing and for a search that failed behind its
+     * front end, and the two are indistinguishable from the response. Letting it degrade to
+     * the honest "this source did not answer" state is the only safe reading — a reader who
+     * sees that will retry, and a reader shown "no certificates" for a domain with four
+     * thousand of them will publish it.
+     */
+    const response = await upstreamGet({
+      url: `${base}/?${query.toString()}`,
+      pinnedHost: connectorHost(connector.baseUrl),
+      signal,
+    });
 
     const parsed = crtShResponseSchema.safeParse(decodeJson(response.text));
     if (!parsed.success) {

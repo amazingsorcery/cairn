@@ -1,17 +1,15 @@
 "use client";
 
 import * as React from "react";
-import { Map as MapIcon, TriangleAlert } from "lucide-react";
+import Link from "next/link";
+import { ArrowRight, Map as MapIcon, TriangleAlert } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
-import { Skeleton } from "@/components/ui/skeleton";
-import { mapTiles } from "@/config/live";
+import { buttonVariants } from "@/components/ui/button";
 import { FlightsDegraded } from "./flights-degraded";
 import { FlightsTable, sortDescription, type FlightSort } from "./flights-table";
 import { AircraftPanel } from "./aircraft-panel";
 import { FreshnessBar } from "./freshness-bar";
-import type { FlightsMapProps } from "./flights-map";
 import {
   formatAge,
   formatClockUtc,
@@ -25,17 +23,23 @@ import { useLiveAge } from "./use-live-age";
  * `/live/flights`. The one interactive leaf on the route; the page around it is a Server
  * Component that does the data fetch.
  *
- * WHY THE INTERACTIVE PART IS ONE LEAF RATHER THAN THREE. The freshness bar, the table and
- * the map all read the same payload and the same `fetchedAt`. Split across three components
- * with three copies of the state they would drift, and the one number on this page that must
- * never be wrong is the age (ADR 0014 §1). One owner, one clock, one payload.
+ * THERE IS NO MAP ON THIS ROUTE, AND THAT IS DELIBERATE. It used to carry an opt-in Leaflet
+ * map of its own (`flights-map.tsx`, deleted 2026-09-01). `/map` now draws aircraft on
+ * MapLibre + deck.gl with a sortable table equivalent, freshness reporting and degraded
+ * states, so a second aircraft map here was the same feature maintained twice — and it had
+ * already rotted once, silently, when the tile config moved from raster to vector. This
+ * surface links to `/map` instead. See `docs/frontend/HANDOFF-basemaps.md`.
+ *
+ * WHY THE INTERACTIVE PART IS ONE LEAF RATHER THAN TWO. The freshness bar and the table read
+ * the same payload and the same `fetchedAt`. Split across components with two copies of the
+ * state they would drift, and the one number on this page that must never be wrong is the age
+ * (ADR 0014 §1). One owner, one clock, one payload.
  *
  * IT IS SERVER-RENDERED FIRST. The page passes the initial envelope in as a prop, so the
  * table is present in the initial HTML and is fully readable with no JavaScript at all —
  * which is the point of ADR 0016 §1 making the table primary. What JavaScript adds is
- * sorting, the detail panel, the ticking age and the opt-in map. What it never adds is a
- * request to the upstream: refreshes go to `/api/live/flights`, which is our own server
- * (ADR 0011 §1).
+ * sorting, the detail panel and the ticking age. What it never adds is a request to the
+ * upstream: refreshes go to `/api/live/flights`, which is our own server (ADR 0011 §1).
  *
  * NO SPINNER ON A REFRESH (ADR 0014 §8). The current data stays on screen with its age
  * counting up. The only loading indicator on this route is the first-load one in
@@ -54,8 +58,6 @@ export interface FlightsSurfaceProps {
   perUserLimit: number | null;
   windowSeconds: number | null;
 }
-
-type MapState = "closed" | "loading" | "ready" | "failed";
 
 /**
  * Narrow the JSON from our own route handler. Zod at every boundary includes this one: the
@@ -97,7 +99,7 @@ function parseEnvelope(value: unknown, fallback: FlightsEnvelopeDto): FlightsEnv
 export function FlightsSurface({
   initial,
   initialAgeSeconds,
-  viewport: initialViewport,
+  viewport,
   refreshSeconds,
   operatorName,
   quotaResetAt,
@@ -105,13 +107,9 @@ export function FlightsSurface({
   windowSeconds,
 }: FlightsSurfaceProps) {
   const [envelope, setEnvelope] = React.useState<FlightsEnvelopeDto>(initial);
-  const [viewport, setViewport] = React.useState(initialViewport);
   const [refreshing, setRefreshing] = React.useState(false);
   const [sort, setSort] = React.useState<FlightSort>({ key: "altitudeFt", direction: "desc" });
   const [selectedHex, setSelectedHex] = React.useState<string | null>(null);
-  const [mapState, setMapState] = React.useState<MapState>("closed");
-  const [MapComponent, setMapComponent] =
-    React.useState<React.ComponentType<FlightsMapProps> | null>(null);
 
   const age = useLiveAge(envelope.fetchedAt, envelope.fetchedAt === initial.fetchedAt ? initialAgeSeconds : null);
 
@@ -137,14 +135,19 @@ export function FlightsSurface({
    * Refresh — always through our own server, never to the upstream
    * ---------------------------------------------------------------- */
 
+  /**
+   * The viewport is fixed for the life of the surface: it comes from the query string, which
+   * the server already validated, and nothing on this page can change it now that the map is
+   * gone. Panning lives on `/map`, which owns its own viewport and its own refresh.
+   */
   const refresh = React.useCallback(
-    async (next: { lat: number; lon: number; radius: number }) => {
+    async () => {
       setRefreshing(true);
       try {
         const query = new URLSearchParams({
-          lat: String(next.lat),
-          lon: String(next.lon),
-          radius: String(next.radius),
+          lat: String(viewport.lat),
+          lon: String(viewport.lon),
+          radius: String(viewport.radius),
         });
         const response = await fetch(`/api/live/flights?${query.toString()}`, { cache: "no-store" });
         const body: unknown = await response.json();
@@ -161,7 +164,7 @@ export function FlightsSurface({
         setRefreshing(false);
       }
     },
-    [envelope],
+    [envelope, viewport],
   );
 
   React.useEffect(() => {
@@ -177,29 +180,10 @@ export function FlightsSurface({
       // A hidden tab is not a reader. Refreshing it burns the shared global ceiling that
       // exists to keep us inside the upstream's fair use (ADR 0011 rule 3).
       if (document.visibilityState !== "visible") return;
-      void refresh(viewport);
+      void refresh();
     }, interval);
     return () => window.clearInterval(timer);
-  }, [live, refreshSeconds, refresh, viewport]);
-
-  /* ---------------------------------------------------------------- *
-   * The map — loaded on request, and never on page load
-   * ---------------------------------------------------------------- */
-
-  async function openMap() {
-    setMapState("loading");
-    try {
-      // Not named `module`: Next forbids assigning that identifier because it collides
-      // with the CommonJS free variable during bundling (@next/next/no-assign-module-variable).
-      const mapModule = await import("./flights-map");
-      setMapComponent(() => mapModule.default);
-      setMapState("ready");
-    } catch {
-      // The table is the primary surface and is untouched by this. ADR 0016 §1: "the flights
-      // table must remain fully usable if it fails to load".
-      setMapState("failed");
-    }
-  }
+  }, [live, refreshSeconds, refresh]);
 
   const selected = selectedHex ? (aircraft.find((a) => a.hex === selectedHex) ?? null) : null;
 
@@ -252,103 +236,35 @@ export function FlightsSurface({
         />
       ) : (
         <>
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="tabular text-sm text-foreground-secondary">
-              {countLine} · within {viewport.radius} nm of{" "}
-              <span className="font-mono">{formatPosition(viewport.lat, viewport.lon)}</span>
+          <p className="tabular text-sm text-foreground-secondary">
+            {countLine} · within {viewport.radius} nm of{" "}
+            <span className="font-mono">{formatPosition(viewport.lat, viewport.lon)}</span>
+          </p>
+
+          {/*
+            WHERE THE MAP IS. This page draws none: `/map` is the map, and it is the only one.
+            Saying so plainly — with the link as a real link, not a button that reveals a map
+            — is the honest replacement for a control that used to load one here.
+          */}
+          <div className="rounded-lg border border-dashed border-border bg-card p-5">
+            <h2 className="text-base font-semibold tracking-tight">
+              The map is on a page of its own
+            </h2>
+            <p className="mt-2 max-w-[68ch] text-sm leading-relaxed text-foreground-secondary">
+              This page is the table. Aircraft are drawn on the live map, where the same feed
+              runs as one toggleable layer alongside the others, and where the map itself is
+              still opt-in — nothing is requested from a tile server until you ask for it
+              there.
             </p>
-            {mapState === "closed" ? null : (
-              <Button
-                variant="ghost"
-                className="h-11"
-                onClick={() => {
-                  setMapState("closed");
-                  setMapComponent(null);
-                }}
-              >
-                hide the map
-              </Button>
-            )}
+            <Link
+              href="/map"
+              className={buttonVariants({ variant: "default", size: "lg", className: "mt-4" })}
+            >
+              <MapIcon className="size-4 shrink-0" aria-hidden="true" />
+              open the live map
+              <ArrowRight className="size-4 shrink-0" aria-hidden="true" />
+            </Link>
           </div>
-
-          {/* The map is opt-in, and the disclosure is above the control that triggers it. */}
-          {mapState === "closed" ? (
-            <div className="rounded-lg border border-dashed border-border bg-card p-5">
-              <h2 className="text-base font-semibold tracking-tight">Show these aircraft on a map</h2>
-              <p className="mt-2 max-w-[68ch] text-sm leading-relaxed text-foreground-secondary">
-                The map draws its background from {new URL(mapTiles.origin).host}. Loading it
-                connects your browser directly to that tile server, which will see your IP
-                address and the tiles you request — which is to say, the patch of the world you
-                are looking at. Aircraft positions themselves come from our server either way,
-                so nothing loads until you choose it.
-              </p>
-              {/*
-                `whitespace-normal` and `h-auto`: the label carries the consequence, so it is
-                long, and at 375px a nowrap button would push the whole page into a horizontal
-                scroll. The label is not shortened to fit — the consequence being IN the label
-                is the point (ADR 0015 §2 applied to the tile provider).
-              */}
-              <Button
-                className="mt-4 h-auto min-h-11 max-w-full whitespace-normal py-2 text-left"
-                onClick={() => void openMap()}
-              >
-                <MapIcon className="size-4 shrink-0" aria-hidden="true" />
-                load the map — connects you to {new URL(mapTiles.origin).host}
-              </Button>
-            </div>
-          ) : null}
-
-          {mapState === "loading" ? (
-            <div>
-              <Skeleton className="h-[60vh] min-h-[20rem] w-full" />
-              <p className="mt-2 text-sm text-foreground-secondary">Loading the map…</p>
-            </div>
-          ) : null}
-
-          {mapState === "failed" ? (
-            <Alert variant="warning">
-              <TriangleAlert aria-hidden="true" />
-              <AlertTitle>The map didn&rsquo;t load</AlertTitle>
-              <AlertDescription>
-                The map code could not be fetched. The table below lists every aircraft in view
-                and is unaffected.
-                <span className="mt-3 block">
-                  <Button variant="secondary" className="h-11" onClick={() => void openMap()}>
-                    retry the map
-                  </Button>
-                </span>
-              </AlertDescription>
-            </Alert>
-          ) : null}
-
-          {mapState === "ready" && MapComponent ? (
-            <>
-              <MapComponent
-                aircraft={aircraft}
-                center={{ lat: viewport.lat, lon: viewport.lon }}
-                radius={viewport.radius}
-                selectedHex={selectedHex}
-                onSelect={setSelectedHex}
-                onViewportChange={(next) => {
-                  setViewport(next);
-                  void refresh(next);
-                }}
-              />
-              <p className="text-sm text-foreground-secondary">
-                Map tiles{" "}
-                <a
-                  href={mapTiles.attributionUrl}
-                  target="_blank"
-                  rel="noopener noreferrer nofollow"
-                  className="underline underline-offset-4"
-                >
-                  {mapTiles.attribution}
-                  <span className="sr-only"> (opens in a new tab)</span>
-                </a>
-                .
-              </p>
-            </>
-          ) : null}
 
           {selected ? (
             <AircraftPanel

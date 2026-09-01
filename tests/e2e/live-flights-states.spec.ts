@@ -105,41 +105,28 @@ test.describe("live flights — forced states", () => {
   });
 
   /**
-   * DEFECT THIS CATCHES: the table being coupled to the map — ADR 0016 §1, "the flights table
-   * must remain fully usable if it fails to load". The observational spec can only run this
-   * when the upstream happens to return aircraft; with the payload forced it runs every time.
+   * DEFECT THIS CATCHES: an aircraft map growing back on this route.
    *
-   * The chunk is blocked by aborting `_next/static` fetches issued after the click rather
-   * than by filename: the dev chunk is named `flights-map`, the production one is a hash, and
-   * a test that only breaks one of them proves nothing about the other.
+   * ADR 0016 §1 made the table primary and the map an opt-in extra here. `/map` has since
+   * become the map — same feed, MapLibre + deck.gl, its own table equivalent — so the extra
+   * was deleted on 2026-09-01 rather than maintained twice. This spec used to prove the table
+   * survived the map chunk failing; there is no map chunk on this route now, and the stronger
+   * assertion is that no map is mounted at all, with a complete table and a real pointer to
+   * where the map is. Written against a forced payload, so it runs every time rather than
+   * only when the upstream happens to return aircraft.
    */
-  test("the table survives the map chunk failing, with a forced payload", async ({
-    page,
-    baseURL,
-  }) => {
+  test("no map is mounted, and the table is complete, with a forced payload", async ({ page }) => {
     test.skip(!FORCED.includes(`"data"`), "server not started with a forced flights payload");
 
     await page.goto("/live/flights");
     await expect(page.getByRole("table")).toBeVisible();
-    const rowsBefore = await page.getByRole("row").count();
-    expect(rowsBefore).toBeGreaterThan(1);
+    expect(await page.getByRole("row").count()).toBeGreaterThan(1);
 
-    let blockChunks = false;
-    await page.route("**/*", async (route) => {
-      const url = route.request().url();
-      if (blockChunks && url.startsWith(baseURL!) && url.includes("/_next/static/")) {
-        await route.abort("failed");
-        return;
-      }
-      await route.continue();
-    });
+    expect(await page.locator(".leaflet-container, .maplibregl-map").count()).toBe(0);
+    expect(await page.locator("canvas").count()).toBe(0);
 
-    blockChunks = true;
-    await page.getByRole("button", { name: /load the map — connects you to .+/i }).click();
-
-    await expect(page.getByText(/The map didn’t load/i)).toBeVisible();
-    await expect(page.getByRole("table")).toBeVisible();
-    expect(await page.getByRole("row").count()).toBe(rowsBefore);
-    expect(await page.locator(".leaflet-container").count()).toBe(0);
+    const link = page.getByRole("link", { name: /open the live map/i });
+    await expect(link).toBeVisible();
+    await expect(link).toHaveAttribute("href", "/map");
   });
 });

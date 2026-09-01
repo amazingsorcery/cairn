@@ -166,11 +166,25 @@ function TimelineResults({
           </p>
         ) : null}
 
-        {timeline.distinctDigests < timeline.snapshots.length ? (
+        {timeline.distinctDigests * 4 < timeline.snapshots.length ? (
+          <p className="mt-4 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm leading-relaxed">
+            <strong className="text-foreground">
+              These {timeline.snapshots.length} versions contain only {timeline.distinctDigests}{" "}
+              distinct digests, so the page is flapping rather than changing.
+            </strong>{" "}
+            The archive collapses only <em>consecutive</em> identical captures, so a page that
+            alternates between a handful of byte-different variants defeats the collapse
+            entirely and every crawl comes back as its own row. That is what a rotating
+            advertisement, a per-request token, or several servers serving slightly different
+            bytes looks like. <strong className="text-foreground">Do not read the version count
+            or the change list below as a count of edits</strong> — on a page like this they
+            count crawls.
+          </p>
+        ) : timeline.distinctDigests < timeline.snapshots.length ? (
           <p className="mt-4 text-sm leading-relaxed text-muted-foreground">
             {timeline.snapshots.length - timeline.distinctDigests} of these versions repeat a
-            digest seen earlier in the history — the page reverted to a previous state at least
-            that many times. Collapsing only removes <em>consecutive</em> duplicates, so a
+            digest seen earlier in the history, so the page returned to a state it had held
+            before. Collapsing removes only <em>consecutive</em> duplicates, which is why a
             reversion survives as its own row.
           </p>
         ) : null}
@@ -184,7 +198,10 @@ function TimelineResults({
             </p>
             <ul className="mt-2 space-y-1 text-foreground-secondary">
               {timeline.gaps.slice(0, 5).map((gap) => (
-                <li key={gap.from.timestamp} className="font-mono text-xs">
+                <li
+                  key={`${gap.from.timestamp}-${gap.to.timestamp}`}
+                  className="font-mono text-xs"
+                >
                   {gap.from.capturedAt.slice(0, 10)} → {gap.to.capturedAt.slice(0, 10)} (
                   {gap.days} days)
                 </li>
@@ -309,8 +326,15 @@ function ChangePointList({ timeline }: { timeline: Timeline }) {
       description="Each row is a version whose content digest differs from the version before it, with the date the archive first saw it that way. All of this is read from the index; no snapshot has been downloaded to produce it. The date is when the change was first observed, not when it was made — the change happened somewhere between this capture and the previous one."
     >
       <ul className="divide-y divide-border">
-        {shown.map((point) => (
-          <li key={point.snapshot.timestamp} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-2.5">
+        {shown.map((point, index) => (
+          // The timestamp alone is NOT unique: the archive genuinely returns two rows with the
+          // same 14-digit second and different digests (verified against ripe.net, where
+          // 19970508135147 appears twice). Keying on it produced a duplicate-key warning for
+          // every such pair, and React may then drop or duplicate rows on re-render.
+          <li
+            key={`${point.snapshot.timestamp}-${point.snapshot.digest ?? index}`}
+            className="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-2.5"
+          >
             <time dateTime={point.snapshot.capturedAt} className="font-mono text-sm">
               {point.snapshot.capturedAt.slice(0, 10)}
             </time>
@@ -464,7 +488,18 @@ function CaptureSelect({
   onChange: (next: string) => void;
   options: readonly Snapshot[];
 }) {
-  const shown = options.length <= MAX_OPTIONS ? options : options.slice(-MAX_OPTIONS);
+  // De-duplicate by timestamp before rendering: the option VALUE is the timestamp, and the
+  // archive returns two rows with the same second often enough that leaving them both in
+  // produced duplicate React keys and two indistinguishable options selecting the same capture.
+  const unique = React.useMemo(() => {
+    const seen = new Set<string>();
+    return options.filter((snapshot) => {
+      if (seen.has(snapshot.timestamp)) return false;
+      seen.add(snapshot.timestamp);
+      return true;
+    });
+  }, [options]);
+  const shown = unique.length <= MAX_OPTIONS ? unique : unique.slice(-MAX_OPTIONS);
   return (
     <div>
       <Label htmlFor={id}>{label}</Label>

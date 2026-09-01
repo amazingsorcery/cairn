@@ -158,6 +158,35 @@ describe("the timeline", () => {
     expect(timeline.gaps[0]?.days).toBeGreaterThan(1600);
   });
 
+  it("tolerates two captures sharing one timestamp, which the archive really does return", () => {
+    // Verified against the live index: the ripe.net history contains 19970508135147 twice,
+    // with two different digests. Anything keyed on the timestamp alone — a React list key, a
+    // Map, a select option value — is wrong, and this test exists so the next person finds
+    // that out here rather than from a duplicate-key warning in a browser.
+    const timeline = buildTimeline("u", [
+      snapshot("19970508135147", "7GGMCIW525BOCWX7K4SYOPQDMCEZWBVY"),
+      snapshot("19970508135147", "F32AFTIONVWNDIN4MTDJURKXUBFZYHVK"),
+    ]);
+    expect(timeline.snapshots).toHaveLength(2);
+    expect(timeline.distinctDigests).toBe(2);
+    expect(timeline.changePoints).toHaveLength(1);
+    expect(timeline.gaps).toEqual([]);
+  });
+
+  it("counts distinct digests across the whole history, not just consecutive pairs", () => {
+    // A page alternating between two variants: eight versions, two digests. The UI keys its
+    // "this page is flapping rather than changing" warning off exactly this ratio, because
+    // seven change points on such a page would otherwise read as seven edits.
+    const digests = ["A", "B", "A", "B", "A", "B", "A", "B"];
+    const timeline = buildTimeline(
+      "u",
+      digests.map((digest, index) => snapshot(`2020010${index + 1}000000`, digest)),
+    );
+    expect(timeline.snapshots).toHaveLength(8);
+    expect(timeline.distinctDigests).toBe(2);
+    expect(timeline.changePoints).toHaveLength(7);
+  });
+
   it("handles a URL with no captures at all", () => {
     const timeline = buildTimeline("http://example.com/", []);
     expect(timeline.first).toBeNull();

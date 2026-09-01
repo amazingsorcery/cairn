@@ -68,6 +68,7 @@ import {
 import { closeDb, db, type Db } from "@/lib/db";
 import { FLIGHTS_CONNECTOR_SEED } from "@/lib/connectors/flights";
 import { SOURCE_CONNECTOR_SEEDS } from "@/lib/sources/connector-seeds";
+import { TOOLBENCH_CONNECTOR_SEEDS } from "@/lib/connectors/toolbench-seeds";
 import {
   CAMERA_SUBJECT_TO_VIEW_KIND,
   assertCameraSubjectsMapped,
@@ -731,7 +732,15 @@ async function upsertFlightsConnector(tx: Db): Promise<void> {
  * the operator's, not ours.
  */
 async function upsertSourceConnectors(tx: Db): Promise<number> {
-  for (const seed of SOURCE_CONNECTOR_SEEDS) {
+  /*
+   * Map sources AND Toolbench connectors. Both are rows in one registry (ADR 0024), and both
+   * were missing here — a connector with no row is refused by the governed path with "no
+   * recorded basis to call it", which is correct behaviour producing a permanently dead
+   * feature. It happened once to the map's earthquake and weather layers; these five would
+   * have been the same bug in the Toolbench.
+   */
+  const seeds = [...SOURCE_CONNECTOR_SEEDS, ...TOOLBENCH_CONNECTOR_SEEDS];
+  for (const seed of seeds) {
     await tx
       .insert(connectors)
       .values({ ...seed, lastCheckedAt: toUtcDate("2026-08-31") })
@@ -759,7 +768,7 @@ async function upsertSourceConnectors(tx: Db): Promise<number> {
         },
       });
   }
-  return SOURCE_CONNECTOR_SEEDS.length;
+  return seeds.length;
 }
 
 async function upsertCameras(

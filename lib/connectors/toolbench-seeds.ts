@@ -28,16 +28,25 @@ import { WAYBACK_CONNECTOR_SEED } from "./wayback";
  *
  * `docs/sources/<slug>.md` records each check against the six source-acceptance criteria.
  */
+import { OVERPASS_CONNECTOR_SEED } from "./overpass";
+
 export const TOOLBENCH_CONNECTOR_SEEDS = [
   CRTSH_CONNECTOR_SEED,
   DNS_CONNECTOR_SEED,
   RIPESTAT_CONNECTOR_SEED,
   WAYBACK_CONNECTOR_SEED,
+  OVERPASS_CONNECTOR_SEED,
 ] as const;
+
+// The Broadcast Finder deliberately has no seed of its own: it queries the same upstream as
+// the map's radio layer, so it reuses the `radio-browser` row. One upstream, one recorded
+// legal basis, one kill-switch — an operator disabling that source must not have to find two
+// switches, and two rows would let the map and the tool drift apart on quota and TTL.
 
 export {
   CRTSH_CONNECTOR_SEED,
   DNS_CONNECTOR_SEED,
   RIPESTAT_CONNECTOR_SEED,
   WAYBACK_CONNECTOR_SEED,
+  OVERPASS_CONNECTOR_SEED,
 };

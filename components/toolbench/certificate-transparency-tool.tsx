@@ -123,17 +123,20 @@ function Results({
   if (summary.certificateCount === 0) {
     return (
       <div className="mt-6">
-        <EmptyResult title={`No logged certificates mention ${summary.domain}`}>
+        <EmptyResult title={`crt.sh returned an empty result for ${summary.domain}`}>
           <p>
-            That is a real result and it has two readings. Either nothing under this domain has
-            ever had a publicly trusted certificate — which is unusual for anything with a
-            website, and itself worth noting — or the certificates it uses were issued by a
-            private CA that does not log, which is normal for internal infrastructure and
-            invisible here.
+            The search completed and the log index returned no rows. Two readings, and both are
+            worth writing down. Either nothing under this domain has ever had a publicly trusted
+            certificate — unusual for anything with a website, and itself a finding — or the
+            certificates it uses come from a private CA that does not log, which is normal for
+            internal infrastructure and invisible here.
           </p>
           <p className="mt-2">
-            Before concluding anything, run the same search against a domain you know is
-            certificated. A source returning nothing sometimes means the source is broken.
+            <strong className="text-foreground">Corroborate before you conclude.</strong> Run
+            the same search against a domain you know is certificated, and check a second CT
+            index. A source returning nothing sometimes means the source is broken rather than
+            the data absent — which is why this page distinguishes an empty answer from a
+            failed one, and never shows this panel for a failure.
           </p>
         </EmptyResult>
         <Provenance outcome={outcome} />

@@ -110,10 +110,26 @@ export default function CertificateTransparencyPage() {
           </p>
           <p>
             <strong className="text-foreground">crt.sh is one free service, and it is often
-            overloaded.</strong> A run of HTTP 502s is normal rather than exceptional. When
-            that happens this page says the source did not answer; it does{" "}
-            <em>not</em> say there were no results, because those are opposite conclusions and
-            only one of them is ever a finding.
+            overloaded.</strong> A run of HTTP 502s is normal rather than exceptional, and
+            queries that succeed can take a minute. When that happens this page says the source
+            did not answer; it does <em>not</em> say there were no results, because those are
+            opposite conclusions and only one of them is ever a finding.
+          </p>
+          <p>
+            <strong className="text-foreground">That distinction cost this tool a bug, and it
+            is worth knowing why.</strong> crt.sh answers an identity search that matched
+            nothing with HTTP 404 — and it also answers 404 when the query fails behind its
+            front end. The two are indistinguishable from the response. An early version read a
+            404 as &ldquo;no certificates&rdquo;, and during testing it reported that{" "}
+            <code className="font-mono text-sm">ripe.net</code> — a domain with over four
+            thousand logged certificates — had none.
+          </p>
+          <p>
+            So this tool now treats every 404 as a failure. The consequence is that a domain
+            genuinely absent from the logs will read as &ldquo;the source did not answer&rdquo;
+            rather than as &ldquo;nothing found&rdquo;. That is a wrong <em>status</em>, which
+            you can retry and check against crt.sh directly. The alternative was a wrong{" "}
+            <em>finding</em>, which you cannot.
           </p>
         </>
       }

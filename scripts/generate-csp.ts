@@ -75,7 +75,24 @@ function build(): string {
   const basemapOrigin = originOf(basemap.origin);
   const tileOrigins = [...new Set([tileOrigin, basemapOrigin])].sort();
 
-  const imgSrc = ["'self'", "data:", "blob:", ...tileOrigins, ...embedOrigins].join(" ");
+  /*
+   * Raster tile hosts that a Toolbench tool loads directly in the reader's browser.
+   *
+   * NASA GIBS satellite imagery is fetched as <img> by the imagery comparator, so it needs
+   * img-src and NOT connect-src. Client-side is the correct place for it — §2b says the
+   * browser connects to the source and we never relay media, and satellite tiles are exactly
+   * that. Terms verified in docs/sources/nasa-gibs.md: no key, attribution rendered on the map.
+   */
+  const toolTileOrigins = ["https://gibs.earthdata.nasa.gov"].map(originOf);
+
+  const imgSrc = [
+    "'self'",
+    "data:",
+    "blob:",
+    ...tileOrigins,
+    ...toolTileOrigins,
+    ...embedOrigins,
+  ].join(" ");
 
   const policy = [
     "default-src 'self'",
