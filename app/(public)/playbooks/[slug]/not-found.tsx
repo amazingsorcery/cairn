@@ -3,12 +3,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 
 /**
- * A playbook slug that does not resolve.
- *
- * IT MUST NOT DISTINGUISH "never existed" FROM "not published" (`docs/design/states.md`
- * §1.2, architecture HANDOFF §11 assertion 3). Two different pages here would confirm the
- * existence of unpublished editorial rows to anyone willing to guess slugs, so a draft and
- * a typo get the same answer.
+ * Unknown or unpublished playbook. Same page for both so slug guessing can't reveal drafts.
  */
 export default function PlaybookNotFound() {
   return (

@@ -5,28 +5,13 @@ import { flightsDriver, runConnector } from "@/lib/connectors";
 import { clientSubject } from "@/lib/rate-limit";
 
 /**
- * The server-side ADS-B proxy behind `/live/flights`. ADR 0011 §1, sitemap.md §3.
+ * Server-side ADS-B proxy behind `/live/flights`, so the browser never sends its IP and
+ * viewport to the upstream aggregator.
  *
- * THE POINT OF THIS ROUTE IS THAT THE BROWSER NEVER TALKS TO THE UPSTREAM. A direct client
- * fetch would hand the aggregator the user's IP and their viewport — that is, the patch of
- * the world they are looking at — which is precisely the interest-graph leak product-brief
- * §3.2 constraint 4 exists to prevent. Everything about this endpoint follows from that.
- *
- * It returns 200 with an envelope even when the upstream is down. ADR 0011 rule 5 and
- * ADR 0014: the surface must say what is wrong and how old the data is, and an empty error
- * response would lose both.
- *
- * ── THE ONE EXCEPTION: 429 WHEN A QUOTA OF OURS REFUSED THE CALLER ─────────
- * Rule 5 governs the BODY, and a 429 that carries the same renderable envelope satisfies it
- * completely — the client reads `reason` exactly as before. The status code is the half that
- * monitoring, a reverse proxy and a CDN can act on, and `/map/data/[slug]` already answers
- * 429 for this condition (QA finding QV-05). Two routes answering one condition with two
- * status codes was the inconsistency, not the 429.
- *
- * It is deliberately narrow. `disabled` stays 200: a kill-switch is a decision, not a limit,
- * and no amount of waiting clears it. `rate-limited` stays 200: that is a refusal THEY made,
- * and telling a client to retry against our own header would be us advertising somebody
- * else's limit as ours.
+ * Always returns the envelope so the client can show what's wrong and how old the data is.
+ * Status is 200, except 429 when one of our own quotas refused the caller (matching
+ * `/map/data/[slug]`). `disabled` and upstream `rate-limited` stay 200: waiting won't clear
+ * the first, and the second isn't our limit.
  */
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -39,11 +24,7 @@ const NO_STORE = {
 export async function GET(request: Request): Promise<Response> {
   const url = new URL(request.url);
 
-  /**
-   * The quota subject: the signed-in user's id if there is one, otherwise the client IP.
-   * Both are hashed before they reach `rate_limits` or `connector_requests` (ADR 0009,
-   * ADR 0013) — nothing identifying is stored on either side of this call.
-   */
+  /** Quota subject: user id if signed in, else client IP. Hashed before storage. */
   const session = await auth();
   const subject = session?.user?.id ?? clientSubject(request);
 
@@ -57,20 +38,10 @@ export async function GET(request: Request): Promise<Response> {
     { subject },
   );
 
+  /** `fetchedAt` is sent as ISO; the client computes the age on every tick. */
   /**
-   * `fetchedAt` is serialised as an ISO string and the client computes the age from it on
-   * every tick (ADR 0014 §1). The age is NOT computed here: a number baked in at response
-   * time is wrong the moment the response is a second old, and this is the one number on the
-   * page that must never be wrong.
-   */
-  /**
-   * `Retry-After` in whole seconds, rounded UP and taken from the limiter's own reset instant
-   * (`quotaResetsAt`) rather than recomputed from a window length here. Rounded up because a
-   * client that waits the rounded-down value arrives one request short of the reset and is
-   * refused again, which teaches clients to ignore the header.
-   *
-   * Absent when the reset instant is unknown — the limiter itself failed and we refused fail
-   * closed. A 429 with no `Retry-After` is honest; a guessed one is not.
+   * `Retry-After` from the limiter's reset instant, rounded up so the client doesn't arrive
+   * just before the reset. Omitted when unknown (the limiter failed and we failed closed).
    */
   const refused = envelope.reason === "quota-exhausted";
   const retryAfterSeconds =
@@ -87,20 +58,9 @@ export async function GET(request: Request): Promise<Response> {
       reason: envelope.reason,
       message: envelope.lastError,
       connector: envelope.connectorSlug,
-      /**
-       * Sent in the body as well as the header so the surface can render "try again at
-       * 08:26" rather than a bare count, and so the client is not made to parse a header it
-       * would otherwise never read. Null unless a quota refused this caller.
-       */
+      /** Also in the body so the UI can show "try again at 08:26". Null unless refused. */
       quotaResetsAt: refused ? (envelope.quotaResetsAt?.toISOString() ?? null) : null,
-      /**
-       * WHICH of our counters refused, so the surface can name the right limit instead of
-       * inferring it from the wording of `message` (QA finding QV-29). The client was
-       * matching `"You have reached"` and the entry limiter says `"You have made"`, so every
-       * refusal from the counter that bites first was rendered as "we are at the operator's
-       * fair-use ceiling" — a false statement about a named third party, on a path where
-       * nothing had been asked of them at all.
-       */
+      /** Which of our counters refused, so the UI doesn't have to infer it from `message`. */
       quotaScope: refused ? envelope.quotaScope : null,
     },
     {

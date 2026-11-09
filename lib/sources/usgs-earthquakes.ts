@@ -19,35 +19,19 @@ import type {
 /**
  * USGS earthquakes — the real-time GeoJSON summary feed.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * TERMS CHECK — 2026-08-31. Full record in `docs/sources/usgs-earthquakes.md`.
- * ─────────────────────────────────────────────────────────────────────────────
- * Licence      Public domain. USGS-authored data and information are in the U.S. public
- *              domain (usgs.gov/information-policies-and-instructions/copyrights-and-credits,
- *              read 2026-08-31). Credit is *requested*, not a licence condition — we render
- *              it anyway, because a reader needs to know whose seismic network said this.
- * Key          None. No registration, no key, no terms-of-use gate.
- * Rate limit   No published request limit. The feed itself answers
- *              `Cache-Control: public, max-age=60` and the documentation says every summary
- *              feed is "updated every minute" — so 60s is the upstream's own number, read
- *              off its own response, not a guess. Matches product-brief §2b ("quakes ~60s").
- * Access ctrl  None circumvented: one documented public JSON endpoint, no scraping, no auth.
- * ─────────────────────────────────────────────────────────────────────────────
+ * Terms (checked 2026-08-31):
+ * Licence      US public domain; credit requested (rendered anyway).
+ * Key          None.
+ * Rate limit   None published. The feed sends `Cache-Control: max-age=60` and updates every
+ *              minute, so TTL is 60s.
  *
- * WHICH FEED. `all_hour` would be the freshest but returns only the last 60 minutes, so a
- * map opened at a quiet moment shows an empty world and looks broken. `2.5_day` is the
- * standard significant-events feed: everything magnitude 2.5+ in the last 24 hours, tens of
- * features rather than thousands, and it is what a reader means by "recent earthquakes".
- * `USGS_QUAKE_FEED` can move it to another documented summary feed without a deploy.
+ * Default feed `2.5_day` (M2.5+ in 24h). `all_hour` often looks empty. Override with
+ * `USGS_QUAKE_FEED`.
  */
 
 const FEED_BASE = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary";
 
-/**
- * The documented summary feeds. An allowlist rather than a free-text env var: the value is
- * interpolated into a URL, and "operator-supplied string in a server-side fetch URL" is the
- * SSRF shape ADR 0019 names as v2's top risk. Only these strings can ever be reached.
- */
+/** Allowlist of documented feeds, since the value goes into a server-side fetch URL. */
 const FEEDS = [
   "all_hour",
   "all_day",
@@ -79,15 +63,9 @@ function selectedFeed(env: (name: string) => string | undefined): Feed {
  * ------------------------------------------------------------------ */
 
 /**
- * Validated at the boundary (product-brief §5).
- *
- * `mag`, `place` and `alert` are nullable in real payloads and are typed that way rather
- * than defaulted. `metadata.generated` and `features` are REQUIRED: defaulting either would
- * let a response of a completely different shape parse as "zero earthquakes", and an empty,
- * confident, wrong map is worse than a layer that says it is unavailable.
- *
- * `.passthrough()` is deliberate — an upstream that ADDS a field must not break us, only one
- * that removes or retypes what we read.
+ * `mag`, `place`, `alert` are nullable in real payloads. `metadata.generated` and `features`
+ * are required so a wrong-shaped response doesn't parse as zero earthquakes. `.passthrough()`
+ * tolerates added fields.
  */
 const quakePropertiesSchema = z
   .object({
@@ -175,20 +153,13 @@ function isoOrNull(millis: number | null | undefined): string | null {
 
 type UsgsPayload = z.infer<typeof usgsResponseSchema>;
 
-/**
- * Map a validated payload to features.
- *
- * Internal, and takes already-parsed data: `fetch` runs `responseSchema` once and returns
- * `schemaChanged` on a mismatch, so nothing here needs to re-decide that. The exported
- * `normaliseUsgs` below wraps this for the fixture tests.
- */
+/** Map an already-validated payload. `normaliseUsgs` wraps this for fixture tests. */
 function mapUsgs(data: UsgsPayload, query: SourceQuery): readonly EarthquakeFeature[] {
   const features: EarthquakeFeature[] = [];
   for (const item of data.features) {
     const coordinates = item.geometry?.coordinates ?? [];
     const depth = coordinates[2];
-    // An event with no position cannot be drawn. Dropping it here rather than in the
-    // component keeps the "how many are on screen" count honest.
+    // No position, can't be drawn; drop here so the count is right.
     const position = coordinatePair(coordinates[0], coordinates[1]);
     if (!position) continue;
 
@@ -200,12 +171,7 @@ function mapUsgs(data: UsgsPayload, query: SourceQuery): readonly EarthquakeFeat
       kind: "earthquakes",
       longitude: position.longitude,
       latitude: position.latitude,
-      /**
-       * `SourceFeature.altitude` is documented as metres. A quake's depth is *below* the
-       * surface, so it is a negative altitude — writing the positive kilometre figure here
-       * would put every earthquake in the stratosphere on any layer that reads this field.
-       * The honest kilometre depth stays in `properties.depthKm`.
-       */
+      // Altitude is metres; depth is below the surface, so negative. km stays in `depthKm`.
       ...(typeof depth === "number" && Number.isFinite(depth) ? { altitude: -depth * 1000 } : {}),
       label: props.title?.trim() || `M ${magnitude ?? "?"} — ${props.place ?? "unknown location"}`,
       ...(props.url ? { sourceUrl: props.url } : {}),
@@ -225,8 +191,7 @@ function mapUsgs(data: UsgsPayload, query: SourceQuery): readonly EarthquakeFeat
       },
     };
 
-    // The summary feeds are global and cannot be filtered upstream, so the viewport is
-    // applied here. `query.bbox` therefore means the same thing on this layer as on any other.
+    // Feeds are global, so filter by viewport here.
     if (!withinBbox(feature, query)) continue;
     features.push(feature);
   }
@@ -262,10 +227,7 @@ export const usgsEarthquakes: SourceAdapter<EarthquakeFeature> = {
   },
   /** The feed's own `Cache-Control: max-age=60`, and its documented one-minute update. */
   ttlSeconds: 60,
-  /**
-   * Fifteen minutes. An earthquake that happened stays happened, so a stale list is still
-   * true; what ages is the absence of newer events.
-   */
+  /** A stale list is still true; it just lacks newer events. */
   staleWhileRevalidateSeconds: 900,
   responseSchema: usgsResponseSchema,
   normalise: normaliseUsgs,

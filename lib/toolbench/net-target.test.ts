@@ -12,15 +12,9 @@ import {
 } from "./net-target";
 
 /**
- * The SSRF test suite. ADR 0019 names server-side request forgery the top risk of v2, so
- * these assertions are written the way an attacker would write them: every bypass in the
- * standard repertoire gets its own case, and each one asserts the *refusal*, not merely
- * that something was returned.
- *
- * The bypasses below are the ones that have historically defeated real filters:
- * decimal and hexadecimal IPv4, octal-padded octets, short-form `127.1`, IPv4-mapped and
- * 6to4 and Teredo IPv6, userinfo before the host, a trailing dot, uppercase, and the cloud
- * instance-metadata address.
+ * SSRF tests. Each known bypass gets a case asserting refusal: decimal/hex IPv4, octal
+ * octets, short-form `127.1`, IPv4-mapped / 6to4 / Teredo IPv6, userinfo, trailing dot,
+ * uppercase, and the cloud metadata address.
  */
 
 describe("hostnames", () => {

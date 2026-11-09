@@ -1,62 +1,18 @@
 /**
- * BRAND STRINGS — THE RENAMING CONTRACT
- * =====================================
+ * Single source of truth for user-facing brand strings. Renaming the product should only
+ * touch this file for anything a user can see. Internal identifiers (`__cairnDb__`,
+ * `cairn_dev`, the `cairn_csp` cache key, package.json `name`) still use the name; they
+ * are never shown to users.
  *
- * This file is the single source of truth for every user-facing brand string in the
- * product. The contract it enforces:
+ * Don't hardcode the product name in components, content or CSS token names; import it.
+ * The logo wordmark is the exception and must be redrawn on a rename.
  *
- *   Renaming the product must be a change to THIS FILE AND NO OTHER FILE
- *   for every string a user can see.
- *
- * That qualifier is load-bearing and was added after QA measured the claim rather than
- * reading it. Roughly ten files hardcode the name in identifiers a user never sees:
- * `__cairnMapSourceCache`, `__cairnDb__`, `__cairnConnectorCache__`, the `cairn_dev`
- * database name, the `cairn_csp` cache key, and `package.json`'s private `name` field.
- * None is rendered, logged to a user, or sent to a third party — the one that WAS sent to a
- * third party, an outbound User-Agent, was found and fixed.
- *
- * They are left alone deliberately: renaming a globalThis handle or a local database has no
- * user-visible effect and carries real risk of breaking a running deployment's cache or
- * connection string for no benefit. But the unqualified sentence was not true, and this file
- * of all files should not assert something it does not do.
- *
- * That means:
- *
- *   1. No component, route, page title, email template, test, seed row, migration,
- *      CSS token name, or piece of content may contain the product name as a literal.
- *      Import it from here. A grep for the product name outside this file and
- *      `docs/brand/` is a bug, and `docs/qa/` should assert that.
- *   2. Design-token names are brand-neutral by the same rule (`--surface-base`, never
- *      `--<product>-surface-base`). See `docs/brand/colour.md` §0.
- *   3. The two logo files under `docs/brand/logo/` are the deliberate exception. The
- *      wordmark *is* the name drawn as geometry, so it cannot be parameterised; it must
- *      be redrawn on a rename. That cost is documented in `docs/brand/alternates.md`.
- *
- * Everything below is derived from the four constants in the PRIMITIVES block, so a
- * rename is a handful of edits in one place rather than a search across the object.
- *
- * PROVENANCE
- *   Name chosen in `docs/brand/naming.md` (8 candidates scored, cut to 3, one chosen).
- *   Runners-up held in `docs/brand/alternates.md`.
- *
- * UNCONFIRMED IDENTIFIERS — READ BEFORE SHIPPING
- *   The domain, the contact addresses, the social handles, and the legal entity below are
- *   *proposed and unregistered*. Nobody has verified that any of them are available, and
- *   this codebase cannot check.
- *
- *   The domain placeholder therefore uses `.example`, which RFC 2606 reserves and
- *   guarantees can never be registered or resolve. This is chosen so that a placeholder
- *   which escapes to production fails loudly and locally instead of silently delivering
- *   a user's mail to a stranger who happens to own the real domain.
- *
- *   `socialsRegistered` is `false` (`domainRegistered` is now true — see below). The UI MUST gate rendering of
- *   any link or address on those flags rather than on a hardcoded condition, so that
- *   "if it isn't built, it isn't linked" (product-brief §8) is enforced by the type system
- *   and not by memory. Flip them in the same commit that registers the real identifiers.
+ * The social handles and legal entity are unregistered. The UI gates links on the
+ * `*Registered` flags; flip them when the identifiers are real.
  */
 
 /* ------------------------------------------------------------------ *
- * PRIMITIVES — the only lines that change on a rename
+ * Primitives: the only lines that change on a rename
  * ------------------------------------------------------------------ */
 
 const NAME = 'Cairn';
@@ -76,52 +32,32 @@ export const brand = {
    */
   nameLower: NAME_LOWER,
 
-  /**
-   * The entity that would appear on a privacy policy, terms of service, or DPA.
-   * No company has been incorporated. This string must be replaced with the registered
-   * entity name before any public launch — the legal pages cannot be finalised without it.
-   * See `docs/decisions/0002-scope-boundary.md` and `docs/content/legal-review.md`.
-   */
+  /** Entity named in the legal pages. Not incorporated; replace before launch. */
   legalEntity: `${NAME} (unincorporated project)`,
   legalEntityIncorporated: false,
 
   /** Short line for the header and social cards. Sentence case, no full stop. */
   tagline: 'Open sources, checked and dated',
 
-  /** One-line pitch. Names all three pillars. From `docs/brand/positioning.md` §2. */
+  /** One-line pitch. */
   pitch:
     'A vetted directory of OSINT tools, the playbooks that use them, and a workspace ' +
     'to run your case in.',
 
-  /**
-   * Meta description. 236 characters total, of which the first sentence is 158 — so the
-   * portion search engines typically render stands alone, and the trailing sentence (the
-   * one our audience actually cares about) is a bonus rather than a truncated fragment.
-   * From `docs/brand/positioning.md` §3.
-   */
+  /** Meta description. The first sentence (158 chars) stands alone if truncated. */
   description:
     `${NAME} is a curated directory of open-source intelligence tools and data sources, ` +
     'paired with step-by-step investigative playbooks and private case workspaces. ' +
     'Every entry states its cost, jurisdiction, and when a human last verified it.',
 
   /**
-   * The domain this deployment actually serves from.
-   *
-   * `wrath.rip` is an owned domain being used as an interim host so the product can be
-   * deployed and used before a permanent name is bought. It is registered and it resolves,
-   * so `domainRegistered` is true and the UI will render real links and contact addresses.
-   *
-   * It is deliberately NOT the launch domain. `docs/brand/naming.md` §1 rules out names
-   * evoking violence or edge — this audience is journalists and human-rights researchers,
-   * and a URL they must paste into a story or a ticket is part of the product's
-   * credibility. Interim host, not brand.
-   *
-   * Changing it is this line plus `APP_URL` and `DOMAIN` in `.env`, and nothing else.
+   * Domain this deployment serves from (an interim host, not the launch domain).
+   * Changing it also means updating `APP_URL` and `DOMAIN` in `.env`.
    */
   domainPlaceholder: DOMAIN,
   domainRegistered: true,
 
-  /** Contact addresses. All on the placeholder domain; none of these mailboxes exist yet. */
+  /** Contact addresses. */
   email: {
     support: `support@${DOMAIN}`,
     security: `security@${DOMAIN}`,
@@ -130,10 +66,7 @@ export const brand = {
     legal: `legal@${DOMAIN}`,
   },
 
-  /**
-   * Proposed social handles. None are registered or claimed.
-   * Do not render a link to any of these while `socialsRegistered` is false.
-   */
+  /** Proposed social handles; don't link them while `socialsRegistered` is false. */
   social: {
     mastodon: `@${NAME_LOWER}`,
     bluesky: `@${NAME_LOWER}`,
@@ -145,19 +78,9 @@ export const brand = {
   repoUrl: `https://github.com/${NAME_LOWER}/${NAME_LOWER}`,
 
   /**
-   * Legal facts the policy documents in `content/legal/` interpolate.
-   *
-   * These are NOT known. No entity is incorporated, no jurisdiction of establishment is
-   * chosen, and no lawyer has reviewed anything — see `docs/content/legal-review.md`.
-   *
-   * They are deliberately `null` rather than filled with a plausible guess. A privacy
-   * policy that names a governing law we invented is worse than one that admits the gap:
-   * it is a false statement of fact in the one document a user is entitled to rely on,
-   * and it would mislead exactly the people least able to absorb the consequences.
-   *
-   * `reviewComplete` gates the rendering. While it is false the legal pages render with a
-   * pre-launch banner and show unresolved values as a visible marker, never as prose that
-   * reads as settled. Flip it in the same commit that records counsel's answers.
+   * Legal facts interpolated into `content/legal/`. Unknown until legal review, so they
+   * are `null` rather than guessed. While `reviewComplete` is false the legal pages show a
+   * pre-launch banner and render unresolved values as visible markers.
    */
   legal: {
     reviewComplete: false,
@@ -167,7 +90,7 @@ export const brand = {
     dataRegion: null,
     /** Effective date of the current policy version. Set when counsel signs off. */
     policyEffectiveDate: null,
-    /** Billing currency. Nothing is charged in v1, so this is unresolved by design. */
+    /** Billing currency. Nothing is charged yet. */
     currency: null,
   },
 

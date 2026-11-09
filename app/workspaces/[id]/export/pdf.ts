@@ -4,23 +4,11 @@ import type { CaseDocument } from "./document";
 import { provenanceNote } from "./document";
 
 /**
- * The PDF export.
+ * PDF export. Uses pdfkit's standalone build (see `pdfkit-standalone.d.ts`) rather than a
+ * headless browser, to keep memory and image size down on a small VPS.
  *
- * THE IMPORT IS THE STANDALONE BUILD, deliberately — `pdfkit-standalone.d.ts` next to this
- * file explains why the ordinary entry point throws at run time under webpack.
- *
- * PDFKIT, NOT A HEADLESS BROWSER. This runs on a 2 GB VPS alongside Postgres and the app
- * (`docs/product-brief.md` 5). Chromium would roughly double the memory floor and add a
- * ~400 MB image to the deploy for one feature; pdfkit draws the document directly and its
- * peak cost is the document itself.
- *
- * BUILT-IN HELVETICA ONLY. The brand faces are IBM Plex, but embedding them here would mean
- * shipping font binaries into the server bundle for a file nobody reads on our site.
- * pdfkit's built-in cores need no font file at run time, which is also what makes this work
- * inside a bundled Next.js server.
- *
- * The renderer takes the same `CaseDocument` as the Markdown one, so the two cannot say
- * different things about the same case.
+ * Built-in Helvetica only, so no font files are needed at run time. Takes the same
+ * `CaseDocument` as the Markdown renderer.
  */
 
 const MARGIN = 56;
@@ -56,7 +44,6 @@ export function renderCasePdf(caseDoc: CaseDocument): Promise<Buffer> {
         Subject: `Case file exported ${caseDoc.exportedAt}`,
         CreationDate: new Date(caseDoc.exportedAt),
       },
-      // The PDF is the reader's own case file. It carries no outline of anything else.
       autoFirstPage: true,
     });
 
@@ -125,11 +112,7 @@ export function renderCasePdf(caseDoc: CaseDocument): Promise<Buffer> {
         }
       }
 
-      /*
-       * The credit sits WITH the feature, on the same page as the coordinate it belongs to
-       * (ADR 0025, ADR 0011 rule 2). A licence condition satisfied only by a line at the end
-       * of the document is not satisfied for a reader who prints page two.
-       */
+      // Attribution and licence go with each feature, not in a footer (licence terms).
       heading(doc, `Saved from the map — ${caseDoc.counts.features}`, 13);
       if (caseDoc.features.length === 0) {
         body(doc, "No map features saved in this case.", { muted: true });

@@ -1,25 +1,9 @@
--- Hand-trimmed from `drizzle-kit generate`. QA finding QV-09.
+-- Trimmed from `drizzle-kit generate`: 0006 and 0007 are hand-written, so generate re-emitted
+-- their objects. `meta/0008_snapshot.json` has the full end state. Review generate output
+-- before committing it.
 --
--- WHY TRIMMED: migrations 0006 and 0007 are hand-written (the map registry, the saved-feature
--- snapshots, the updated_at triggers), so drizzle's snapshot chain skips them and `generate`
--- re-emits every object they created. Everything below the line it drew that already exists in
--- the database is removed here; `meta/0008_snapshot.json` still records the full end state, so
--- the next `generate` diffs against reality. Do not re-run `generate` and commit the output
--- without reading it.
---
--- THE CHANGE: `connector_requests` recorded one row per governed attempt, and several drivers
--- make more than one outbound request per attempt — six for the DNS driver (one per record
--- type), four for RIPEstat, two plus redirects for a Wayback diff, one plus up to twelve for
--- the NWS adapter's zone warm-up. So the table under-counted outbound volume by a constant
--- factor on those connectors, in the direction that hides a fair-use problem. It is the table
--- that found v1's Q-02 by exactly this kind of arithmetic.
---
--- ADR 0013 is untouched: it forbids recording WHAT WAS ASKED FOR. A count of requests is
--- volume, the same class of fact as `duration_ms`. There is still no column that could hold a
--- path, a query string or a bounding box, and there must never be.
---
--- DEFAULT 1, not 0: a row written by any path that has not been taught to count understates
--- nothing. Application code passes an explicit 0 for the refusals that made no request at all
--- (`disabled`, `quotaDenied`, a cooldown), matching the `duration_ms = 0` convention.
+-- One attempt can make several upstream requests (DNS: one per record type, RIPEstat: four,
+-- etc.), so record the count. This is volume only; never store what was asked for.
+-- DEFAULT 1; app code passes 0 for refusals that made no request.
 ALTER TABLE "connector_requests" ADD COLUMN "upstream_requests" integer DEFAULT 1 NOT NULL;--> statement-breakpoint
 ALTER TABLE "connector_requests" ADD CONSTRAINT "connector_requests_upstream_requests_check" CHECK (upstream_requests >= 0);

@@ -13,16 +13,8 @@ import { isoDay } from "@/components/live/live-format";
 import { formatDate } from "@/lib/utils";
 
 /**
- * `/live` — the landing page for the fourth pillar. sitemap.md §3.
- *
- * ISR:3600, not dynamic. It is our own prose plus the list of published connectors; nothing
- * upstream is touched to render it, so there is no `fetchedAt` on this page and no freshness
- * bar. The two surfaces it links to are the dynamic ones.
- *
- * THE DISTINCTION BELOW IS THE POINT OF THE PAGE. "Anything public" hides a distinction that
- * is doing all the legal work: intentionally published is not the same as merely reachable
- * (ADR 0011). Saying so plainly, and naming what we deliberately do not carry, is a
- * credibility statement for an audience that will check — not a disclaimer.
+ * `/live` landing page. ISR (1h): our own prose plus the published connectors, with no
+ * upstream calls, so no freshness bar.
  */
 
 export const revalidate = 3600;
@@ -38,17 +30,8 @@ type ConnectorSummary = Awaited<ReturnType<typeof listPublishedConnectors>>[numb
 
 export default async function LivePage() {
   /*
-   * ISR means this page is prerendered at build time, and `docker build` deliberately carries
-   * no `DATABASE_URL` (ADR 0018). `buildSafe` substitutes the empty list DURING THE BUILD ONLY
-   * and rethrows at runtime — which is the behaviour we want in both directions. At runtime a
-   * page that cannot reach the database should fail so `error.tsx` renders and the health check
-   * notices; a Live section that quietly claims there are no cameras would be the product
-   * telling its most important truth backwards.
-   *
-   * The empty branch below is therefore a real state, not a blank region: the page's prose is
-   * the point of `/live` and stands on its own, and the source list says plainly that nothing
-   * is configured yet. That is what a first visitor sees before the first revalidation, and it
-   * is a page worth shipping.
+   * `docker build` has no `DATABASE_URL`, so `buildSafe` returns [] during the build only and
+   * rethrows at runtime (so `error.tsx` renders instead of a false "no sources").
    */
   const connectors = await buildSafe("live-index", () => listPublishedConnectors(), []);
   const flights = connectors.filter((c) => c.kind === "flights");
@@ -235,11 +218,8 @@ function ConnectorGroup({
               <CardContent className="space-y-3 text-sm">
                 <div className="flex flex-wrap items-center gap-2">
                   {/*
-                    The kill-switch state is public, because a reader who finds an empty
-                    surface deserves to know it is a decision rather than an outage. The
-                    REASON is not published: `connectors.notes` is operator-facing and may be
-                    a live legal matter (ADR 0012), and a public reason we cannot keep current
-                    is worse than none.
+                    Kill-switch state is public; the reason (`connectors.notes`) is
+                    operator-only and may be legally sensitive.
                   */}
                   {connector.enabled ? (
                     <Badge variant="success">enabled</Badge>

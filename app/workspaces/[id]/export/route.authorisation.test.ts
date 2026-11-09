@@ -17,27 +17,16 @@ import { sessionStore } from "@/tests/db/session";
 import { GET } from "./route";
 
 /**
- * `GET /workspaces/[id]/export`, against a real database. QA finding QV-16.
+ * `GET /workspaces/[id]/export` against a real database. This returns the whole case file,
+ * so it's the most sensitive read in the app.
  *
- * THIS IS THE READ THAT WOULD LEAK MOST. Every other authorisation failure in this product
- * discloses one row; this one assembles the whole case file — title, checklist, every note in
- * the user's own words, every saved tool, every saved observation — and hands it over as a
- * downloadable document. For an investigative journalist or a human-rights researcher that
- * file is the most sensitive artefact the platform holds.
- *
- * It was at 0% coverage, and invisible besides: `app/**` was excluded from the coverage
- * config entirely, so no dashboard has ever reported on this handler. Both are fixed here —
- * the exclusion in `vitest.config.ts`, the coverage in this file.
- *
- * WHAT IS ASSERTED IS THE ORDER OF OPERATIONS, because that is where the security lives:
- * session, then shape, then ownership as a SQL predicate, and only then a byte of the case.
- * A non-owner must get exactly the answer a stranger gets for an id that does not exist.
+ * Asserts the order: session, id shape, ownership in SQL, then content. A non-owner gets
+ * exactly what anyone gets for a nonexistent id.
  */
 
 vi.mock("next-auth", async () => {
   const { sessionStore: store } = await import("@/tests/db/session");
-  // See tests/db/session.ts, and lib/actions/workspaces.authorisation.test.ts for why the
-  // factory does not call `importOriginal()`.
+  // No `importOriginal()`; see tests/db/session.ts.
   return { default: () => store.authModule() };
 });
 
@@ -69,8 +58,7 @@ describeWithDatabase("GET /workspaces/[id]/export — ownership before a single 
   });
 
   beforeEach(async () => {
-    // A fresh pair of users per test: the export limiter is 10/minute keyed on the user id,
-    // and a shared actor would eventually produce 429s that look like authorisation results.
+    // Fresh users per test so the per-user export limiter doesn't leak 429s between tests.
     owner = await createActor();
     stranger = await createActor();
     ownersCase = await createCaseFile(owner.id, catalogue, "Owner case");
@@ -89,8 +77,7 @@ describeWithDatabase("GET /workspaces/[id]/export — ownership before a single 
     expect(response.status).toBe(302);
     const location = response.headers.get("location") ?? "";
     expect(location).toContain("/signin");
-    // The callback names the case page rather than the export, so signing in lands somewhere
-    // a person can act, and the redirect discloses nothing beyond the id already in the URL.
+    // Callback is the case page, not the export.
     expect(location).toContain(encodeURIComponent(`/workspaces/${ownersCase.workspaceId}`));
     expect(await response.text()).not.toContain(ownersCase.noteBody);
   });
@@ -125,9 +112,7 @@ describeWithDatabase("GET /workspaces/[id]/export — ownership before a single 
   });
 
   it("answers an admin who is not the owner with the same 404", async () => {
-    // `role` gates the editorial surface. It has never gated a case file, and an admin
-    // reading somebody's investigation notes is the product holding material it has no
-    // lawful basis for (product-brief §3.2 constraint 3).
+    // `role` gates the editorial surface only, never case files.
     const admin = await createActor("admin");
     sessionStore.signedInAs(admin);
 
@@ -178,14 +163,13 @@ describeWithDatabase("GET /workspaces/[id]/export — ownership before a single 
     expect(body).toContain(ownersCase.title);
     expect(body).toContain(ownersCase.noteBody);
     expect(body).toContain(catalogue.toolName);
-    // A saved observation carries its credit and its licence out of the building with it.
+    // Saved features keep their attribution and licence.
     expect(body).toContain("Fixture attribution");
     expect(body).toContain("Fixture licence");
   });
 
   it("falls back to Markdown for a junk format rather than erroring", async () => {
-    // `exportFormatSchema` is `.catch("md")`: the reader asked for their case file, and the
-    // cheap format is a better answer than an error page.
+    // `exportFormatSchema` is `.catch("md")`.
     sessionStore.signedInAs(owner);
 
     const response = await GET(
@@ -209,15 +193,14 @@ describeWithDatabase("GET /workspaces/[id]/export — ownership before a single 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("application/pdf");
     expect(response.headers.get("content-disposition")).toContain(".pdf");
-    // The magic number, so this asserts a PDF rather than a 200 with a plausible header.
+    // Check the magic number, not just the header.
     expect(String.fromCharCode(...bytes.slice(0, 5))).toBe("%PDF-");
     expect(bytes.byteLength).toBeGreaterThan(1000);
     expect(response.headers.get("content-length")).toBe(String(bytes.byteLength));
   });
 
   it("refuses a stranger's PDF request without rendering one", async () => {
-    // The expensive path is behind the ownership check, so a stranger cannot make this box
-    // run pdfkit at all — the denial-of-service half of QA finding Q-10.
+    // The expensive render is behind the ownership check.
     sessionStore.signedInAs(stranger);
 
     const response = await GET(
@@ -235,16 +218,9 @@ describeWithDatabase("GET /workspaces/[id]/export — ownership before a single 
 
   it("throttles the owner after the export budget is spent, and says when to retry", async () => {
     /*
-     * WRITTEN TO SURVIVE A WINDOW BOUNDARY, and it was not at first — the original asserted
-     * that response number `limit + 1` was a 429 and failed roughly once in fifteen runs.
-     * ADR 0009's windows are fixed and aligned to the epoch rather than to first use, so a
-     * loop that straddles a boundary gets a fresh budget mid-way and the eleventh call
-     * legitimately succeeds. Asserting the exact index was asserting the clock.
-     *
-     * What holds in every window is the property worth testing: at most `limit` exports
-     * succeed before one is refused. So the run of successes immediately before the first
-     * 429 is bounded by `limit`, wherever the boundary falls. Two windows can yield at most
-     * `2 * limit` successes, so a refusal must appear within the attempts allowed here.
+     * Windows are fixed and epoch-aligned, so the loop may straddle a boundary and get a
+     * fresh budget. Assert a 429 arrives within `limit`..`2 * limit` successes rather than
+     * at an exact index.
      */
     sessionStore.signedInAs(owner);
     const budget = RATE_LIMIT_POLICIES["workspace-export"].limit;
@@ -267,15 +243,12 @@ describeWithDatabase("GET /workspaces/[id]/export — ownership before a single 
     const refusedAt = statuses.indexOf(429);
     expect(refusedAt, `no export was ever refused: ${statuses.join(",")}`).toBeGreaterThan(-1);
     expect(statuses.slice(0, refusedAt).every((status) => status === 200)).toBe(true);
-    // The successes since the last window reset. Never more than the budget.
     expect(refusedAt).toBeLessThanOrEqual(budget * 2);
     expect(refusedAt).toBeGreaterThanOrEqual(budget);
   });
 
   it("does not spend a stranger's budget on a case they cannot read", async () => {
-    // The limiter is consumed AFTER the ownership check, deliberately: limiting first would
-    // let a caller distinguish "not yours" from "throttled" and learn the id is real. So a
-    // stranger's refused probes cost them nothing, and their own exports still work.
+    // The limiter runs after the ownership check, so refused probes cost nothing.
     sessionStore.signedInAs(stranger);
     const strangersCase = await createCaseFile(stranger.id, catalogue, "Stranger case");
     const budget = RATE_LIMIT_POLICIES["workspace-export"].limit;

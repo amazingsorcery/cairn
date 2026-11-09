@@ -7,17 +7,11 @@ import type { PlaybookHit, ToolHit } from "@/lib/queries/search";
 import { cn } from "@/lib/utils";
 
 /**
- * A search result row.
+ * Search result rows. `confidence` and `lastVerifiedAt` always render, as everywhere an
+ * entry appears.
  *
- * Architecture HANDOFF §9.1: `confidence` and `lastVerifiedAt` render **everywhere an entry
- * appears**, and a search result row is named in that list explicitly. There is no compact
- * search variant that drops them — `wireframes/04-search.txt`: "same chip, same rules, no
- * exceptions".
- *
- * `confidence` is not a ranking input (ADR 0007 §6): down-ranking `needsReview` would bury
- * exactly the entries a reader most needs to approach sceptically, and would quietly turn a
- * transparency field into an editorial filter. The ordering here is whatever `search()`
- * returned; this file only renders it.
+ * Confidence is not a ranking input (down-ranking `needsReview` would bury the entries
+ * readers most need to see); order is whatever `search()` returned.
  */
 
 function Row({

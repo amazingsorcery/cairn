@@ -3,14 +3,8 @@ import { Loader2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 
 /**
- * The first load of `/live/flights` — one of exactly two spinners in this product
- * (`docs/design/states.md` §0), and it carries text saying what is happening.
- *
- * IT APPEARS ONLY WHEN THERE IS GENUINELY NOTHING TO SHOW. A refresh never reaches here: the
- * current data stays on screen with its age counting up while revalidation happens in the
- * background (ADR 0014 §8). An indeterminate spinner on a refresh keeps asserting that fresh
- * data is arriving even after the upstream has stopped answering, which is the most common
- * way a live interface lies.
+ * First load of `/live/flights` only. Refreshes keep the current data on screen with its age
+ * while revalidating in the background.
  */
 export default function LoadingFlights() {
   return (

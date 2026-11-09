@@ -3,32 +3,14 @@ import type { MapLayerDefinition, Rgba } from "./types";
 import { numberProp } from "./props";
 
 /**
- * A synthetic 10,000-point layer, for measuring frame cost. **Development only.**
+ * Synthetic 10,000-point layer for measuring renderer frame cost. Development only.
  *
- * ## Why this exists
- *
- * The aircraft layer has to hold 10,000+ points without dropping frames, and aircraft are
- * not the first source landing. Without a way to load the renderer now, "deck.gl can do it"
- * stays an assertion until the layer that depends on it is already written. This makes it a
- * measurement: `docs/frontend/HANDOFF-map.md` §5 records what it produced and on what
- * hardware, so a later regression has a number to fail against.
- *
- * ## Why it is also the proof that the registry works
- *
- * This layer was added by writing one file and one line in `index.ts`. No component changed.
- * That is the registry claim, exercised rather than asserted — and `registry.test.ts` fails
- * if any component in `components/map/` ever names a layer id.
- *
- * ## Why it cannot reach a reader
- *
- * `devOnly` is filtered out of `MAP_LAYERS` when `NODE_ENV` is `production`, and its adapter
- * in `app/(public)/map/dev-stress-source.ts` is only resolved under the same condition. Both gates are
- * build-time constants, so the bundler drops the branch entirely. Synthetic data on a
- * shipped path would be fabricated content on a product whose entire value is credibility
- * (product-brief §6); two gates for one dev tool is the right ratio.
+ * `devOnly` is filtered out of `MAP_LAYERS` in production, and its adapter
+ * (`app/(public)/map/dev-stress-source.ts`) is gated the same way; both are build-time
+ * constants, so the code is dropped from production bundles.
  */
 
-/** --slate-450 #74899E and --slate-600 #425468 — deliberately drab. It is not real data. */
+/** --slate-450 #74899E and --slate-600 #425468; drab because it isn't real data. */
 const STRESS_DARK: Rgba = [116, 137, 158, 200];
 const STRESS_LIGHT: Rgba = [66, 84, 104, 200];
 

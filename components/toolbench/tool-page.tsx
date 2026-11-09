@@ -11,18 +11,10 @@ import {
 import { cn } from "@/lib/utils";
 
 /**
- * The frame every Toolbench page is built in.
+ * Layout for every Toolbench page. `technique`, `limits` and `workedExample` are required so
+ * a tool can't ship without them.
  *
- * The four sections below are required props, not optional slots, because the product brief
- * makes them the definition of a finished tool: its own route, an explanation of the
- * technique **and its limits**, a worked example, and a link to the playbook that uses it.
- * Making `technique`, `limits` and `workedExample` mandatory means a tool cannot ship
- * half-built without the type error being the first thing its author sees.
- *
- * Layout follows `docs/frontend/HANDOFF-shell.md` section 3: an 80rem page container, and
- * prose in a 68ch column. The interactive part is allowed the full width because a
- * conversion table with six formats does not fit in a reading measure; the writing around it
- * is not.
+ * 80rem container with prose in a 68ch column; the tool itself gets the full width.
  */
 
 export interface ToolPageProps {
@@ -61,11 +53,8 @@ function Section({
 }
 
 /**
- * The privacy claim, rendered at the top of the page rather than the bottom.
- *
- * Product brief section 2a: client-side operation "must be *stated on each tool page*, not
- * merely true. A journalist deciding whether to upload a source's photograph needs to read
- * that it stays in their browser." A badge in a footer does not do that job.
+ * Where the reader's data goes (in-browser or via our server), shown at the top of the page
+ * so it's read before anything is uploaded.
  */
 export function DataHandlingNotice({ entry }: { entry: ToolbenchEntry }) {
   const inBrowser = entry.dataHandling === "inBrowser";

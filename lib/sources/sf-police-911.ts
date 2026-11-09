@@ -4,54 +4,26 @@ import { defineEmergencyCity, type EmergencyFeature } from "./emergency/socrata"
 import type { SourceAdapter } from "./types";
 
 /**
- * San Francisco Police real-time dispatched calls for service (ADR 0033).
+ * San Francisco Police real-time dispatched calls for service.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * WHY POLICE, NOT FIRE, FOR SAN FRANCISCO
- * ─────────────────────────────────────────────────────────────────────────────
- * ADR 0033 names San Francisco, and the binding rule is **live-only**. SF's *fire/EMS*
- * dataset (nuek-vuh3) publishes **daily** with a multi-hour lag — it is a historical extract,
- * not a live board, and putting it on a live map as "live" would be a false claim about a
- * timestamp. SF's genuinely live dispatch is its **Law Enforcement Dispatched Calls for
- * Service: Real-Time** (gnap-fj3t), published "Multiple times per hour". So San Francisco's
- * live layer is police CAD, which ADR 0033 covers ("US municipal open-data CAD/911"), and the
- * fire dataset is recorded as rejected-for-live in `docs/sources/sf-police-911.md`.
+ * Police rather than fire: SF's fire/EMS dataset (nuek-vuh3) is published daily with hours of
+ * lag, so it isn't live. The police dataset (gnap-fj3t) updates multiple times per hour.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * TERMS CHECK — 2026-09-01. Full record in `docs/sources/sf-police-911.md`.
- * ─────────────────────────────────────────────────────────────────────────────
- * Operator     City & County of San Francisco / SFPD, via data.sfgov.org (Socrata).
- * Licence      Open Data Commons Public Domain Dedication and License (PDDL 1.0), declared in
- *              the dataset metadata. No key gate on the data.
- * Attribution  Rendered anyway: "San Francisco Police real-time dispatch (DataSF, PDDL)".
- * Key          None required. OPTIONAL Socrata `X-App-Token` raises the throttle; the layer
- *              boots without it.
- * Rate limit   Socrata per-IP throttle without a token; unthrottled reasonable use with one.
- *              We poll once per TTL from the worker.
- * Access ctrl  None circumvented: a documented public SODA endpoint.
- * ─────────────────────────────────────────────────────────────────────────────
+ * Terms (checked 2026-09-01):
+ * Licence      ODC PDDL 1.0 (dataset metadata). No key gate.
+ * Key          None. Optional Socrata `X-App-Token` raises the throttle.
+ * Rate limit   Per-IP throttle without a token; one poll per TTL.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * THE PUBLISHER ALREADY REDACTS SENSITIVE CALLS — WE HONOUR IT, NEVER UNDO IT
- * ─────────────────────────────────────────────────────────────────────────────
- * SFPD sets `sensitive_call = true` on calls it judges sensitive and WITHHOLDS their
- * location. On a live fetch (2026-09-01), 52 of 150 rows were sensitive and carried no
- * `intersection_point`. This adapter DROPS every `sensitive_call` row outright — it does not
- * attempt to place it, and it performs no identity resolution to recover what the operator
- * withheld (ADR 0033). What the operator hid stays hidden.
+ * SFPD flags `sensitive_call` rows and withholds their location (52 of 150 in one fetch).
+ * Those rows are dropped; nothing is reconstructed.
  *
- * MEDICAL. Police CAD includes health/behavioural-health calls — welfare checks, "person
- * down", overdoses, 5150 (involuntary psychiatric hold). The classifier catches these and
- * marks them `isMedical`, so the UI keeps them OFF by default exactly as it does Seattle's
- * medic responses. Never dropped, never shown by default.
+ * Health/behavioural-health calls (welfare checks, overdoses, 5150) are marked `isMedical`
+ * and hidden by default.
  */
 
 const SF_POLICE_911_SLUG = "sf-police-911";
 
-/**
- * The SODA endpoint, a module constant. The 500 most recent calls by receive time — a live
- * snapshot. `$order`/`$limit` are ours; nothing from a request is interpolated.
- */
+/** The 500 most recent calls. Constant URL; nothing from a request is interpolated. */
 const RESOURCE_URL =
   "https://data.sfgov.org/resource/gnap-fj3t.json?$order=received_datetime%20DESC&$limit=500";
 
@@ -63,11 +35,7 @@ const pointSchema = z
   })
   .nullish();
 
-/**
- * One dispatched call. `.passthrough()` so an added column cannot break us. `sensitive_call`
- * is required — it is the flag we drop on, and defaulting a missing one to `false` would
- * start plotting calls the operator may have meant to withhold.
- */
+/** One call. `sensitive_call` is required: defaulting it to false could plot withheld calls. */
 const sfRowSchema = z
   .object({
     id: z.string(),
@@ -96,13 +64,13 @@ const city = defineEmergencyCity({
     licence: "ODC Public Domain Dedication and License (PDDL) 1.0",
   },
   resourceUrl: RESOURCE_URL,
-  /** 120s: the data changes "multiple times per hour", so two minutes loses nothing. */
+  /** Data updates multiple times per hour. */
   ttlSeconds: 120,
-  /** Ten minutes stale, then unavailable — a live dispatch board must not freeze silently. */
+  /** Then unavailable, rather than a frozen board. */
   staleWhileRevalidateSeconds: 600,
   rowSchema: sfRowSchema,
   toRecord: (row) => {
-    // The operator withheld this call's location deliberately. Drop it; do not reconstruct.
+    // Location withheld by the operator: drop.
     if (row.sensitive_call) return null;
 
     const coordinates = row.intersection_point?.coordinates ?? [];

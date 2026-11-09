@@ -10,11 +10,8 @@ import { db } from "@/lib/db";
 import { TAG, TTL, cached, cachedByKey } from "./cache";
 
 /**
- * Playbook reads. Public reads filter `status = 'published'` (HANDOFF §7).
- *
- * `/playbooks` is ISR with client-side filtering over a prerendered payload (sitemap.md §2)
- * — there are two orders of magnitude fewer playbooks than tools, so there is no
- * server-side filter surface and no `searchParams` to normalise.
+ * Playbook reads; public reads filter `status = 'published'`. `/playbooks` filters
+ * client-side over a prerendered list (there are few playbooks).
  */
 
 export type PlaybookCard = {
@@ -31,14 +28,7 @@ export type PlaybookCard = {
   stepCount: number;
 };
 
-/**
- * The full published listing. ONE round trip: the step count is a relational aggregate
- * expressed as a nested `with`, and Drizzle's relational API compiles the whole thing into
- * a single statement with a lateral json aggregation.
- *
- * Only step ids are selected for the count — pulling every step's Markdown body to call
- * `.length` on the array would move the entire corpus over the wire to produce an integer.
- */
+/** Published listing in one query. Only step ids are selected for the step count. */
 async function listPlaybooksUncached(): Promise<PlaybookCard[]> {
   const rows = await db.query.playbooks.findMany({
     where: eq(playbooks.status, "published"),
@@ -112,17 +102,9 @@ export type PlaybookDetail = {
 };
 
 /**
- * `/playbooks/[slug]`. Returns null for a draft or a missing slug; the route 404s
- * (HANDOFF §11 assertion 3).
- *
- * ONE round trip. The nested `with` — playbook, steps, each step's tool links, each link's
- * tool — is a single statement. The naive version of this page is the textbook N+1: one
- * query for the playbook, one per step for its tools, one per tool for its row.
- *
- * Tools linked from a step are NOT filtered to `published` here. A step that cites a tool
- * which has since been unpublished must still render the citation, because the method still
- * says to use it; the UI renders an unpublished citation as plain text without a link. The
- * alternative — silently dropping the tool — changes what the method says.
+ * `/playbooks/[slug]`, or null for a draft or missing slug. Playbook, steps and linked tools
+ * in one query (avoids N+1). Linked tools are fetched with `status` and unpublished ones are
+ * dropped in the mapping below.
  */
 async function getPlaybookBySlugUncached(slug: string): Promise<PlaybookDetail | null> {
   const row = await db.query.playbooks.findFirst({
@@ -187,11 +169,7 @@ async function getPlaybookBySlugUncached(slug: string): Promise<PlaybookDetail |
   };
 }
 
-/**
- * Carries the `tools` tag as well as its own, because the page renders the name and summary
- * of every tool linked from every step: republishing a tool must refresh the playbooks that
- * cite it (caching.md §4).
- */
+/** Also tagged `tools`, since the page renders linked tools' names and summaries. */
 export const getPlaybookBySlug = cachedByKey(
   getPlaybookBySlugUncached,
   ["playbook-by-slug"],
@@ -199,13 +177,7 @@ export const getPlaybookBySlug = cachedByKey(
   TTL.hour,
 );
 
-/**
- * The steps of a published playbook, in order, for deriving a workspace checklist. Not
- * cached: it is read once at workspace creation, inside the same transaction as the write.
- *
- * Published only. Starting a case from a draft playbook would expose unpublished editorial
- * work through a side door.
- */
+/** Steps of a published playbook, in order, for deriving a workspace checklist. Uncached. */
 export async function getPublishedPlaybookSteps(playbookId: string) {
   return db
     .select({

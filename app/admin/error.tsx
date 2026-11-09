@@ -5,13 +5,8 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 
 /**
- * The editorial surface's error boundary. `states.md` §0: two sentences, what happened then
- * what to do, and a real control.
- *
- * AN AUTHORISATION FAILURE NEVER REACHES HERE. `requireEditorPage()` and `requireAdminPage()`
- * call `notFound()`, which renders the 404 rather than throwing — a non-editor must not be
- * able to tell an admin route from a typo. This boundary is for a genuine failure: a database
- * that did not answer, or a render that threw.
+ * Admin error boundary, for DB or render failures only. Auth failures never reach here:
+ * the guards call `notFound()` so a non-editor can't tell an admin route from a typo.
  */
 export default function AdminError({ reset }: { error: Error; reset: () => void }) {
   return (

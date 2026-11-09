@@ -9,13 +9,7 @@ import { formatDate } from "@/lib/utils";
 import { isoDate } from "./dates";
 
 /**
- * One case on `/workspaces`.
- *
- * The counts are the whole point of this row: a researcher returning after a fortnight is
- * asking "how far did I get", and answering that here saves opening three cases to find
- * out. They are `.tabular` so the column aligns.
- *
- * The status badge is `outline`/`muted`, never a colour that reads as a judgement. An
+ * One case on `/workspaces`, with progress counts. The status badge stays neutral; an
  * archived case is not a warning.
  */
 
@@ -63,8 +57,7 @@ export function CaseCard({ workspace }: { workspace: WorkspaceSummary }) {
             </Link>
           </p>
         ) : workspace.playbookTitle ? (
-          // The playbook was unpublished or deleted. The case keeps its provenance and
-          // loses only the link (ADR 0008).
+          // Playbook unpublished or deleted: keep the title, drop the link.
           <p className="text-sm text-foreground-secondary">from {workspace.playbookTitle}</p>
         ) : null}
 

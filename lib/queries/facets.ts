@@ -6,23 +6,15 @@ import { directoryCacheKey, type DirectoryFilters } from "@/lib/validation/filte
 import { TAG, TTL, cached } from "./cache";
 
 /**
- * Facet counts for `/directory`.
- *
- * In its own module rather than in `tools.ts` because it is a different kind of read: one
- * statement whose whole job is arithmetic about the filter rail, with no row projection and
- * no pagination. Keeping it separate also keeps the fact that it is INDEPENDENTLY FAILABLE
- * visible at the import site — `states.md` §2.5 renders the facet list without counts, so a
- * caller composes this with `listTools` via `Promise.allSettled`.
+ * Facet counts for `/directory`. Separate from `tools.ts` because it can fail independently:
+ * callers pair it with `listTools` via `Promise.allSettled` and render facets without counts.
  */
 
 export type FacetCount = { value: string; count: number };
 
 /**
- * How many published tools each facet value would yield under the filters currently applied.
- *
- * Every list is sorted by descending count, then by value — so the most useful option is
- * first and the order is deterministic between requests. A facet rail that reshuffles on
- * every render is unusable.
+ * Published-tool count per facet value under the current filters. Sorted by count desc, then
+ * value, so the order is stable between requests.
  */
 export type DirectoryFacetCounts = {
   cost: FacetCount[];
@@ -33,7 +25,7 @@ export type DirectoryFacetCounts = {
   tag: FacetCount[];
 };
 
-/** The all-empty shape, for a caller rendering `states.md` §2.5 after a rejection. */
+/** Empty counts, for rendering facets without counts after a failure. */
 export const NO_FACET_COUNTS: DirectoryFacetCounts = Object.freeze({
   cost: [],
   confidence: [],
@@ -46,38 +38,17 @@ export const NO_FACET_COUNTS: DirectoryFacetCounts = Object.freeze({
 type FacetRow = { facet: string; value: string; n: string };
 
 /**
- * ── THE RULE THAT MAKES THE NUMBERS BEHAVE ──────────────────────────────────
- * **Each facet is excluded from its own count.** Counting `cost` applies the query, the
- * category, the tags, the confidence and both type filters — but NOT the cost filter.
+ * Each facet is excluded from its own count, so selecting `cost=free` still shows how many
+ * results other cost models would give. Predicates match `listTools`.
  *
- * Without that, selecting `cost=free` would show `free 56` and every other cost model at
- * `0`, because the only rows left in the set are free ones. A reader would conclude nothing
- * else exists, when what the number should tell them is "switching to freemium gives you
- * 27". Counts exist to answer *"what happens if I change this one thing"*, and that question
- * is only answerable if the facet is held out of its own arithmetic.
- *
- * Within a facet values are OR-ed and across facets they are AND-ed — exactly what the
- * `= any(…)` and `@> …` predicates in `listTools` already do — so each facet's count is
- * computed against precisely the set that facet is choosing from.
- *
- * ── COST: ONE ROUND TRIP ────────────────────────────────────────────────────
- * One statement. A CTE evaluates each filter predicate ONCE per row as a boolean column, and
- * six `UNION ALL` branches aggregate with all the *other* predicates applied. The obvious
- * alternative — one query per facet, each re-running the whole predicate set — is six round
- * trips and six copies of the same filter logic, which is where the copies drift apart.
- *
- * `input_types`, `output_types` and the aggregated tag slugs are arrays, so those branches
- * `unnest` and count per unnested value. That is the right unit: a tool with three input
- * types contributes one to each of three counts.
- *
- * Raw SQL through the `sql` tag, because neither the boolean-flag CTE, nor `unnest`, nor the
- * `UNION ALL` shape has a builder equivalent. Every value below is a bound parameter.
+ * One query: a CTE computes each predicate once as a boolean, and one `UNION ALL` branch per
+ * facet applies the others. Array columns are unnested and counted per value. Raw SQL since
+ * the builder can't express this; all values are bound parameters.
  */
 async function getDirectoryFacetCountsUncached(
   filters: DirectoryFilters,
 ): Promise<DirectoryFacetCounts> {
-  // The same NULL-for-empty convention as `listToolsUncached`, so the counts and the results
-  // agree by construction rather than by coincidence.
+  // Same NULL-for-empty convention as `listToolsUncached`.
   const q = filters.q || null;
   const category = filters.category ?? null;
   const tagList = filters.tags.length > 0 ? filters.tags : null;
@@ -161,8 +132,7 @@ async function getDirectoryFacetCountsUncached(
   };
 
   for (const row of rows.rows) {
-    // `count(*)` is a bigint, which node-postgres hands over as a string rather than
-    // silently losing precision past 2^53.
+    // node-postgres returns bigint `count(*)` as a string.
     bucket[row.facet]?.push({ value: row.value, count: Number(row.n) });
   }
 
@@ -174,13 +144,8 @@ async function getDirectoryFacetCountsUncached(
 }
 
 /**
- * Cached on the same normalised filter tuple and under the same tags as `listTools`, so the
- * results and their counts are invalidated together and cannot disagree.
- *
- * `states.md` §2.5 permits rendering the facet list WITHOUT counts, so treat this as
- * independently failable: `Promise.allSettled` alongside `listTools`, and on rejection render
- * the checkboxes bare with "Result counts are unavailable right now. The filters still work."
- * Counts are an affordance; results are the page.
+ * Cached with the same key and tags as `listTools` so counts and results invalidate together.
+ * If this rejects, render the checkboxes without counts.
  */
 export async function getDirectoryFacetCounts(
   filters: DirectoryFilters,

@@ -16,63 +16,29 @@ import type {
 /**
  * NOAA / National Weather Service active alerts — watches, warnings and advisories.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * TERMS CHECK — 2026-08-31. Full record in `docs/sources/nws-alerts.md`.
- * ─────────────────────────────────────────────────────────────────────────────
- * Licence      US Government public domain. weather.gov/documentation/services-web-api
- *              (read 2026-08-31): "All of the information presented via the API is intended
- *              to be open data, free to use for any purpose."
+ * Terms (checked 2026-08-31):
+ * Licence      US Government public domain; "free to use for any purpose".
  * Key          None.
- * User-Agent   REQUIRED, and this is the one upstream here that enforces it. The docs ask for
- *              an identifying string with contact details — see `sourceUserAgent()` in
- *              `http.ts`.
- * Rate limit   Not published: "The rate limit is not public information, but allows a
- *              generous amount for typical use." Their words. With no number to respect, the
- *              TTL is set conservatively (60s) and one shared poll serves every reader, so
- *              our total traffic is one request per minute regardless of audience size.
- *              Note their warning that "proxies are more likely to reach the limit" — we are
- *              a proxy by their definition, which is a reason to poll slowly, not quickly.
- * Access ctrl  None circumvented. Documented public endpoints, no auth, no scraping.
- * ─────────────────────────────────────────────────────────────────────────────
+ * User-Agent   Required (identifying string with contact); see `sourceUserAgent()`.
+ * Rate limit   Unpublished ("generous"), and proxies like us hit it sooner, so TTL is 60s
+ *              with one shared poll for all readers.
  *
- * THE PROBLEM THIS ADAPTER EXISTS TO SOLVE, measured 2026-08-31:
+ * Only ~1.3% of active alerts carry inline geometry; the rest give only UGC zone codes. So
+ * zones are resolved to a point, gently:
+ *   - one single-zone request per zone (~19 KB);
+ *   - zones are effectively static, so results are cached in `SourceContext.cache`;
+ *   - at most `MAX_ZONE_LOOKUPS_PER_POLL` new zones per poll, so coverage fills in over
+ *     several polls instead of a ~700-request burst;
+ *   - a zone with no usable geometry is cached as a miss.
  *
- *   Of 385 active alerts, **five** carried inline GeoJSON geometry. 1.3%.
- *
- * The other 380 identify their area only by UGC zone code (`AZC019`, `ANZ338`). An adapter
- * that emitted just the polygon-bearing alerts would render a weather layer showing 1% of
- * American weather warnings while looking complete — the specific kind of confidently-wrong
- * output that product-brief §6 says destroys the product's credibility. So zones are
- * resolved to a point, and the constraint is doing it without hammering a service whose rate
- * limit is unpublished:
- *
- *   - Zone geometry comes only from the single-zone endpoint, one call per zone (~19 KB).
- *   - Zone boundaries are effectively static — the payloads carry `expirationDate` of
- *     2200-01-01 — so a resolved zone is cached in `SourceContext.cache` and not re-fetched.
- *   - At most `MAX_ZONE_LOOKUPS_PER_POLL` unseen zones are resolved per poll. Coverage fills
- *     in over the first several polls instead of arriving as a 700-request burst; steady
- *     state costs zero extra calls. QA finding Q-02 was a burst, and this is what not
- *     repeating it looks like.
- *   - A zone that answers with no usable geometry is cached as a permanent miss, so a retired
- *     code is not retried forever. A *transport* failure is deliberately NOT cached, or one
- *     bad network moment would blind us to a zone until the entry expired.
- *
- * The cache is the shared one passed in through `SourceContext` rather than a map this
- * adapter owns. One store instead of two is what lets the whole zone map be resolved once for
- * the life of the process instead of once per poll.
- *
- * IT IS NOT DURABLE, and this comment used to say it was (QA finding QV-31). ADR 0031 removed
- * the shared store ADR 0019 had planned, so `SourceContext.cache` is a per-process map: a
- * deploy empties it and this layer is then progressively incomplete for the first few polls
- * while it re-warms. That is silent incompleteness, which is the failure this adapter was
- * written to make loud — so it is written down here and in `docs/sources/HANDOFF.md` §4
- * rather than left for an operator to notice from a thin map after a release.
+ * `SourceContext.cache` is per-process, so after a deploy the layer is incomplete for the
+ * first few polls while it re-warms.
  */
 
 const ALERTS_URL = "https://api.weather.gov/alerts/active?status=actual";
 const ZONE_BASE = "https://api.weather.gov/zones";
 
-/** Bounded per-poll zone warm-up. See the burst note above. */
+/** Bounded per-poll zone warm-up. */
 const MAX_ZONE_LOOKUPS_PER_POLL = 12;
 
 /** A zone lookup is small and static; it does not deserve the full request budget. */
@@ -123,10 +89,7 @@ const alertFeatureSchema = z
   })
   .passthrough();
 
-/**
- * `features` and `updated` are required. Defaulting either would let an unrelated document
- * parse as "no weather warnings anywhere", which on this layer is the worst possible lie.
- */
+/** `features` and `updated` are required so an unrelated document can't parse as "no alerts". */
 export const nwsAlertsResponseSchema = z
   .object({
     type: z.string(),
@@ -161,32 +124,18 @@ const zonePointSchema = z.object({
 });
 type ZonePoint = z.infer<typeof zonePointSchema>;
 
-/**
- * The shared map of UGC code to point, stored as ONE cache entry.
- *
- * One entry rather than one key per zone, deliberately: ~700 zones at roughly 60 bytes each is
- * about 45 KB, which is one GET and an occasional SET per poll instead of seven hundred
- * sequential round trips. `null` is a cached permanent miss.
- */
+/** UGC code -> point, stored as one cache entry (~45 KB) rather than one key per zone. `null` is a miss. */
 const zoneMapSchema = z.record(z.string(), zonePointSchema.nullable());
 type ZoneMap = Record<string, ZonePoint | null>;
 
 const ZONE_CACHE_KEY = cacheKey(NWS_ALERTS_SLUG, "zone-points");
 
-/**
- * 30 days. Zone boundaries are effectively static, but NWS does revise them a few times a
- * year, and an entry that never expires is an entry nobody ever notices is wrong.
- */
+/** 30 days: zones are near-static but NWS revises them a few times a year. */
 const ZONE_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60;
 
 /**
- * The per-call view of the zone map.
- *
- * `normalise` is synchronous by contract, so it cannot await a cache read. `fetch` loads the
- * shared map once per poll and installs it here before mapping. This is a read-through view
- * of `SourceContext.cache`, **not** a second source of truth — the distinction that matters,
- * because the previous version's adapter-owned map *was* the source of truth, so nothing
- * outlived one call. Both are emptied by a restart; only one of them is emptied every poll.
+ * In-memory view of the zone map. `normalise` is synchronous, so `fetch` loads the shared
+ * map from `SourceContext.cache` into this view before mapping.
  */
 const globalForZones = globalThis as typeof globalThis & { __cairnNwsZones__?: ZoneMap };
 function currentZoneMap(): ZoneMap {
@@ -194,10 +143,8 @@ function currentZoneMap(): ZoneMap {
 }
 
 /**
- * UGC codes are two letters, then `C` (county) or `Z` (forecast/marine zone), then three
- * digits. The regex is not tidiness: this string is interpolated into a URL we then fetch
- * server-side, which is the SSRF shape ADR 0019 calls v2's top risk. Anything that does not
- * match this exact form never reaches `fetch`.
+ * UGC: two letters, `C` (county) or `Z` (zone), three digits. Enforced because the code is
+ * interpolated into a server-side fetch URL.
  */
 const UGC_PATTERN = /^[A-Z]{2}[CZ]\d{3}$/;
 
@@ -244,19 +191,13 @@ async function fetchZone(ugc: string, ctx: SourceContext): Promise<ZonePoint | n
   return { ...point, name: parsed.data.properties.name ?? null };
 }
 
-/**
- * Load the shared zone map — `SourceContext.cache`, a per-process store — into the
- * per-call view.
- *
- * A cache miss or a malformed entry is a cold start, not an error: the warm-up refills it a
- * dozen zones at a time.
- */
+/** Load the shared zone map into the view. A miss or bad entry is just a cold start. */
 async function loadZoneMap(cache: SourceCache): Promise<void> {
   const stored = await getJson(cache, ZONE_CACHE_KEY, zoneMapSchema);
   if (!stored) return;
   const current = currentZoneMap();
   for (const [ugc, point] of Object.entries(stored)) {
-    // A zone resolved during THIS process wins over the stored copy: it is at least as fresh.
+    // Zones resolved in this process win over the stored copy.
     if (!(ugc in current)) current[ugc] = point;
   }
 }
@@ -285,9 +226,8 @@ export interface WeatherAlertFeature extends SourceFeature {
     /** What the public is told to do: Shelter, Evacuate, Avoid, Monitor, None. */
     readonly recommendedResponse: string | null;
     /**
-     * HOW the point was derived, so the UI can say so. `polygon` is the alert's own warning
-     * polygon; `zone` is the centroid of the administrative zone it names, which can be tens
-     * of kilometres from where the weather actually is.
+     * How the point was derived: `polygon` (the alert's own polygon) or `zone` (centroid of
+     * the named zone, possibly tens of km off).
      */
     readonly locationBasis: "polygon" | "zone";
     /** The UGC zone the point came from, when the basis is `zone`. */
@@ -299,12 +239,7 @@ export interface WeatherAlertFeature extends SourceFeature {
 
 type AlertsPayload = z.infer<typeof nwsAlertsResponseSchema>;
 
-/**
- * Map validated alerts to features, using whatever the per-call zone view holds.
- *
- * Synchronous by contract, so it performs no I/O — which is also what makes it testable
- * against the captured payload: prime the zone map, map the fixture, assert.
- */
+/** Map validated alerts using the in-memory zone view. No I/O. */
 function mapNwsAlerts(data: AlertsPayload, query: SourceQuery): readonly WeatherAlertFeature[] {
   const zoneMap = currentZoneMap();
   const features: WeatherAlertFeature[] = [];
@@ -318,8 +253,7 @@ function mapNwsAlerts(data: AlertsPayload, query: SourceQuery): readonly Weather
     let zoneCode: string | null = null;
 
     if (!position) {
-      // First zone we have already resolved. Alerts routinely name dozens; one marker on the
-      // first known zone is honest as long as `coversMultipleZones` says there are more.
+      // Place on the first resolved zone; `coversMultipleZones` flags the rest.
       for (const code of zones) {
         const cached = zoneMap[code];
         if (cached) {
@@ -331,8 +265,7 @@ function mapNwsAlerts(data: AlertsPayload, query: SourceQuery): readonly Weather
       }
     }
 
-    // No polygon and no resolved zone yet: omit rather than guess. It appears in a later poll
-    // once the zone has been warmed.
+    // Not placeable yet; appears once its zone is warmed.
     if (!position) continue;
 
     const feature: WeatherAlertFeature = {
@@ -361,8 +294,7 @@ function mapNwsAlerts(data: AlertsPayload, query: SourceQuery): readonly Weather
       },
     };
 
-    // The endpoint returns all active US alerts and cannot filter by area, so the viewport is
-    // applied here.
+    // The endpoint can't filter by area.
     if (!withinBbox(feature, query)) continue;
     features.push(feature);
   }
@@ -378,10 +310,7 @@ function observedAtFrom(data: AlertsPayload, receivedAt: Date): Date {
 /** Public mapper, for tests against a captured fixture. Validates, then maps. */
 export const normaliseNwsAlerts = normaliseVia(nwsAlertsResponseSchema, mapNwsAlerts);
 
-/**
- * Zones named by this payload that we have never looked up. Exported because it is the piece
- * worth testing directly: the warm-up must be bounded and must not re-request known zones.
- */
+/** Zones in this payload not yet looked up, bounded by `limit`. Exported for tests. */
 export function unresolvedZones(
   raw: unknown,
   limit = MAX_ZONE_LOOKUPS_PER_POLL,
@@ -394,8 +323,7 @@ export function unresolvedZones(
   for (const item of parsed.data.features) {
     if (item.geometry) continue;
     const zones = (item.properties.geocode?.UGC ?? []).filter((code) => UGC_PATTERN.test(code));
-    // Only the FIRST zone of each alert: that is all the mapper needs to place a marker, and
-    // resolving every zone of a 40-county flood watch would spend the whole budget on one alert.
+    // Only each alert's first zone; that's all the mapper needs.
     const first = zones[0];
     if (!first) continue;
     if (first in zoneMap) continue;
@@ -420,17 +348,9 @@ export const nwsAlerts: SourceAdapter<WeatherAlertFeature> = {
     href: "https://www.weather.gov/",
     licence: "public domain (US Government)",
   },
-  /**
-   * The upstream sends `Cache-Control: max-age=2`, which is a CDN directive rather than an
-   * invitation to poll twice a second. 60s is our own conservative floor against an
-   * unpublished limit, and it is well inside the useful life of a warning measured in tens
-   * of minutes.
-   */
+  /** Upstream's `max-age=2` is a CDN hint; 60s is our conservative floor. */
   ttlSeconds: 60,
-  /**
-   * Ten minutes. A warning that has since been cancelled is actively dangerous to display,
-   * which argues for a short horizon even though the alerts themselves last hours.
-   */
+  /** Short, since showing a cancelled warning is dangerous. */
   staleWhileRevalidateSeconds: 600,
   responseSchema: nwsAlertsResponseSchema,
   normalise: normaliseNwsAlerts,
@@ -441,8 +361,7 @@ export const nwsAlerts: SourceAdapter<WeatherAlertFeature> = {
       url: ALERTS_URL,
       signal: ctx.signal,
       headers: { accept: "application/geo+json" },
-      // The full active-alert collection was 1.6 MB on 2026-08-31. The cap is above that
-      // with room, and well below anything that would trouble the worker.
+      // The full collection was ~1.6 MB.
       maxBytes: 8 * 1024 * 1024,
     });
     if (!outcome.ok) {
@@ -459,10 +378,7 @@ export const nwsAlerts: SourceAdapter<WeatherAlertFeature> = {
       return { ok: false, failure: parsed.failure, lastGoodAt: lastGoodAt(NWS_ALERTS_SLUG) };
     }
 
-    /**
-     * Load the shared zone map, then warm a bounded slice of it BEFORE mapping, so zones
-     * resolved on this poll place their alerts now rather than next time.
-     */
+    // Warm zones before mapping so newly resolved ones place their alerts this poll.
     await loadZoneMap(ctx.cache);
 
     const wanted = unresolvedZones(parsed.data);

@@ -2,37 +2,18 @@ import { brand } from "@/config/brand";
 import { cn } from "@/lib/utils";
 
 /**
- * The two brand marks, inlined as React components.
- *
- * Inlined rather than `<img src="/logo.svg">` for two reasons, both from
- * `docs/brand/logo/README.md` §3 and `docs/brand/HANDOFF.md` §5:
- *
- *   1. Both marks are drawn in `currentColor` and have no colour of their own. An `<img>`
- *      is an independent document and cannot inherit the page's `color`, so the theme
- *      toggle would not reach them.
- *   2. They cost no HTTP request. The header is on every page of the product.
- *
- * The `<title>` element from the source SVGs is stripped, as the handoff requires: the
- * accessible name comes from `brand.name`, so a rename stays a one-file change. Where the
- * mark sits beside the name in text it is `aria-hidden` instead, because announcing the
- * product name twice is noise.
- *
- * Geometry is copied verbatim from `docs/brand/logo/monogram.svg` and
- * `docs/brand/logo/wordmark.svg`. If either file changes, change it here in the same
- * commit — these are the only two places the mark exists.
+ * Brand marks as inline SVG, so they inherit `currentColor` from the theme and cost no
+ * request. The accessible name comes from `brand.name`; beside visible text the mark is
+ * `aria-hidden`.
  */
 
 interface MarkProps {
   /**
-   * Rendered size. The measured minimums are 16px for the monogram and 24px tall for the
-   * wordmark (`logo/README.md` §2). Prefer multiples of 8 for the monogram: at 20px the
-   * 2-unit gaps between the stones land on 1.25 device pixels and go soft.
+   * Rendered size. Minimums: 16px monogram, 24px tall wordmark. Prefer multiples of 8 for
+   * the monogram; other sizes blur the gaps.
    */
   className?: string;
-  /**
-   * `true` when the mark sits beside the product name in text, so the name is not
-   * announced twice. `false` when the mark is the only thing carrying the name.
-   */
+  /** `true` when the product name is already visible beside the mark. */
   decorative?: boolean;
 }
 
@@ -58,10 +39,7 @@ export function Monogram({ className, decorative = false }: MarkProps) {
   );
 }
 
-/**
- * The name in drawn letterforms. There is no `<text>` element and no font dependency, so
- * the mark renders identically on a machine with no fonts installed. Minimum 24px tall.
- */
+/** The name as drawn paths (no font dependency). Minimum 24px tall. */
 export function Wordmark({ className, decorative = false }: MarkProps) {
   return (
     <svg
@@ -86,12 +64,8 @@ export function Wordmark({ className, decorative = false }: MarkProps) {
 }
 
 /**
- * The header lockup: monogram plus the name set in the interface face.
- *
- * The wordmark is deliberately *not* used here. At header scale the drawn letterforms sit
- * next to nav labels in IBM Plex Sans, and two different renderings of the same alphabet
- * inches apart reads as a mistake. The wordmark's place is the Open Graph card and any
- * future print or presentation surface, where it stands alone.
+ * Header lockup: monogram plus the name in the UI font. The wordmark is for standalone
+ * use (e.g. the Open Graph card), not next to nav text.
  */
 export function BrandLockup({ className }: { className?: string }) {
   return (

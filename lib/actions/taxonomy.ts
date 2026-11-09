@@ -26,20 +26,9 @@ import {
 } from "./search-keywords";
 
 /**
- * Taxonomy mutations. `/admin/taxonomy` is admin-only (sitemap.md §8).
- *
- * THIS IS THE FILE WHERE THE FAN-OUT MATTERS MOST, and where getting it wrong is completely
- * silent. A category or tag NAME is part of every affected row's `search_keywords`
- * (search.md §3), which feeds the generated `search_vector`. Rename a tag without
- * recomputing and:
- *
- *   - the tool is still findable by the OLD tag name, which no longer exists anywhere;
- *   - the tool is NOT findable by the new one;
- *   - nothing errors, no page breaks, and no test that does not search for the new name
- *     will notice.
- *
- * HANDOFF §11 assertion 6 exists precisely for this. Every rename below recomputes in the
- * SAME TRANSACTION as the rename.
+ * Taxonomy mutations (admin-only for categories). Category and tag names feed
+ * `search_keywords`, so every rename recomputes affected rows in the same transaction;
+ * otherwise search silently keeps the old name.
  */
 
 export async function createCategory(input: unknown): Promise<ActionResult<{ id: string }>> {
@@ -61,12 +50,8 @@ export async function createCategory(input: unknown): Promise<ActionResult<{ id:
 }
 
 /**
- * Rename or re-describe a category.
- *
- * The rename fans out to EVERY tool AND EVERY playbook in the category — both tables carry
- * the category name in `search_keywords` (HANDOFF §4). Both recomputes are set-based
- * `UPDATE … FROM` statements, so a category with two hundred tools is two statements, not
- * two hundred.
+ * Update a category. A rename recomputes every tool and playbook in it (set-based, two
+ * statements).
  */
 export async function updateCategory(input: unknown): Promise<ActionResult<{ id: string }>> {
   return guard("category.update", async () => {
@@ -94,7 +79,7 @@ export async function updateCategory(input: unknown): Promise<ActionResult<{ id:
 
       if (!row) return null;
 
-      // Same transaction as the rename. HANDOFF §4, search.md §3.
+      // Same transaction as the rename.
       if (before.name !== fields.name) {
         await recomputeToolSearchKeywords(tx, await toolIdsForCategories(tx, [id]));
         await recomputePlaybookSearchKeywords(tx, await playbookIdsForCategories(tx, [id]));
@@ -119,12 +104,8 @@ export async function updateCategory(input: unknown): Promise<ActionResult<{ id:
 }
 
 /**
- * Delete a category.
- *
- * `tools.category_id` and `playbooks.category_id` are `ON DELETE RESTRICT`, so a category
- * with content in it cannot be deleted. That produces a 23503, which `guard` turns into a
- * readable sentence. The restrict is correct: a category is a required field on both
- * tables, so cascading would delete content and setting null is not possible.
+ * Delete a category. `ON DELETE RESTRICT` blocks non-empty categories with a 23503, which
+ * `guard` turns into a message.
  */
 export async function deleteCategory(input: unknown): Promise<ActionResult<{ id: string }>> {
   return guard("category.delete", async () => {
@@ -151,10 +132,7 @@ export async function deleteCategory(input: unknown): Promise<ActionResult<{ id:
   });
 }
 
-/**
- * Reorder categories. ONE statement — `unnest … WITH ORDINALITY` joined against the table.
- * No fan-out: `sort_order` is not part of `search_keywords`.
- */
+/** Reorder categories in one statement. No keyword fan-out needed. */
 export async function reorderCategories(input: unknown): Promise<ActionResult<{ count: number }>> {
   return guard("category.reorder", async () => {
     await requireAdmin();
@@ -201,14 +179,7 @@ export async function createTag(input: unknown): Promise<ActionResult<{ id: stri
   });
 }
 
-/**
- * Rename a tag — HANDOFF §11 assertion 6, the fan-out that is easiest to forget.
- *
- * "Renaming a tag updates `search_keywords` on every tool carrying it, and the tool is still
- * findable by the new tag name." The tool ids are collected and recomputed inside the same
- * transaction as the rename, so search can never observe a tag name that no tool's keywords
- * contain.
- */
+/** Update a tag. A rename recomputes `search_keywords` on every tool carrying it. */
 export async function updateTag(input: unknown): Promise<ActionResult<{ id: string }>> {
   return guard("tag.update", async () => {
     await requireEditor();
@@ -258,9 +229,8 @@ export async function updateTag(input: unknown): Promise<ActionResult<{ id: stri
 }
 
 /**
- * Delete a tag. `tool_tags` cascades, so the tools survive — but their `search_keywords`
- * still contain the deleted tag's name until recomputed, which would keep them findable by a
- * tag that no longer exists. Collected before the delete, recomputed after, one transaction.
+ * Delete a tag. `tool_tags` cascades; affected tools are collected first and recomputed after
+ * so their keywords drop the old name.
  */
 export async function deleteTag(input: unknown): Promise<ActionResult<{ id: string }>> {
   return guard("tag.delete", async () => {
@@ -278,7 +248,7 @@ export async function deleteTag(input: unknown): Promise<ActionResult<{ id: stri
 
       if (!before) return null;
 
-      // Collected BEFORE the cascade removes the `tool_tags` rows that identify them.
+      // Before the cascade removes the `tool_tags` rows.
       const affectedTools = await toolIdsForTags(tx, [before.id]);
 
       await tx.delete(tags).where(eq(tags.id, before.id));

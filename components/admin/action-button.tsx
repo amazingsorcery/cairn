@@ -8,14 +8,9 @@ import { cn } from "@/lib/utils";
 import type { ActionResult } from "@/lib/actions/result";
 
 /**
- * A Server Action behind one button, for the reversible operations that do not warrant a
- * dialog — publish, unpublish, switch a connector back on.
- *
- * A FAILURE IS SHOWN, NEVER SWALLOWED. `publishTool` and `publishCamera` fail when the
- * database's publish gate refuses the row, and the whole point of that gate is that the
- * editor is told which field is missing rather than watching a button do nothing
- * (states.md §11.3). The message rendered here is the one `guard()` mapped from the
- * constraint name; the constraint name itself never reaches the screen.
+ * One-button Server Action for reversible operations (publish, unpublish, re-enable).
+ * Failures are always shown, e.g. the publish gate naming a missing field; the message is
+ * the one `guard()` mapped, never the raw constraint name.
  */
 
 export interface ActionButtonProps {
@@ -59,10 +54,7 @@ export function ActionButton({
       >
         {pending ? pendingLabel : label}
       </Button>
-      {/*
-        The message is announced as well as shown. An editor who submits with the keyboard and
-        does not move their focus would otherwise get no signal that the write was refused.
-      */}
+      {/* role="alert" so keyboard users hear the refusal without moving focus. */}
       {error ? (
         <span role="alert" className="max-w-prose text-sm text-destructive">
           {error}

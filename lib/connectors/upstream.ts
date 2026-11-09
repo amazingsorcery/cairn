@@ -7,57 +7,21 @@ import { isPinnedHost } from "@/lib/toolbench/net-target";
 import { parseRetryAfter, UpstreamStatusError } from "./runtime";
 
 /**
- * THE ONE PLACE IN `lib/connectors/` THAT OPENS A SOCKET.
+ * The only place in `lib/connectors/` that opens a socket
+ * (`tests/security/outbound-primitive.test.ts` fails if another file calls `fetch`).
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * WHY THIS IS ITS OWN FILE — QA finding QV-03, reopened
- * ─────────────────────────────────────────────────────────────────────────────
- * `upstreamGet` lived in `lib/connectors/toolbench.ts`, and four of the six drivers used it.
- * `overpass.ts` and `flights.ts` called `globalThis.fetch` themselves, so neither the byte
- * cap nor the redirect pin nor the outbound tally applied to them at all. QA measured 513 MiB
- * pulled through the Overpass path — whose request body is a reader-supplied query — against
- * the 5 MiB the capped path stops at, and asserted that both sent the runtime's default
- * `redirect: "follow"` with no host re-pin, which is QV-18 arriving inside the layer whose
- * own comment rejects it.
+ *  1. Host pinned before the request and on every redirect hop (`redirect: "manual"`), so an
+ *     open redirect upstream can't become an SSRF.
+ *  2. Body capped while streaming, so a missing or misleading `Content-Length` can't exhaust
+ *     memory.
+ *  3. Every hop counted for the audit row.
  *
- * The helper was correct. It was simply not the only route to the socket. So it now lives in
- * a file whose entire purpose is to be that route, and `tests/security/outbound-primitive.test.ts`
- * reads the source of every other file in this directory and fails the build if one of them
- * calls `fetch`. A helper nobody is forced to use is a suggestion.
- *
- * ─────────────────────────────────────────────────────────────────────────────
- * THE THREE CONTROLS, AND WHY EACH IS HERE RATHER THAN IN A DRIVER
- * ─────────────────────────────────────────────────────────────────────────────
- *  1. **The host is pinned**, before the request and again on every redirect hop.
- *     `redirect: "manual"`, deliberately: `follow` would walk a 302 anywhere the upstream
- *     pointed, and "the upstream is trustworthy" is exactly the assumption an SSRF exploits —
- *     an open redirect on an otherwise honest service is enough.
- *  2. **The body is capped while it is arriving.** `readCappedText` reads through the
- *     `ReadableStream` and cancels the moment the running total passes the ceiling, so a
- *     response with no `Content-Length`, or one whose declared length describes gzipped
- *     bytes, still cannot spend more than the cap plus one chunk of this process's memory.
- *     The deployment target is one VPS running the app, the worker and Postgres together.
- *  3. **Every hop is counted** (`countOutboundRequest`), because the audit row records
- *     outbound VOLUME and a redirect we followed is a request we made (QV-09). Counting here
- *     rather than in the driver is what stops the count drifting when a driver adds a call.
- *
- * ─────────────────────────────────────────────────────────────────────────────
- * WHAT IS NEVER LOGGED
- * ─────────────────────────────────────────────────────────────────────────────
- * The URL, the query, the domain, the IP, the response body. ADR 0013: the record says THAT
- * a call happened, never WHAT was asked for. A journalist's lookups must not be
- * reconstructable from our own records, and the only reliable way to guarantee that is for
- * the record never to exist.
+ * Never logs the URL, query, domain, IP or response body.
  */
 
 /**
- * Identify ourselves. Courtesy and self-interest: an operator who needs to rate-limit or
- * contact us can, instead of blocking an anonymous pattern. It says nothing whatsoever
- * about the person who typed the query.
- *
- * Brand strings come from `config/brand.ts` (product-brief §7). `SOURCE_CONTACT_EMAIL`
- * overrides the placeholder address without a code change, which matters more than usual
- * here: an upstream that cannot reach us blocks us silently.
+ * Identifies us (not the user) so operators can contact or throttle us. Built from
+ * `config/brand.ts`; `SOURCE_CONTACT_EMAIL` overrides the contact address.
  */
 export function toolbenchUserAgent(
   env: (name: string) => string | undefined = (name) => process.env[name],
@@ -66,13 +30,7 @@ export function toolbenchUserAgent(
   return `${brand.nameLower}-toolbench/1.0 (+${contact})`;
 }
 
-/**
- * Bytes we will read from an upstream before giving up.
- *
- * crt.sh returned 1.35 MB for one mid-sized domain during verification and will return
- * considerably more for a large one, so the cap is generous — but it is a cap, because a
- * response with no ceiling is a way to exhaust a small VPS's memory from a text field.
- */
+/** Default body cap. Generous because crt.sh can return several MB for a large domain. */
 const DEFAULT_MAX_BYTES = 16 * 1024 * 1024;
 
 export interface UpstreamRequestOptions {
@@ -81,44 +39,22 @@ export interface UpstreamRequestOptions {
   /** The host the URL is required to be on. Checked before the request and on each redirect. */
   readonly pinnedHost: string;
   readonly signal: AbortSignal;
-  /**
-   * `GET` unless stated. `POST` exists for one driver: Overpass takes its query in a form
-   * body rather than a query string, precisely so the bounding box a reader is investigating
-   * does not end up in the upstream's access log.
-   */
+  /** `GET` by default. `POST` is for Overpass, keeping the query out of access logs. */
   readonly method?: "GET" | "POST";
-  /**
-   * The request body, already encoded, with its `Content-Type`. Only meaningful for `POST`.
-   * A body is NOT resent across a redirect: a 3xx on a POST is treated as an error, because
-   * re-POSTing a reader's query to a location the upstream chose is the SSRF case with the
-   * payload attached.
-   */
+  /** Encoded body with its `Content-Type`, for `POST`. Never resent across a redirect. */
   readonly body?: { readonly contentType: string; readonly text: string };
   readonly accept?: string;
-  /**
-   * The `User-Agent`, when this connector already identifies itself as something other than
-   * the Toolbench. `flights.ts` passes `sourceUserAgent()`: adsb.lol has seen that string
-   * since 2026-08-31 and an operator who has allow-listed or throttled it should not have it
-   * change under them because we moved a function. Both strings are built from
-   * `config/brand.ts`, so the rename contract holds either way (product-brief §7).
-   */
+  /** Override the User-Agent (flights keeps the `sourceUserAgent()` string adsb.lol knows). */
   readonly userAgent?: string;
   /**
-   * Sent verbatim as `Accept-Encoding`. Omitted entirely when absent, which leaves the
-   * runtime's own default in place.
-   *
-   * The Wayback capture fetch passes `identity`. It wants the archived bytes, and transfer
-   * compression on that path buys nothing while costing two things: `fetch` gunzips
-   * transparently, so a `Content-Length` describes the compressed size and cannot bound the
-   * decoded one, and a compressed body is a decompression bomb's delivery mechanism. The
-   * streaming cap in `readCappedText` holds either way; this removes the ambiguity.
+   * Sent as `Accept-Encoding` if set. Wayback passes `identity` so `Content-Length` matches
+   * decoded size and compressed bombs aren't possible.
    */
   readonly acceptEncoding?: string;
   readonly maxBytes?: number;
   /**
-   * Redirect hops to follow, each re-checked against `pinnedHost`. Zero means "a 3xx is an
-   * error". The Wayback snapshot fetch needs a small number because the archive genuinely
-   * redirects between capture timestamps.
+   * Redirect hops to follow, each re-checked against `pinnedHost`. 0 = any 3xx is an error.
+   * Wayback needs a few (it redirects between capture timestamps).
    */
   readonly maxRedirects?: number;
 }
@@ -135,10 +71,8 @@ export type UpstreamResponse = {
 /**
  * One request, host-pinned, byte-capped, with manual redirect handling.
  *
- * Throws `UpstreamStatusError` on a non-2xx so `runtime.ts` can record the real status and
- * open a cooldown on a 429. Never returns an upstream error body to the caller: it is
- * third-party text of unknown shape which on some APIs echoes the request back, and this
- * request contains the reader's query.
+ * Throws `UpstreamStatusError` on non-2xx (so `runtime.ts` can record it and open a cooldown
+ * on 429). Never returns an error body, which may echo the reader's query.
  */
 export async function upstreamRequest(
   options: UpstreamRequestOptions,
@@ -150,8 +84,7 @@ export async function upstreamRequest(
   let url = options.url;
   for (let hop = 0; ; hop += 1) {
     if (!isPinnedHost(url, options.pinnedHost)) {
-      // Not an upstream fault. Either a registry row was edited to point somewhere else, or
-      // the upstream tried to send us off-host. Neither is a request we will make.
+      // Edited registry row or an off-host redirect.
       logger.error(
         { scope: "connector.upstream", pinnedHost: options.pinnedHost, hop },
         "Refusing a request that is not on the pinned host",
@@ -159,19 +92,13 @@ export async function upstreamRequest(
       throw new UpstreamStatusError(502);
     }
 
-    /*
-     * Counted here, at the request, and once per hop. QV-09: the audit row records outbound
-     * VOLUME, and a redirect we followed is a request we made. Declaring the number in the
-     * driver instead would be right until somebody added a call — which is how the finding
-     * arose in the first place.
-     */
+    // Once per hop: each redirect followed is a request made.
     countOutboundRequest();
     const response = await fetch(url, {
       method,
       signal: options.signal,
       redirect: "manual",
-      // The freshness contract is ours (ADR 0014). A second cache with its own clock is the
-      // two-clocks-disagreeing failure that makes an age display lie.
+      // Our own cache owns freshness; avoid a second cache clock.
       cache: "no-store",
       headers: {
         accept: options.accept ?? "application/json",
@@ -186,42 +113,29 @@ export async function upstreamRequest(
 
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get("location");
-      /*
-       * A redirect on a request that carried a body is an error, whatever `maxRedirects`
-       * says. Following it would either resend the reader's query to a location the upstream
-       * chose, or silently turn their POST into a GET with the query dropped. Both are worse
-       * than a refusal the surface can explain.
-       */
+      // A redirect on a request with a body is always an error: following would resend the
+      // query elsewhere or silently drop it.
       if (location === null || hop >= maxRedirects || options.body !== undefined) {
         throw new UpstreamStatusError(
           response.status,
           parseRetryAfter(response.headers.get("retry-after")),
         );
       }
-      // Resolved against the CURRENT url, so a relative Location behaves as a browser would.
-      // The loop re-checks the pin at the top, which is the point.
+      // Resolve relative Location against the current URL; the pin is re-checked next loop.
       url = new URL(location, url).toString();
-      // The body of a redirect is never read, so it is cancelled rather than buffered.
       await response.body?.cancel();
       continue;
     }
 
     if (!response.ok) {
-      // `Retry-After` is read on every non-2xx, not only on 429: a 503 may carry one, and a
-      // header we were given always beats a constant we chose.
+      // Read Retry-After on any non-2xx; a 503 may carry one too.
       throw new UpstreamStatusError(
         response.status,
         parseRetryAfter(response.headers.get("retry-after")),
       );
     }
 
-    /*
-     * The cap is applied to the STREAM, not to a string that is already resident (QV-03).
-     * `readCappedText` checks the declared length as a cheap early exit and then reads chunk
-     * by chunk, cancelling the moment the running total passes the cap — so an upstream that
-     * sends no `Content-Length`, or one whose declared length describes gzipped bytes, still
-     * cannot spend more than the cap plus one chunk of this process's memory.
-     */
+    // Cap applied to the stream: reading stops once the running total passes `maxBytes`.
     const capped = await readCappedText(response, maxBytes);
     if (!capped.ok) {
       logger.warn(

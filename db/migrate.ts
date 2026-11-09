@@ -1,26 +1,14 @@
 /**
- * Migration runner. `pnpm db:migrate`.
+ * Migration runner (`pnpm db:migrate`). Runs in the one-shot `migrator` container and from
+ * `infra/deploy.sh`.
  *
- * Runs in a dedicated one-shot container (Dockerfile target `migrator`) via
- * `docker compose --profile tools run --rm migrate`, and from `infra/deploy.sh` between the
- * backup and the start. docs/deploy/HANDOFF.md A#10 is the contract:
+ * - Exits non-zero on failure; deploy.sh rolls back on that.
+ * - Idempotent via Drizzle's journal table, so re-running is safe.
+ * - Closes the pool so the container exits.
  *
- *   - exits NON-ZERO on failure. deploy.sh treats a non-zero exit as "roll back". A script
- *     that swallows its own error turns a failed migration into a successful deploy of a
- *     broken site, which is the worst outcome available here.
- *   - is IDEMPOTENT. Drizzle's journal table (`drizzle.__drizzle_migrations`) gives this for
- *     free; nothing below defeats it. Re-running with nothing to apply succeeds and does
- *     nothing, which is what makes deploy.sh safe to re-run after a partial failure.
- *   - closes the pool, so the container exits instead of hanging on an open socket.
- *
- * ORDER. The journal in `db/migrations/meta/_journal.json` is applied in array order and
- * must read: 0000_extensions -> 0001_schema (drizzle-kit generated) -> 0002_search_and_ordering.
- * The two hand-written files are the objects drizzle-kit cannot emit (HANDOFF §6): the
- * pg_trgm extension, the two gin_trgm_ops indexes, and the DEFERRABLE unique constraint on
- * playbook_steps. `drizzle-kit push` would drop all three and is forbidden everywhere.
- *
- * Drizzle applies every pending migration inside ONE transaction, so a failure part-way
- * leaves the database exactly as it was. That is why this script does not open its own.
+ * Hand-written migrations hold what drizzle-kit can't emit (pg_trgm, gin_trgm_ops indexes,
+ * the DEFERRABLE unique on playbook_steps). Never use `drizzle-kit push`; it drops them.
+ * Drizzle runs all pending migrations in one transaction.
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -37,15 +25,9 @@ const migrationsFolder = join(here, "migrations");
 type JournalEntry = { idx: number; tag: string; when: number };
 
 /**
- * Read the journal ourselves before handing it to Drizzle, purely so the log names each
- * step. Drizzle's migrator prints nothing, and "migrations applied" with no list is not a
- * useful line to find in a deploy log at 3am.
- *
- * It also catches the one failure mode that is otherwise silent: Drizzle decides what is
- * already applied by comparing `created_at` against the journal's `when`, and it iterates
- * the entries in array order. If a hand-written entry were inserted with a `when` out of
- * ascending order, migrations would appear to apply and then be skipped forever. Asserting
- * the ordering here turns that into a loud failure before a single statement runs.
+ * Reads the journal so each step is logged (Drizzle logs nothing), and checks `when` is
+ * strictly ascending: Drizzle compares against the highest applied timestamp, so an
+ * out-of-order entry would be silently skipped.
  */
 function readJournal(): JournalEntry[] {
   const raw: unknown = JSON.parse(
@@ -97,22 +79,18 @@ async function main(): Promise<void> {
 
 main()
   .then(async () => {
-    // Close the pool and let the process exit naturally. NOT `process.exit(0)`: an explicit
-    // exit can cut the socket before the connection's terminate packet is flushed, which
-    // leaves a single-connection server (the local PGlite harness) holding a dead handler
-    // and refusing the next client. `pool.end()` already waits for every connection to
-    // close, so there is nothing left to hurry.
+    // No process.exit(0): it can cut the socket before the terminate packet is flushed,
+    // which wedges single-connection servers like the local PGlite harness.
     await closeDb();
   })
   .catch(async (error: unknown) => {
     logger.error({ scope: "migrate", err: error }, "Migration failed");
-    // Also to stderr: the migrator container's logs are what an operator reads first, and
-    // a pino line at LOG_LEVEL=silent would leave them with an exit code and nothing else.
+    // Also to stderr, in case LOG_LEVEL=silent.
     console.error(error);
     try {
       await closeDb();
     } catch {
-      // Closing a pool that never opened is not the failure worth reporting here.
+      // Pool may never have opened.
     }
     process.exit(1);
   });

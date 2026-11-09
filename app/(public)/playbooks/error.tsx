@@ -5,15 +5,8 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 
 /**
- * `/playbooks` failed to load. Copy from `docs/design/states.md` §4.6.
- *
- * Nothing from `error` is rendered — not the message, not the digest. A server error can
- * carry a table name or a query fragment, and this product's readers are not the people to
- * hand that to. Next.js has already logged it server-side.
- *
- * Both controls are real: `reload` re-runs the segment, `browse the directory` is the way
- * out if it keeps failing. An error region with no next action is a dead end
- * (`states.md` §0).
+ * `/playbooks` error boundary. Doesn't render `error`: it may contain internals, and Next
+ * logs it server-side.
  */
 export default function PlaybooksError({ reset }: { error: Error & { digest?: string }; reset: () => void }) {
   return (

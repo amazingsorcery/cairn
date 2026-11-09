@@ -9,27 +9,14 @@ import { createNote } from "@/lib/actions/workspaces";
 import { useUnsavedGuard } from "./use-unsaved-guard";
 
 /**
- * Write a new note.
+ * Compose a new note.
  *
- * WHY THIS ONE IS NOT AUTOSAVED, WHERE EDITING IS.
- * `flows.md` M1 specifies autosave-on-pause for notes, and `NoteCard` implements exactly
- * that for an existing note. A *new* note is different in kind: autosaving a composer would
- * commit a row the moment the writer paused mid-first-sentence, and `notes.created_at` is
- * the timestamp of the record — it is not editable afterwards and it is the thing an
- * investigator relies on. Creating "Weather rec" at 09:41 because somebody stopped to think
- * puts a false timestamp in an evidence artefact.
+ * Not autosaved (unlike `NoteCard` edits): `notes.created_at` is immutable, so autosaving
+ * mid-sentence would record a misleading timestamp. The `beforeunload` guard protects the
+ * text instead.
  *
- * So the composer takes the other mitigation from the same document: M2, the `beforeunload`
- * guard, armed for as long as there is any text in the box. Nothing typed can be lost to a
- * tab close, a back button or a reload; it just becomes a note when the writer says so.
- * Recorded and justified in `docs/frontend/HANDOFF-workspaces.md` 4.
- *
- * NEVER INSIDE A DIALOG. Escape closes a Radix dialog and Escape is a normal key to press
- * while typing (`states.md` 7.4).
- *
- * On a failed save the text stays in the box, the guard stays armed, and the error names a
- * next action. The signed-out case says so in the words `states.md` 6.10 uses, and does not
- * redirect: a redirect here would discard the note.
+ * Don't put this in a dialog; Escape would close it while typing. On failure the text stays
+ * and nothing redirects.
  */
 
 export interface NoteComposerProps {
@@ -41,9 +28,8 @@ export interface NoteComposerProps {
   submitLabel?: string;
   onSaved?: () => void;
   /**
-   * Focus the field on mount. Set where the composer is revealed by a control that then
-   * disappears — otherwise the browser has nowhere to put focus and drops it on `<body>`,
-   * sending a keyboard user back to the top of the document (Q-09, WCAG 2.4.3).
+   * Focus the field on mount. Use when the control that revealed the composer disappears,
+   * or focus falls back to `<body>`.
    */
   autoFocus?: boolean;
   /** Rendered beside the submit when the composer can be dismissed again. */
@@ -99,7 +85,7 @@ export function NoteComposer({
       return;
     }
 
-    // Only now is the text safe to drop from the box.
+    // Saved; safe to clear.
     setBody("");
     onSaved?.();
     router.refresh();
@@ -157,8 +143,7 @@ export function NoteComposer({
               variant="ghost"
               className="h-11"
               onClick={onCancel}
-              // The guard still fires if there is text: dismissing the composer is a
-              // navigation away from unsaved work like any other.
+              // The unsaved guard still applies if there is text.
             >
               cancel
             </Button>

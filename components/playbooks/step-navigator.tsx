@@ -6,27 +6,12 @@ import { ChevronDown, ChevronLeft, ChevronRight, ListOrdered } from "lucide-reac
 import { cn } from "@/lib/utils";
 
 /**
- * Step navigation for `/playbooks/[slug]`.
+ * Step navigation for `/playbooks/[slug]`. All steps are on one page (so Ctrl+F works);
+ * links are plain `#step-N` anchors, and headings take focus via `tabIndex={-1}`. The
+ * active marker is reading position, not completion.
  *
- * ALL STEPS ARE ON ONE PAGE (wireframe 06). Not a wizard, not one step per route: a method
- * is read end to end before it is followed, and a reader on a deadline needs Ctrl+F to
- * work. This component therefore never fetches and never changes the route — it moves
- * within the page.
- *
- * WHY THE LINKS ARE PLAIN ANCHORS. `#step-3` is the whole contract: deep-linkable,
- * shareable, keyboard operable with no JavaScript at all, and restorable by the browser's
- * own back button. `app/globals.css` sets `scroll-padding-top: 5rem` so the target never
- * lands under the sticky header, and each step heading carries `tabIndex={-1}` so following
- * the anchor also moves focus there rather than leaving it in the nav.
- *
- * The active marker is a READING POSITION, not a completion state (wireframe 06 notes).
- * Nothing is ticked on a public page — progress belongs to a case, not to a shared URL.
- *
- * THE MOBILE COLLAPSE IS CLASS-DRIVEN, NOT THE `hidden` ATTRIBUTE. Measured in the browser,
- * `hidden` plus `md:block` left the list `display: none` at 1280px while its toggle was
- * `md:hidden` — collapse on a phone, widen the window, and the step index is gone with no
- * way back. Two Tailwind utilities in one layer do not fight: `md:block` is emitted after
- * `hidden` and wins from `md` up.
+ * The mobile collapse uses classes, not the `hidden` attribute, which would stay hidden
+ * at `md` and up after collapsing.
  */
 
 export interface StepNavigatorProps {
@@ -62,13 +47,8 @@ export function StepNavigator({ steps }: StepNavigatorProps) {
         }
         if (visible.size > 0) setActiveIndex(Math.min(...visible));
       },
-      // The band starts below the sticky header and ends most of the way down the
-      // viewport, so "in view" means "the reader is looking at it", not "it grazed the
-      // bottom edge".
-      //
-      // `rootMargin` MUST be px or %. A rem value throws a SyntaxError at construction
-      // time, which the error boundary then catches as a whole-page failure — 80px is the
-      // `scroll-padding-top: 5rem` from `app/globals.css` at the default root font size.
+      // Band from below the sticky header to 40% down the viewport. `rootMargin` must be
+      // px or % (rem throws); 80px matches `scroll-padding-top: 5rem`.
       { rootMargin: "-80px 0px -60% 0px", threshold: 0 },
     );
 
@@ -144,11 +124,7 @@ export function StepNavigator({ steps }: StepNavigatorProps) {
         </ol>
       </nav>
 
-      {/*
-        The mobile position bar. It reports which step heading is currently in view, so it
-        is honest about position without being a navigation state the reader has to
-        maintain. Hidden from `md` up, where the rail already does this job.
-      */}
+      {/* Mobile position bar showing the step in view; the rail covers this from `md` up. */}
       <div className="sticky bottom-0 z-[var(--z-sticky)] -mx-4 mt-8 flex items-center justify-between gap-2 border-t border-border bg-background/95 px-4 py-2 backdrop-blur md:hidden">
         {previous ? (
           <a

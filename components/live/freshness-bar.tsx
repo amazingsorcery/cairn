@@ -8,25 +8,13 @@ import { formatAge, formatClockUtc, type LiveReason, type LiveState } from "./li
 import { useLiveAge } from "./use-live-age";
 
 /**
- * The age indicator. ADR 0014 and `docs/design/states.md` §5.
+ * Age indicator shared by every Live surface. Three states, always rendered in the same row
+ * so the layout doesn't shift.
  *
- * ONE component, used by every Live surface, with exactly three states. There is no fourth
- * and no state in which it is absent: it occupies the same row whatever is happening, so
- * the layout does not shift when the state changes and a reader who glances at a fixed spot
- * always finds the age (`wireframes/08-live-flights.txt`, Notes).
+ * Client component because the age ticks. `initialAgeSeconds` comes from the server so the
+ * first client render matches the server HTML (and works without JS).
  *
- * WHY THIS IS A CLIENT COMPONENT, and the only exception to RSC-by-default on these routes:
- * the age ticks. A server-rendered "8s ago" is wrong within a second, and the age is the one
- * number on a Live page that must never be wrong (ADR 0014 §1).
- *
- * WHY `initialAgeSeconds` IS A PROP rather than computed at mount: the first client render
- * has to match the server HTML or React discards it as a hydration mismatch. The server
- * computes the age once, passes it in, and the interval takes over from there — so the age
- * is present and correct in the no-JavaScript rendering too.
- *
- * NEVER A SPINNER. "refreshing" is a word in the bar, shown only while a revalidation is
- * genuinely in flight; if revalidation has failed the surface moves to `unavailable` rather
- * than sitting there claiming to refresh (states.md §5.3).
+ * No spinner: "refreshing" is shown as a word only while a revalidation is in flight.
  */
 
 const UNAVAILABLE_ICON: Record<LiveReason, LucideIcon> = {
@@ -39,13 +27,8 @@ const UNAVAILABLE_ICON: Record<LiveReason, LucideIcon> = {
 };
 
 /**
- * Tone per reason. `quota-exhausted`, `rate-limited` and `disabled` are `--info`, not
- * `--warning`: nothing is broken. A ceiling we set, a switch we flipped, and a source asking
- * us to slow down are all decisions being respected, and colouring them as faults would
- * blame a third party for our own choices (states.md §5.5, §5.6).
- *
- * `rate-limited` is deliberately NOT `destructive`. The upstream working exactly as designed
- * and us obeying it is the system behaving correctly, not an outage.
+ * Tone per reason. Quota, rate limit and disabled are `info`, not a warning or error:
+ * nothing is broken.
  */
 const UNAVAILABLE_TONE: Record<LiveReason, "destructive" | "info"> = {
   "upstream-down": "destructive",
@@ -53,8 +36,7 @@ const UNAVAILABLE_TONE: Record<LiveReason, "destructive" | "info"> = {
   "quota-exhausted": "info",
   "rate-limited": "info",
   disabled: "info",
-  // `info`, not `destructive`: we rejected the parameters, nothing is broken and no third
-  // party is at fault. Colouring our own refusal as an outage blames the wrong party.
+  // We rejected the parameters; not an outage.
   "bad-request": "info",
 };
 

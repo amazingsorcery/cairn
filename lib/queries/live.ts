@@ -13,15 +13,10 @@ import { cameraCacheKey, type CameraFilters } from "@/lib/validation/filters";
 import { TAG, TTL, cached, cachedByKey } from "./cache";
 
 /**
- * Reads for the Live pillar (ADR 0011). Two kinds of thing live here:
- *
- *  - the CONNECTOR REGISTRY, which `lib/connectors/` reads before every outbound call. It is
- *    uncached: the kill-switch (`enabled`) exists so that a source whose terms change can be
- *    stopped without a deploy (ADR 0011 rule 6, ADR 0012 §1), and a cached registry would
- *    put a TTL between the operator flipping the switch and the calls stopping. One indexed
- *    read per surface render is the price of a kill-switch that actually kills.
- *  - the CAMERA REGISTRY, which is ordinary content held to the same editorial standard as
- *    `tools`, and is cached like any other content read.
+ * Live pillar reads:
+ *  - Connector registry: read before every outbound call; uncached so the kill-switch takes
+ *    effect immediately.
+ *  - Camera registry: ordinary content, cached.
  */
 
 /* ------------------------------------------------------------------ *
@@ -29,20 +24,9 @@ import { TAG, TTL, cached, cachedByKey } from "./cache";
  * ------------------------------------------------------------------ */
 
 /**
- * The one connector that may serve a surface right now, or null.
- *
- * FOUR conditions, all of them fail-closed:
- *   - `status = 'published'` — editorial: it is part of the shipped product.
- *   - `enabled = true`       — operational: it may make a request right now. Defaults to
- *                              false, so a newly seeded connector is inert until an operator
- *                              turns it on (ADR 0012 §1).
- *   - `terms_url is not null` and `legal_basis is not null` — the runtime half of
- *     `connectors_published_requires_legal_basis_check`. ADR 0012's "alternatives
- *     considered" asks for this assertion *as well as* the constraint, and it is cheap:
- *     the constraint fails at write time in front of the person who caused it, this fails at
- *     request time before we call anyone.
- *
- * Served by `connectors_kind_status_enabled_idx`.
+ * The connector that may serve a surface right now, or null. Requires published, enabled
+ * (defaults to false), and non-null terms URL and legal basis (runtime echo of the DB
+ * constraint). Uses `connectors_kind_status_enabled_idx`.
  */
 export async function getLiveConnector(
   kind: ConnectorKind,
@@ -66,11 +50,7 @@ export async function getLiveConnector(
   return row[0] ?? null;
 }
 
-/**
- * A connector by slug regardless of state, for the disabled/degraded surface: when a
- * connector is off we still render its operator and attribution and say plainly that it is
- * off (ADR 0014 §2), which needs the row.
- */
+/** A connector by slug in any state, so a disabled source can still show its operator. */
 export async function getConnectorBySlug(
   slug: string,
   client: Db = db,
@@ -93,12 +73,8 @@ export type ConnectorPublicSummary = {
 };
 
 /**
- * The published connectors, for the `/live` landing page — "which operators we draw on"
- * (sitemap.md §3).
- *
- * `legal_basis` and `notes` are NOT selected. They are internal editorial prose written by a
- * team with no lawyer (ADR 0012 consequences); the public statement is the operator, the
- * terms URL and the attribution.
+ * Published connectors for the `/live` landing page. `legal_basis` and `notes` are internal
+ * and not selected.
  */
 async function listPublishedConnectorsUncached(): Promise<ConnectorPublicSummary[]> {
   return db
@@ -147,12 +123,8 @@ export type CameraCard = {
 };
 
 /**
- * `/live/cameras`. ONE round trip, and — importantly — ZERO outbound requests: this renders
- * our own registry rows only (sitemap.md §3). Embeds are click-to-load (ADR 0015), so
- * nothing here may become a prefetch, a `<link rel=preconnect>` or a thumbnail grid.
- *
- * `embed_url` is deliberately NOT selected. The listing never embeds, so shipping the embed
- * URL to the browser would be handing out an origin the page has no business contacting.
+ * `/live/cameras`: registry rows only, no outbound requests (embeds are click-to-load).
+ * `embed_url` isn't selected since the listing never embeds.
  */
 async function listCamerasUncached(filters: CameraFilters): Promise<CameraCard[]> {
   const conditions = [eq(cameras.status, "published")];
@@ -162,9 +134,7 @@ async function listCamerasUncached(filters: CameraFilters): Promise<CameraCard[]
     conditions.push(sql`lower(${cameras.jurisdiction}) = ${filters.jurisdiction}`);
   }
   if (filters.q) {
-    // ILIKE, not full-text: `cameras` carries no `search_vector` (data-model.md §12) because
-    // the registry's browse axes are geography and subject, both of which are columns, and
-    // the whole published set is one cached query. A GIN index here would be ceremony.
+    // ILIKE: `cameras` has no `search_vector`; the set is small and cached.
     const pattern = `%${filters.q}%`;
     const match = or(
       ilike(cameras.name, pattern),
@@ -218,13 +188,8 @@ export type CameraDetail = CameraCard & {
 };
 
 /**
- * `/live/cameras/[slug]`. Returns null for a draft or missing slug.
- *
- * `embedUrl` is present here because this is the page where a reader can choose to load the
- * feed — and only after an explicit click that discloses the outbound connection first
- * (ADR 0015). The connector is joined in because attribution renders next to the data, not
- * in a footer (ADR 0011 rule 2), and because a camera whose connector is disabled must show
- * the disabled state rather than an embed that will not load.
+ * `/live/cameras/[slug]`, or null for a draft or missing slug. Includes `embedUrl` (loaded only
+ * after a disclosed click) and the connector, for attribution and disabled state.
  */
 async function getCameraBySlugUncached(slug: string): Promise<CameraDetail | null> {
   const row = await db.query.cameras.findFirst({

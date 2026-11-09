@@ -10,34 +10,16 @@ import { metadataUnlessPublicOnly, requireSignInEnabled } from "@/lib/session-su
 import { requireSession } from "./session";
 
 /**
- * `/workspaces` — the reader's own cases.
+ * `/workspaces`: the user's own cases. Never cached at any layer; `listWorkspaces` scopes
+ * by the session's `user_id`.
  *
- * `force-dynamic` and never cached at any layer (sitemap.md §7): a user's case file must
- * not touch a shared cache, a CDN or the ISR filesystem cache. That is a hard requirement,
- * not a performance trade-off, which is why `lib/queries/workspaces.ts` wraps none of its
- * functions in `unstable_cache` and why nothing here adds a `revalidate`.
- *
- * `listWorkspaces` binds `user_id` from the session into SQL. There is no "all workspaces"
- * query in the data layer to accidentally call.
- *
- * WHY THE SKELETON IS AN IN-PAGE `<Suspense>` AND NOT A `loading.tsx` — QA finding Q-07.
- * A `loading.tsx` at this segment creates a Suspense boundary that wraps the CHILD segment
- * `[id]` too. Next streams that fallback as soon as it is reached, which sends the HTTP
- * status line — so `notFound()` in `/workspaces/[id]`, however early it ran, could only swap
- * the body and never the status. A non-owner got the correct not-found body with `200 OK`.
- *
- * Moving the boundary inside this page scopes it to this page's own content. Same treatment,
- * same reasoning as `/directory` in commit `753cf1a`; the skeleton is moved, not deleted,
- * because `/workspaces` is dynamic and genuinely waits on a query.
+ * The skeleton is an in-page `<Suspense>`, not a `loading.tsx`: a segment `loading.tsx`
+ * would also wrap `[id]` and commit a 200 before its `notFound()` could set 404.
  */
 
 export const dynamic = "force-dynamic";
 
-/*
- * The title follows the route. In public-only mode this page 404s inside `requireSession`,
- * and a static `metadata` export resolves anyway — so without this the reader gets a 404 body
- * under `<title>Your cases</title>`, which reads as broken rather than absent.
- */
+/* In public-only mode the 404 would otherwise render under "Your cases" as the title. */
 export const metadata = metadataUnlessPublicOnly(
   pageMetadata({
     title: "Your cases",
@@ -51,13 +33,8 @@ export const metadata = metadataUnlessPublicOnly(
 /** The heading and lead. Synchronous, no database read, so it paints immediately. */
 export default function WorkspacesPage() {
   /*
-   * PUBLIC-ONLY MODE, CHECKED HERE AND NOT ONLY IN `CaseList`.
-   *
-   * `requireSession` inside the suspended child would 404 too late: this page streams its
-   * heading before the boundary resolves, so the status line has already been sent as 200 and
-   * `notFound()` could only swap the body — the same mechanism as QA finding I-15, one layer
-   * in. Throwing here, synchronously, before any JSX is returned, is what makes `/workspaces`
-   * a real 404 in a deployment that has no sign-in (ADR 0032).
+   * Public-only mode check, here and synchronously: inside the suspended `CaseList` the
+   * heading would already have streamed with a 200.
    */
   requireSignInEnabled();
 
@@ -125,11 +102,7 @@ async function CaseList() {
   );
 }
 
-/**
- * The skeleton that was `app/workspaces/loading.tsx`, unchanged in appearance. The heading
- * and lead are no longer part of it — they are in the shell above and paint immediately, so
- * the reader sees where they are while the list loads.
- */
+/** List skeleton; the heading above paints immediately. */
 function CaseListSkeleton() {
   return (
     <>

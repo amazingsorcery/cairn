@@ -4,17 +4,8 @@ import { SOURCE_KINDS } from "@/lib/sources/types";
 import type { LayerPayloadDto } from "./registry";
 
 /**
- * Zod at every boundary — including the boundary to our own route handler.
- *
- * The response from `/map/data/<slug>` is same-origin and ours, and "it is ours" is exactly
- * the assumption that stops being true after a refactor. Without a parse here, a shape
- * change turns into a blank map or a thrown render; with one, it turns into the layer's own
- * `schemaChanged` state, which is a designed screen with a sentence on it.
- *
- * This schema also pins the DTO to the `SourceAdapter` contract. If `lib/sources/types.ts`
- * gains a failure kind, `SourceFailure` in `registry/types.ts` widens, the exhaustive
- * `Record<SourceFailure["kind"], …>` maps in `layer-status.tsx` fail to compile, and this
- * union stops matching — three compile errors in the three places that need updating.
+ * Zod schema for `/map/data/<slug>` responses. Even though it's our own route, a shape change
+ * should become the layer's `schemaChanged` state rather than a blank map or thrown render.
  */
 
 const attributionSchema = z.object({
@@ -38,20 +29,9 @@ const failureSchema = z.discriminatedUnion("kind", [
     message: z.string(),
   }),
   z.object({ kind: z.literal("rateLimited"), retryAfterSeconds: z.number().int().optional() }),
-  /*
-   * `resetsAt` is a `Date` on the contract and a STRING by the time it has crossed this
-   * boundary, because JSON has no date type. `z.coerce.date()` turns it back, so the client
-   * holds the type the contract promises rather than a string wearing a `Date` annotation —
-   * the exact trap `components/live/live-format.ts` documents for cached `Date` columns.
-   */
+  /* `resetsAt` arrives as a JSON string; coerce it back to a `Date`. */
   z.object({ kind: z.literal("quotaExhausted"), resetsAt: z.coerce.date().optional() }),
-  /*
-   * No payload. The destination host is upstream-controlled and never crosses this boundary
-   * (QV-18); an operator reads it in the structured log instead. A member with no fields
-   * still has to be listed here, because a `redirected` failure that this union rejected
-   * would reach the client as an unparseable payload — a blank row for a state that has a
-   * perfectly good sentence.
-   */
+  /* No fields: the destination host is upstream-controlled and stays in the server log. */
   z.object({ kind: z.literal("redirected") }),
   z.object({ kind: z.literal("schemaChanged"), message: z.string() }),
   z.object({ kind: z.literal("timeout"), afterMs: z.number().int().nonnegative() }),
@@ -59,22 +39,7 @@ const failureSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("disabled"), reason: z.string().min(1) }),
 ]);
 
-/**
- * EVERY FAILURE KIND, AS A VALUE, DERIVED FROM THE UNION ABOVE RATHER THAN RETYPED.
- *
- * QA finding QV-30, which is QV-26's shape a second time. `layer-status.test.tsx` drove a
- * hand-written array of six against a union of eight: `quotaExhausted` and `redirected` — the
- * two kinds ADDED BY EARLIER FIX ROUNDS, which is exactly when a hand-written list goes stale
- * — appeared in no case, so their sentence, icon, tone and retry affordance were rendered by
- * no test at all.
- *
- * A list cannot be maintained by good intentions, so it is not a list: it is read off the
- * discriminated union that already has to be exhaustive for the wire to work, the same way
- * `registry.test.ts` iterates `MAP_LAYERS` instead of naming layers. A kind added to
- * `lib/sources/types.ts` fails to compile in `layer-status.tsx`'s `Record` maps and in this
- * schema, and the moment it is added here it appears in the test's case table — where a
- * missing case is a compile error rather than a silent gap.
- */
+/** Every failure kind, derived from the union above so tests can't fall out of sync. */
 export const FAILURE_KINDS: readonly SourceFailureKind[] = failureSchema.options.map(
   (option) => option.shape.kind.value,
 );
@@ -82,23 +47,12 @@ export const FAILURE_KINDS: readonly SourceFailureKind[] = failureSchema.options
 /** The kinds this schema accepts. Identical to `SourceFailure["kind"]`; asserted in the test. */
 export type SourceFailureKind = z.infer<typeof failureSchema>["kind"];
 
-/**
- * A feature's property bag.
- *
- * `z.union` rather than `z.any()`: the contract types this as
- * `string | number | boolean | null`, and accepting an object here would let a nested
- * structure reach a table cell that can only render a scalar.
- */
+/** A feature property: scalars only, since table cells can't render nested objects. */
 const propertyValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
 
 /**
- * The positional caveat, carried across the boundary.
- *
- * WITHOUT THIS ENTRY THE FIELD IS SILENTLY DELETED. `z.object` strips unknown keys, so a
- * `precision` an adapter sets would survive the server render and vanish on the first client
- * refresh — the caveat present on page load and gone thirty seconds later, with nothing in
- * any log. On a public-safety layer that is the single worst way for this field to fail, and
- * it is invisible unless you go looking.
+ * Position caveat. Must be listed: `z.object` strips unknown keys, so it would otherwise
+ * vanish on the first client refresh.
  */
 const precisionSchema = z.object({
   label: z.string().min(1),
@@ -108,10 +62,8 @@ const precisionSchema = z.object({
 
 const featureSchema = z.object({
   id: z.string().min(1),
-  /* The contract's own union, imported rather than restated, so a new kind cannot
-     silently fail to parse here after being added there. */
+  /* Imported from the contract so new kinds parse automatically. */
   kind: z.enum(SOURCE_KINDS),
-  /* Bounds, not just types. An out-of-range coordinate silently draws a feature in the sea. */
   longitude: z.number().min(-180).max(180),
   latitude: z.number().min(-90).max(90),
   altitude: z.number().optional(),
@@ -139,14 +91,7 @@ export const layerPayloadSchema = z.union([
   }),
 ]);
 
-/**
- * Parse a payload, or say why not.
- *
- * Returns a `schemaChanged` payload rather than throwing or returning null. A parse failure
- * is a real state with real copy — "we stopped reading it rather than guess at it" — and
- * routing it through the same union as every other failure means the one bad layer degrades
- * and the rest of the map does not notice.
- */
+/** Parse a payload; on failure return a `schemaChanged` payload so only that layer degrades. */
 export function parseLayerPayload(value: unknown, layerId: string): LayerPayloadDto {
   const result = layerPayloadSchema.safeParse(value);
   if (result.success) return result.data;

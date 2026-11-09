@@ -5,18 +5,8 @@ import brand from "@/config/brand";
  * ------------------------------------------------------------------ */
 
 /**
- * Every visible string comes from `config/brand.ts` (product-brief §7). Renaming the
- * product must not require editing an email template.
- *
- * Both parts are sent: HTML for readers who accept it, and a real plain-text alternative
- * for the substantial share of this audience who read mail in mutt, in a terminal client,
- * or with remote content disabled as a matter of policy. A plain-text part that just says
- * "view this in HTML" is a broken sign-in for exactly the most security-conscious users.
- *
- * The HTML is a table-based layout with inline styles and no remote assets: no tracking
- * pixel, no web font, no logo fetched from our server. A remote image in a sign-in email
- * tells us when and where the recipient opened it, which for this audience is precisely
- * what we must not learn.
+ * Brand strings come from `config/brand.ts`. Sends a full plain-text part for text-only
+ * clients. The HTML has inline styles and no remote assets, so opening it reveals nothing.
  */
 function escapeHtml(value: string): string {
   return value

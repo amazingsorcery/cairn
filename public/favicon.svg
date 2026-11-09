@@ -1,16 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
   <!--
-    Favicon. The monogram from docs/brand/logo/monogram.svg on its own tile.
-
-    The source mark is currentColor and has no colour of its own, which is right everywhere
-    it sits inside the page and wrong here: a favicon is rendered outside any document, so
-    there is no colour to inherit and it would fall back to black on a black tab strip. The
-    two values are the dark theme's --background (#0B0F15) and --primary (#74C6F2) from
-    app/tokens.css, hardcoded because this file is not styled by a stylesheet.
-
-    The tile is drawn at 32 units with a 6-unit radius; the stones keep their exact
-    coordinates from the source mark so the two rasterise identically at 16px, which is the
-    measured minimum (docs/brand/logo/README.md §2).
+    Favicon: the monogram on a tile. Colours are hardcoded (no stylesheet applies) from the
+    dark theme's --background and --primary in app/tokens.css.
   -->
   <rect width="32" height="32" rx="6" fill="#0B0F15" />
   <g fill="#74C6F2">

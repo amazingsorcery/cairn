@@ -7,32 +7,14 @@ import { Check, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
- * The client half of the directory filters — and it is deliberately the *only* client half.
+ * Client side of the directory filters.
  *
- * WHY THESE ARE REAL FORM CONTROLS INSIDE A REAL `<form method="get">`
- * --------------------------------------------------------------------
- * A GET form serialises exactly the URL shape `parseDirectoryFilters` reads: repeated
- * `?cost=free&cost=paid`, one `?q=`, one `?sort=`. So the filters work with the JavaScript
- * bundle removed, the browser's own back and forward work, and every filtered view is a
- * pasteable URL. `docs/design/wireframes/02-directory.txt` requires that last property and
- * `states.md` §2.1 depends on it: "getting back is never more than one click, and the
- * browser back button also works ... this is the reason the filters are URL state and not
- * component state."
+ * Controls sit in a GET form that produces the URL shape `parseDirectoryFilters` reads, so
+ * filters work without JS. With JS, `submit()` does a `router.push` of the same URL inside a
+ * transition.
  *
- * With JavaScript, `submit()` intercepts and does a soft `router.push` of the same URL the
- * form would have produced, inside a transition, so the results swap without a full document
- * load and the reader keeps their scroll position.
- *
- * WHY THE PENDING STATE LIVES IN A CONTEXT
- * ----------------------------------------
- * Shell handoff §10.1 wants one `aria-live` region per route carrying `aria-busy` while the
- * new results are in flight. The transition that knows about "in flight" is started by the
- * filter controls; the region that must report it wraps the results, which are a Server
- * Component. A context provider that renders server children solves it without dragging the
- * result list across the client boundary.
- *
- * Focus is never moved on a filter change (shell handoff §10.1) — the reader is still in the
- * filter bar and the count is announced to them where they are.
+ * Pending state is in a context so `ResultsRegion` (wrapping Server Component results) can
+ * set `aria-busy`. Focus is not moved on filter change.
  */
 
 interface FilterContextValue {
@@ -51,12 +33,8 @@ function useFilterContext(): FilterContextValue {
 }
 
 /**
- * Build the URL a `<form method="get">` submission would have produced, minus the empty
- * values a browser would otherwise append as bare `?q=&sort=`.
- *
- * `FormData` only carries checked checkboxes and non-disabled fields, which is precisely the
- * active filter set. Nothing is read from component state, so the DOM cannot disagree with
- * the URL.
+ * The URL a GET submission would produce, minus empty values like bare `?q=`. Built from
+ * `FormData`, not component state.
  */
 function formHref(form: HTMLFormElement, action: string): string {
   const params = new URLSearchParams();
@@ -78,9 +56,7 @@ export function DirectoryFilters({ children }: { children: React.ReactNode }) {
     (form: HTMLFormElement) => {
       const action = form.getAttribute("action") ?? "/directory";
       const href = formHref(form, action);
-      // `scroll: false`: the reader is in the filter bar and the new count is announced to
-      // them there. Yanking the viewport to the top would lose their place in a long facet
-      // list for no benefit.
+      // Keep scroll position in the facet list.
       startTransition(() => router.push(href, { scroll: false }));
     },
     [router],
@@ -91,10 +67,7 @@ export function DirectoryFilters({ children }: { children: React.ReactNode }) {
   return <FilterContext.Provider value={value}>{children}</FilterContext.Provider>;
 }
 
-/**
- * The form element itself. `action` is the route the filters belong to, so the no-JavaScript
- * submission and the `router.push` land on the same path.
- */
+/** The filter form. `action` is used by both the no-JS submit and `router.push`. */
 export function FilterForm({
   action,
   className,
@@ -124,16 +97,8 @@ export function FilterForm({
 }
 
 /**
- * The name field.
- *
- * Controlled, with the URL as the source of truth: local state gives the reader their
- * keystrokes immediately, and the effect re-syncs whenever the address changes for a reason
- * this field did not cause — the `name:` chip being removed, "clear all", the back button.
- * An uncontrolled `defaultValue` would leave the old text sitting in the box after the filter
- * it represents had been dropped, which reads as a filter that refuses to clear.
- *
- * It submits on Enter, never per keystroke: a push per character would fill the history stack
- * and break the back button this whole route is built around.
+ * Name filter. Controlled, re-synced from the URL (chip removal, clear all, back). Submits
+ * on Enter only, so history isn't flooded with one entry per keystroke.
  */
 export function FilterTextInput({
   id,
@@ -176,13 +141,8 @@ export function FilterTextInput({
 }
 
 /**
- * A facet checkbox.
- *
- * Local state mirrors the prop rather than replacing it: the click gives instant feedback
- * while the transition runs, and the effect re-syncs whenever the URL changes for a reason
- * this control did not cause — the browser back button, a removed chip, "clear all". Without
- * the effect, back-navigating would leave a box ticked for a filter that is no longer
- * applied, which is the single most misleading thing a filter panel can do.
+ * Facet checkbox. Local state gives instant feedback during the transition; the effect
+ * re-syncs when the URL changes elsewhere (back, chip removal, clear all).
  */
 export function FacetCheckbox({
   id,
@@ -196,7 +156,7 @@ export function FacetCheckbox({
   name: string;
   value: string;
   checked: boolean;
-  /** `null` when the facet-count query has nothing for this value — `states.md` §2.5. */
+  /** `null` when the facet-count query has nothing for this value. */
   count: number | null;
   children: React.ReactNode;
 }) {
@@ -249,10 +209,7 @@ export function FacetCheckbox({
   );
 }
 
-/**
- * A facet radio. Used for `category`, which `parseDirectoryFilters` reads as a single value —
- * rendering it as checkboxes would offer a multi-select the query layer cannot honour.
- */
+/** Facet radio, for `category`, which `parseDirectoryFilters` reads as a single value. */
 export function FacetRadio({
   id,
   name,
@@ -310,11 +267,7 @@ export function FacetRadio({
   );
 }
 
-/**
- * The sort control. A native `<select>`, not the Radix primitive: it must submit inside a
- * GET form with no JavaScript, and the platform control already gives keyboard operation,
- * screen-reader support and the mobile picker for free.
- */
+/** Sort control. Native `<select>` so it submits in the GET form without JS. */
 export function SortSelect({
   id,
   value,
@@ -357,11 +310,8 @@ export function SortSelect({
 }
 
 /**
- * The one `aria-live` region on the route (shell handoff §10.1).
- *
- * It is in the DOM before the results are, which is the whole point: a live region created
- * at the same moment as its content announces nothing. `aria-atomic="false"` so only the
- * changed sentence is read, not the entire result list.
+ * The route's `aria-live` region. Rendered before results, since a live region created with
+ * its content announces nothing. `aria-atomic="false"` reads only the changed sentence.
  */
 export function ResultsRegion({
   announcement,
@@ -385,25 +335,12 @@ export function ResultsRegion({
 }
 
 /**
- * A collapsible facet group.
+ * Collapsible facet group, so hundreds of tag checkboxes aren't all in the tab order
+ * (WCAG 2.4.1).
  *
- * WHY THIS EXISTS — audit finding Q-21. The tag vocabulary alone is 297 checkboxes. Rendered
- * flat, the facet panel put 351 focusable controls in front of the first catalogue entry, so a
- * keyboard reader needed 366 Tab presses to reach a tool. That is WCAG 2.4.1 failing on the
- * product's primary browse surface, for an audience (`product-brief.md` §4) among whom
- * keyboard and screen-reader use is not an edge case. A sighted mouse user never felt it only
- * because they can look past a wall of checkboxes; nobody tabbing can.
- *
- * `<details>` is the right primitive rather than a hand-rolled disclosure: the browser gives
- * keyboard operation, the correct `aria-expanded` semantics and, crucially, **removes the
- * collapsed contents from the tab order** — while leaving them in the form, so a checked value
- * inside a collapsed group is still submitted and a no-JavaScript reader can still open it.
- *
- * The open state is held here, seeded from the server, and never closes itself. Deriving it
- * purely from "does this group have a selection" would snap the panel shut the moment a reader
- * unticked their last tag — hiding the list at exactly the moment they were using it. The
- * component is not remounted across a filter change (the page's `<Suspense>` is unkeyed), so
- * the state survives navigation the same way the checkboxes do.
+ * `<details>` removes collapsed contents from the tab order but keeps them in the form, so
+ * checked values still submit. Open state is seeded from the server and never auto-closes
+ * (e.g. when the last tag is unticked).
  */
 export function FacetDisclosure({
   legend,

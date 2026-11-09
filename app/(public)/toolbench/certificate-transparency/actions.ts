@@ -11,25 +11,12 @@ import type { LookupOutcome } from "@/lib/toolbench/connector-envelope";
 import { normaliseHostname } from "@/lib/toolbench/net-target";
 
 /**
- * The certificate transparency lookup.
+ * Certificate transparency lookup. A Server Action rather than a GET route so the queried
+ * domain never lands in a URL (access logs, referrers, history), nothing gets cached, and
+ * the transport is same-origin and CSRF-protected.
  *
- * A Server Action rather than a route handler, for three reasons worth stating because a
- * read through a POST is unusual:
- *
- *  1. **The query never becomes a URL.** A `GET /api/ct?domain=…` would put the reader's
- *     domain into a request line, which is the string most likely to end up in an access
- *     log, a proxy log, a referrer or a browser history. Product-brief §3.2 constraint 4 is
- *     about not leaking this audience's interest graph, and the cheapest way to keep a value
- *     out of logs is for it never to be in a URL.
- *  2. **Nothing is cacheable by accident.** No CDN, no browser and no shared cache can hold
- *     a lookup somebody else made.
- *  3. Next's Server Action transport is same-origin and CSRF-protected, which is not nothing
- *     on the one surface of this product that makes outbound requests from user input.
- *
- * VALIDATION HAPPENS TWICE, ON PURPOSE. Here, so the reader gets a sentence naming what is
- * wrong with what they typed; and again inside the driver's `normalise`, which is the last
- * point before a value reaches a query string. "The action already checked it" is exactly
- * the assumption that stops being true after somebody adds a second caller.
+ * Input is validated here for a friendly message and again in the driver's `normalise`,
+ * in case another caller is added.
  */
 
 const inputSchema = z.object({

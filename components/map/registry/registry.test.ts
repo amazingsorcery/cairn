@@ -6,14 +6,7 @@ import type { SourceFeature } from "@/lib/sources/types";
 import { MAP_LAYERS, defaultVisibleLayerIds, findLayer, resolveMedia } from "./index";
 import type { DeckKit, LayerMedia, MapLayerDefinition, Rgba } from "./types";
 
-/**
- * THE REGISTRY'S STRUCTURAL GUARANTEE, ENFORCED RATHER THAN ASSERTED.
- *
- * "Adding a source must never require editing the map component" is the single most
- * important structural decision in this half of the build, and it is the kind of claim that
- * is true on the day it is written and false three sources later — because the fastest way
- * to ship layer four is one `if`. These tests fail the build at that moment instead.
- */
+/** Adding a source must never require editing the map component; these tests enforce that. */
 
 const MAP_DIR = join(process.cwd(), "components", "map");
 
@@ -39,8 +32,7 @@ describe("the layer registry", () => {
   it("gives every layer exactly one row-header column", () => {
     for (const layer of MAP_LAYERS) {
       const headers = layer.columns.filter((column) => column.rowHeader);
-      // A row with no `<th scope="row">` is a row a screen reader cannot name; two is a
-      // table with two header cells per row, which is worse than none.
+      // Exactly one `<th scope="row">` per row so screen readers can name it.
       expect(headers.length, `${layer.id} row header columns`).toBe(1);
     }
   });
@@ -59,7 +51,7 @@ describe("the layer registry", () => {
     for (const layer of MAP_LAYERS) {
       expect(layer.emptyMessage.length, `${layer.id} empty copy`).toBeGreaterThan(20);
       expect(layer.unavailableTitle.length, `${layer.id} unavailable title`).toBeGreaterThan(4);
-      // "No results" is a filter's answer, not a live source's. See states.md §0.
+      // "No results" is a filter's answer, not a live source's.
       expect(layer.emptyMessage.toLowerCase()).not.toContain("no results");
     }
   });
@@ -79,13 +71,8 @@ describe("the layer registry", () => {
 });
 
 /**
- * THE DECK FACTORIES, RUN WITHOUT WEBGL.
- *
- * `deck` receives its constructors (see `types.ts`), which is a bundling decision — but it
- * also means the factories can be exercised in Node with a recorder in place of deck.gl. That
- * is worth doing: the accessors are where a layer encodes what its legend promises, and
- * nothing else in this suite would notice if `getFillColor` stopped distinguishing an
- * aircraft on the ground from one at 37,000 feet.
+ * Deck factories run in Node with a recorder in place of deck.gl, so the accessors that
+ * back each legend can be tested without WebGL.
  */
 interface RecordedDeckLayer {
   readonly props: Record<string, unknown>;
@@ -102,12 +89,8 @@ function captureDeck(
       recorded.push({ props });
     }
   }
-  /*
-   * `as unknown as DeckKit` rather than a real deck.gl import: pulling the constructors in
-   * here would put the renderer into this test's module graph, which is the very coupling
-   * `registry.test.ts` exists to forbid. The recorder satisfies the shape the factories use —
-   * they only ever call `new kit.X(props)` — and nothing here touches a WebGL context.
-   */
+  // A cast recorder instead of importing deck.gl, which would pull the renderer into this
+  // test's module graph. Factories only call `new kit.X(props)`.
   const kit = {
     ScatterplotLayer: Recorder,
     IconLayer: Recorder,
@@ -156,11 +139,7 @@ describe("every layer's deck.gl factory", () => {
   });
 
   it("declares no transitions when the reader has asked for reduced motion", () => {
-    /*
-     * deck.gl `transitions` interpolate over frames, which is continuous motion by another
-     * name. This is the one accessibility rule the registry can enforce for every layer at
-     * once, rather than trusting each new file to remember it.
-     */
+    // deck.gl `transitions` animate; forbid them for every layer (reduced motion).
     for (const layer of MAP_LAYERS) {
       for (const entry of captureDeck(layer, [SAMPLE], { reducedMotion: true })) {
         expect(entry.props.transitions ?? {}, `${layer.id} animates under reduced motion`).toEqual(
@@ -171,12 +150,8 @@ describe("every layer's deck.gl factory", () => {
   });
 
   it("lists the selection in the update triggers of every accessor that reads it", () => {
-    /*
-     * WITHOUT THIS THE MAP LIES. deck.gl caches accessor output per layer instance and will
-     * not re-evaluate `getLineColor` because `selectedId` changed, so the selection ring stays
-     * on the previously selected feature. Every layer here draws its selection through the
-     * line colour and width, so both triggers must exist.
-     */
+    // deck.gl caches accessor output; without these triggers the selection ring stays on the
+    // previously selected feature.
     for (const layer of MAP_LAYERS) {
       for (const entry of captureDeck(layer, [SAMPLE], { selectedId: "sample" })) {
         const triggers = entry.props.updateTriggers;
@@ -218,13 +193,8 @@ describe("the symbols the legends promise", () => {
 });
 
 /**
- * `resolveMedia` — the guard that stands between a community-edited URL and an `href`.
- *
- * Two of these three checks cannot be left to the layer that produced the record. Radio
- * Browser's stream URLs are typed in by contributors, and camera URLs come from committed
- * content that a future provider file could get wrong. A `javascript:` URL in an anchor is one
- * of the oldest holes there is, and a disclosure that names the wrong host is a specific false
- * assurance — worse than saying nothing at all.
+ * `resolveMedia` guards community-edited URLs (e.g. Radio Browser streams) before they
+ * become an `href`: no `javascript:` URLs, and the disclosed host must match the URL.
  */
 function fakeLayer(media: LayerMedia | null): MapLayerDefinition {
   const base = MAP_LAYERS[0];
@@ -246,9 +216,7 @@ describe("resolveMedia", () => {
   });
 
   it("refuses a record whose host is not the host of its own URL", () => {
-    // The disclosure and the control both name `host`. If it could disagree with `url` we
-    // would be telling a reader they are about to contact one operator while their browser
-    // contacts another.
+    // The disclosed `host` must be the host the browser will actually contact.
     const lying = { ...MEDIA, host: "trustworthy.example.org" };
     expect(resolveMedia(fakeLayer(lying), SAMPLE)).toBeNull();
   });
@@ -262,8 +230,7 @@ describe("resolveMedia", () => {
 
   it("refuses a plain-http image or audio, and allows a plain-http link", () => {
     const http = { url: "http://stream.example.org/live", host: "stream.example.org" };
-    // Blocked as mixed content by the browser anyway: rendering it would produce a control
-    // that fails silently, which is the whole reason the `link` kind exists.
+    // Would be blocked as mixed content, so it's offered as a `link` instead.
     expect(resolveMedia(fakeLayer({ ...MEDIA, kind: "image", ...http }), SAMPLE)).toBeNull();
     expect(resolveMedia(fakeLayer({ ...MEDIA, kind: "audio", ...http }), SAMPLE)).toBeNull();
     // A top-level navigation the browser will honour, so this one is offered.
@@ -297,11 +264,7 @@ describe("cadence", () => {
 });
 
 describe("the map components know about no layer in particular", () => {
-  /**
-   * The regression test for rule 1. If this fails, someone has written a branch on a layer
-   * id inside a component, and the fix is a field on `MapLayerDefinition` — not an exception
-   * here.
-   */
+  // If this fails, add a field to `MapLayerDefinition` instead of branching on a layer id.
   it("mentions no layer id outside components/map/registry/", () => {
     const ids = MAP_LAYERS.map((layer) => layer.id);
     for (const file of componentFiles()) {
@@ -312,12 +275,7 @@ describe("the map components know about no layer in particular", () => {
     }
   });
 
-  /**
-   * The registry must stay loadable with no WebGL. If an entry ever imports a deck.gl value
-   * rather than a type, the table, the legend and the toggles start dragging the renderer
-   * into every bundle that reads a column label — and the table stops being an equivalent
-   * that works without WebGL.
-   */
+  // Registry entries may import deck.gl types only, so the table/legend work without WebGL.
   it("imports deck.gl only as types, never as values", () => {
     const dir = join(MAP_DIR, "registry");
     for (const entry of readdirSync(dir)) {

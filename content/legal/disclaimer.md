@@ -13,7 +13,7 @@ It is part of the [Terms of Service](/legal/terms).
 We have written it at length rather than in a box of capital letters, because the limits are real
 and a user who does not understand them will misuse the service.
 
-**A qualified lawyer has not yet reviewed this document. See `docs/content/legal-review.md`.**
+**A qualified lawyer has not yet reviewed this document.**
 
 ## 1. Cataloguing is not endorsing
 

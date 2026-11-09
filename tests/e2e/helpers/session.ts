@@ -1,17 +1,9 @@
 import type { BrowserContext } from "@playwright/test";
 
 /**
- * Signed-in sessions for the E2E suite.
- *
- * **Neither SMTP nor GitHub OAuth is configured locally**, so `authProviders.email` is
- * `false` and there is no sign-in path a browser can drive (`docs/frontend/HANDOFF-workspaces.md`
- * §9). Rather than pretend otherwise, the suite adopts the session rows that handoff §10
- * defines and sets the cookie directly. `docs/qa/e2e.md` records this as a gap: the
- * magic-link send path, its rate limit, the address cookie and the OAuth handshake are all
- * **untested**, and no spec here should be read as covering them.
- *
- * The rows are created by `tests/e2e/helpers/seed-sessions.sql` (applied by the reader, not
- * by the suite — the suite must not write to the database it is asserting against).
+ * Signed-in sessions for the E2E suite. No sign-in provider is configured locally, so the
+ * suite sets session cookies for rows from `tests/e2e/helpers/seed-sessions.sql` (applied
+ * manually). The magic-link and OAuth flows themselves are not covered here.
  */
 
 export const SESSION_TOKENS = {
@@ -27,13 +19,7 @@ export const SESSION_TOKENS = {
 
 export type SessionName = keyof typeof SESSION_TOKENS;
 
-/**
- * Attach a session cookie to a context.
- *
- * The unprefixed `authjs.session-token` is the name Auth.js v5 uses over plain http, which is
- * what the local dev server and the Playwright `webServer` both are. Behind Caddy the
- * `__Secure-` prefix applies instead; `middleware.ts` checks for both.
- */
+/** Attach a session cookie. Unprefixed name because the test server is plain http. */
 export async function signIn(
   context: BrowserContext,
   session: SessionName,

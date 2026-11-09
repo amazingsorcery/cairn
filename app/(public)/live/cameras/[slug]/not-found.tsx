@@ -3,11 +3,8 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 
 /**
- * A camera slug that is not in the registry, or is still a draft. `states.md` §0.
- *
- * A draft camera 404s for an anonymous visitor exactly as a draft tool does (architecture
- * HANDOFF §7). The copy does not distinguish "never existed" from "not published", because
- * telling a visitor which one it is confirms that an unpublished entry exists.
+ * Unknown or draft camera. The copy doesn't distinguish the two, so it can't confirm that an
+ * unpublished entry exists.
  */
 export default function CameraNotFound() {
   return (

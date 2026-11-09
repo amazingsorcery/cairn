@@ -5,11 +5,8 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 
 /**
- * Copy verbatim from `states.md` §1.3. Two controls, because "an error with no next action is
- * a dead end" — reload the segment, or go back to the full directory.
- *
- * Nothing from `error` reaches the screen; Next has already logged it server-side with a
- * digest.
+ * Offers two ways out: reload, or go back to the directory. Nothing from `error` is shown;
+ * Next has already logged it server-side.
  */
 export default function CategoryError({ reset }: { error: Error; reset: () => void }) {
   return (

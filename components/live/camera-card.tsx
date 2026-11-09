@@ -9,24 +9,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { CameraCard as CameraCardData } from "@/lib/queries/live";
 
 /**
- * One registry entry on `/live/cameras`. `wireframes/09-live-cameras.txt`.
+ * One registry entry on `/live/cameras`. Renders only our own data: no image, thumbnail,
+ * preconnect or prefetch, so the listing makes no requests to any operator origin (covered
+ * by a Playwright network test).
  *
- * EVERY FIELD HERE IS OUR OWN DATA. No image, no thumbnail, no `<link rel=preconnect>`, no
- * lazy-load prefetch, no auto-playing grid — the listing makes ZERO outbound requests to any
- * operator origin, and that is a Playwright network assertion rather than a manual check
- * (ADR 0015 §4, architecture HANDOFF §9.10).
- *
- * WHY AN EMBEDDABLE ENTRY LINKS TO ITS DETAIL PAGE RATHER THAN LOADING IN THE TILE.
- * `listCameras()` in `lib/queries/live.ts` deliberately does not select `embed_url`: "the
- * listing never embeds, so shipping the embed URL to the browser would be handing out an
- * origin the page has no business contacting". That is the stricter reading of ADR 0015 and
- * the tile therefore cannot load an image even if it wanted to. The wireframe draws the
- * embed loading in the tile; this is a deviation, and it is recorded in
- * `docs/frontend/HANDOFF-live.md` for the maintainer to overrule if the wireframe was
- * meant literally.
- *
- * Confidence and last-verified render on every camera entry, exactly as on a directory card.
- * There is no view of an entry in this product that omits them (architecture HANDOFF §9.1).
+ * Embeddable entries link to their detail page instead of loading in the tile;
+ * `listCameras()` doesn't even select `embed_url`.
  */
 
 export function CameraCard({ camera }: { camera: CameraCardData }) {
@@ -78,11 +66,7 @@ export function CameraCard({ camera }: { camera: CameraCardData }) {
                 <a
                   href={camera.sourceUrl}
                   target="_blank"
-                  /*
-                   * `noreferrer` is not optional here. It stops the operator learning which of
-                   * our pages the reader came from — the link-out equivalent of the
-                   * `referrerpolicy="no-referrer"` an embed carries (ADR 0015 §3, §5).
-                   */
+                  /* `noreferrer` hides which of our pages the reader came from. */
                   rel="noopener noreferrer nofollow"
                 >
                   <ExternalLink className="size-4 shrink-0" aria-hidden="true" />

@@ -4,38 +4,16 @@ import { CONFIDENCE_LEVELS, type ConfidenceLevel } from "@/db/schema";
 import { cn } from "@/lib/utils";
 
 /**
- * How sure we are about a catalogue entry. The most-repeated coloured element in the
- * product, and the one where a misread is a misread claim.
+ * How sure we are about a catalogue entry or playbook.
  *
- * The ramp is a monotonic luminance staircase, so it stays *ordered* under every form of
- * colour vision deficiency. Colour is the third channel, never the first: every chip
- * renders a filled-segment meter, a word, and an icon, so it survives greyscale printing,
- * a monochrome screenshot, and a reader who sees no colour at all.
+ * The colour ramp is a monotonic luminance staircase, and every chip also has a meter, a
+ * word and an icon, so it reads without colour. `high` is neutral grey; `needsReview` gets
+ * the dashed border and fill.
  *
- * `high` is deliberately neutral grey. It is the commonest value, defaults should not
- * spend colour, and it guarantees a chip can never be mistaken for a link.
+ * Stored value `needsReview` maps to token stem `review` and label "Needs review".
  *
- * `needsReview` is the chromatically quietest step because the staircase requires it, so
- * it carries the two structural signals instead: the only dashed border, the only fill.
- *
- * Three spellings, one per layer, all deliberate: the stored value is `needsReview`
- * (CONFIDENCE_LEVELS in db/schema.ts), the token stem is `review`, the label reads
- * "Needs review". The map below is the single translation point.
- *
- * EVERY `meaning` BELOW HAS OUR RECORD AS ITS SUBJECT, never the tool. A hostile audit found
- * `needsReview` reading as "confirm before relying on it", which a reader takes as a warning
- * about the tool — the precise confusion `docs/design/states.md` §3.4 exists to prevent.
- * Confidence says how sure WE are about what WE wrote down; `lastVerifiedAt` says when we
- * last looked; neither is a rating of the tool. `tools.reliability` is the rating, and it is
- * a separate field. If you edit these strings, keep the grammatical subject on us.
- *
- * The strings say "entry", not "tool", because this chip renders over playbooks as well as
- * over catalogue entries — and on `/playbooks/[slug]` the reader is looking at a *method*.
- * "Not a judgement about the tool" reads slightly wrong there. One canonical wording that is
- * correct on both surfaces beats a local restatement on either, which is what Q-16 was about
- * in the first place.
- *
- * Specified in docs/brand/HANDOFF.md section 3 and docs/design/tokens.md section 3.
+ * Each `meaning` describes our record, not the tool's quality (that's `tools.reliability`).
+ * They say "entry" because the chip also appears on playbooks.
  */
 
 interface ConfidencePresentation {
@@ -80,11 +58,7 @@ const PRESENTATION: Record<ConfidenceLevel, ConfidencePresentation> = {
   },
 };
 
-/**
- * Token stems differ from stored values by design (needsReview maps to review), so class
- * strings are written out in full rather than interpolated — Tailwind only ever emits
- * class names it can see literally in the source.
- */
+/** Written out in full: Tailwind only emits class names it sees literally. */
 const CHIP_CLASS: Record<ConfidenceLevel, string> = {
   verified: "border-confidence-verified text-confidence-verified",
   high: "border-confidence-high text-confidence-high",

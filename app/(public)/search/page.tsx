@@ -18,31 +18,12 @@ import { parseSearchFilters } from "@/lib/validation/filters";
 import { cn } from "@/lib/utils";
 
 /**
- * `/search` — tools and playbooks, two ranked groups.
+ * `/search`: tools and playbooks in two ranked groups.
  *
- * **Dynamic** (`sitemap.md` §4): it reads `searchParams`, so no `revalidate` is exported here
- * — one would silently do nothing (architecture HANDOFF §8, QA assertion 11). The SQL is
- * still cached, at `revalidate: 60` inside `search()`, because search is the one public
- * surface where an hour of staleness is noticeable and a minute is not.
+ * Dynamic (reads `searchParams`), so no `revalidate`; `search()` caches the SQL for 60s.
+ * Left out of `sitemap.xml` but not `noindex`, so crawlers can still follow result links.
  *
- * **It is deliberately absent from `sitemap.xml`** and not disallowed in `robots.txt` — the
- * shell handoff §11.3 flagged that as this route's call to revisit. It stays as it is: the
- * page has no indexable content of its own, only a rendering of the catalogue, and adding a
- * `noindex` would also stop a crawler following the links out to the entries themselves.
- *
- * STATES BUILT HERE — `states.md` §8:
- *   §8.1 success, with both counts and the query echoed
- *   §8.2 nothing matches, query kept in the field so it can be edited rather than retyped
- *   §8.4 the search failed, in-region, with the field still usable
- *   §8.5 empty query — the field and the categories, and no error, because an empty search is
- *        not a mistake
- *   plus the trigram fallback, which `search()` populates only when both ranked groups are
- *   empty and which is announced as such rather than passed off as ordinary results
- *
- * §8.3 (one group failed, the other rendered) is NOT reachable today: `search()` runs both
- * queries inside one function and one rejection fails both. It needs `searchTools()` and
- * `searchPlaybooks()` exported separately from `lib/queries/search.ts`, which this agent does
- * not own. Recorded in `docs/frontend/HANDOFF-directory.md`.
+ * A failure in one group fails both, since `search()` runs them together.
  */
 
 export const dynamic = "force-dynamic";
@@ -73,8 +54,7 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
     }
   }
 
-  // Only read for the empty-query state (§8.5). Failing to read them is not worth an error:
-  // the field above still works, which is the whole content of that state.
+  // Only needed for the empty-query state; failures are ignored.
   const categories = filters.q
     ? []
     : await listCategories()
@@ -104,9 +84,8 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
       </div>
 
       {/*
-        THE ONE LIVE REGION ON THIS ROUTE (shell handoff §10.1). It is in the DOM before the
-        results are — a region created at the same moment as its content announces nothing —
-        and `aria-atomic="false"` so a reader hears the new count, not the whole list again.
+        Live region exists before results render (otherwise nothing is announced);
+        `aria-atomic="false"` so only the new count is read.
       */}
       <section aria-live="polite" aria-atomic="false" aria-label="Search results" className="mt-8">
         <p className="sr-only">{announcement}</p>
@@ -118,7 +97,7 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
             secondary={{ label: "browse the directory", href: "/directory" }}
           />
         ) : !filters.q ? (
-          /* §8.5 — an empty search is not a mistake. No error, no empty-state scolding. */
+          /* Empty query: not an error. */
           <div>
             <p className="max-w-[60ch] text-base text-foreground-secondary">
               Search across the catalogue and the playbooks. Results carry our confidence in the
@@ -153,7 +132,7 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
             ) : null}
           </div>
         ) : nothingMatched && fuzzy.length === 0 ? (
-          /* §8.2. The query stays in the field above, so it can be edited rather than retyped. */
+          /* No matches. The query stays in the field for editing. */
           <div className="rounded-lg border border-border bg-card p-6">
             <h2 className="text-lg font-semibold tracking-tight">
               Nothing matches &ldquo;{filters.q}&rdquo;
@@ -170,18 +149,9 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
         ) : (
           <>
             {/*
-              THE FUZZY FALLBACK, SAID OUT LOUD.
-
-              `search()` populates `didYouMean` only when both ranked groups returned nothing;
-              it is a `pg_trgm` similarity match on the name, on a different scale from
-              `ts_rank_cd`, and `search.md` §5 forbids merging the two. So it is rendered as
-              its own labelled group with the reason stated.
-
-              This matters more than it looks. A reader who searches a misspelling and sees a
-              bare list concludes we silently corrected them; a reader who sees nothing
-              concludes the tool is not in the catalogue. Neither is true. There is no "did you
-              mean" auto-correction and the interface never changes what was asked for — it
-              says what it did instead.
+              Fuzzy fallback: `didYouMean` is only set when both groups are empty. It's a
+              `pg_trgm` name match on a different scale from `ts_rank_cd`, so it's shown as a
+              separate, labelled group rather than merged into results.
             */}
             {fuzzy.length > 0 ? (
               <div className="mb-6">
@@ -229,11 +199,7 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
                   {filters.q}&rdquo;
                 </p>
 
-                {/*
-                  Two columns at 1280px, stacked at 375px, tools first in both — the tool count
-                  is two orders of magnitude larger and it is what people search for
-                  (`wireframes/04-search.txt`).
-                */}
+                {/* Two columns on wide screens, stacked on mobile; tools first. */}
                 <div className="mt-4 grid grid-cols-1 gap-8 xl:grid-cols-2">
                   <section aria-labelledby="tools-heading">
                     <h2
@@ -288,11 +254,7 @@ export default async function SearchPage({ searchParams }: SearchPageProps) {
   );
 }
 
-/**
- * What a screen reader hears when the results change. One sentence, the same information the
- * sighted reader gets from the count line — including, when it applies, the fact that the
- * results came from the spelling fallback rather than from the index.
- */
+/** Screen-reader announcement for the current results, including the fuzzy fallback case. */
 function buildAnnouncement({
   query,
   failed,

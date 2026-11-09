@@ -4,7 +4,7 @@ import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
 
-/** Copy verbatim from `states.md` §1.3. Nothing from `error` is rendered. */
+/** Nothing from `error` is rendered. */
 export default function TagError({ reset }: { error: Error; reset: () => void }) {
   return (
     <div className="mx-auto w-full max-w-[80rem] px-4 py-16 md:px-6 md:py-24">

@@ -4,52 +4,21 @@ import type { SourceFeature } from "@/lib/sources/types";
 import type { MapLayerDefinition } from "./registry";
 
 /**
- * "Save this to a case" — the join between the Live pillar and the Workspaces pillar.
+ * "Save to a case" control.
  *
- * ## Why it is a plain GET form and not a button that calls a Server Action
+ * A native `<form method="get">` rather than a Server Action: a client `onClick` does nothing
+ * before hydration, and `<form action={serverAction}>` is a background fetch that's lost if
+ * the reader navigates away. This works without JS and adds no client code.
  *
- * `docs/frontend/HANDOFF-directory.md` §1b records two implementations of the equivalent
- * control on `/tools/[slug]` that the E2E suite rejected, and both failures are invisible in
- * a browser you are watching:
+ * It goes to `/map/save` instead of opening a picker here because listing cases needs
+ * `auth()`, and public routes like `/map` never read the session (same pattern as
+ * `/tools/[slug]/save`).
  *
- *   1. a client `onClick` calling the action — a tap between the HTML arriving and React
- *      attaching does nothing at all, silently;
- *   2. `<form action={serverAction}>` — React intercepts the submit as a background `fetch`,
- *      so navigating away in the moment after clicking drops the connection and loses the
- *      save with the button already showing pressed.
+ * Shown to signed-out readers (the picker sends them to sign-in and back). `FeatureDetail`
+ * hides it in public-only mode, where `/map/save` isn't served.
  *
- * This is a native `<form method="get">`. The browser commits to the navigation before it
- * leaves the page, React never intercepts it, and it works with the bundle removed. It adds
- * **zero bytes** of client JavaScript: no state, no handler, no `use client` of its own — it
- * renders inside one because `feature-detail.tsx` is one, not because it needs to be.
- *
- * ## Why it goes to a route rather than opening a dialog here
- *
- * A picker listing the reader's own cases needs `auth()`, and `sitemap.md` §10.1 makes it a
- * route-level invariant that no public route reads the session. `/map` is public. A child
- * segment is `force-dynamic` on its own without touching its parent, which is the same shape
- * `/tools/[slug]/save` and `/playbooks/[slug]` already use — one pattern, not a third.
- *
- * ## It renders for signed-out readers too
- *
- * The picker handles that state and sends them to sign-in with a `callbackUrl` back to
- * itself. Hiding the control until a reader signs in means they never learn the feature
- * exists; showing them a dead one means they learn it does not work.
- *
- * ## But not where there is no sign-in at all
- *
- * That is a different state, and `FeatureDetail` decides it rather than this component: in
- * public-only mode (ADR 0032) no provider is configured, `/map/save` is not served, and the
- * reader cannot sign in even if they want to. "Signed out" is one click from a case; "this
- * deployment has no accounts" has nowhere to go, so the control is not rendered.
- *
- * ## What crosses the wire
- *
- * The layer's `sourceSlug` and the feature's own id. Nothing else — not the coordinates, not
- * the observation instant, and above all not the attribution or the licence. The server
- * resolves all of it from the same cache entry the map was drawn from (ADR 0025, QA finding
- * QV-14). A licence obligation sourced from a request body is a licence obligation a crafted
- * request can blank.
+ * Only `sourceSlug` and the feature id are sent. The server resolves coordinates,
+ * attribution and licence from the cache, so a crafted request can't strip attribution.
  */
 export function SaveFeature<F extends SourceFeature>({
   layer,
@@ -59,13 +28,7 @@ export function SaveFeature<F extends SourceFeature>({
   layer: MapLayerDefinition<F>;
   feature: F;
 }) {
-  /*
-   * A DEVELOPMENT-ONLY LAYER IS NOT SAVABLE. The stress harness generates 10,000 synthetic
-   * points in this process; putting one into a case file would be fabricated content in the
-   * one artefact the reader keeps (product-brief §6). The layer is already dropped from a
-   * production build, so this only affects what a developer can do on their own machine —
-   * which is exactly where the mistake would be made.
-   */
+  /* Dev-only layers (synthetic data) can't be saved to a case. */
   if (layer.devOnly) return null;
 
   return (
@@ -77,11 +40,7 @@ export function SaveFeature<F extends SourceFeature>({
         className="border-input hover:bg-accent hover:text-accent-foreground focus-visible:ring-ring focus-visible:ring-offset-background inline-flex min-h-11 items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
       >
         <FolderPlus className="size-4 shrink-0" aria-hidden="true" />
-        {/*
-          The label names the thing, because a screen-reader user moving by controls hears
-          this out of context and "save to a case" alone does not say which of the fourteen
-          features on the panel behind it.
-        */}
+        {/* Screen-reader label names the feature, since controls are heard out of context. */}
         save to a case
         <span className="sr-only">: {feature.label}</span>
       </button>

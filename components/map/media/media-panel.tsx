@@ -9,48 +9,21 @@ import { attachHlsStream } from "./hls";
 import type { HlsModuleLoader } from "./hls";
 
 /**
- * One feature's picture, clip, audio or live stream: disclosed, then connected only if the
- * reader says so.
+ * A feature's image, clip, audio or live stream, loaded only on click.
  *
- * ## The rules, which are ADR 0015's and product-brief §2b's rather than this file's
+ * - No media element, preconnect, prefetch or poster before the press.
+ * - The disclosure names the host, and so does the button label. `resolveMedia` rejects a
+ *   record whose host doesn't match its URL.
+ * - The browser talks to the operator directly; our server never carries the bytes.
+ * - `preload="none"`, no autoplay/poster, controls always on. Referrer: `no-referrer` on
+ *   `<img>`; media elements use the site-wide `Referrer-Policy` header (`infra/Caddyfile`).
+ * - Disconnect unmounts the element (and destroys the HLS instance), which ends the connection.
+ * - Licence credit renders next to the media.
  *
- * - **Nothing connects until the reader presses the control.** The `<img>`, `<audio>` and
- *   `<video>` do not exist in the DOM before that. No `preconnect`, no prefetch, no poster
- *   image, no thumbnail warming — every one of those is a sensible-looking optimisation that
- *   silently repeals the decision, and a `poster` in particular looks like a picture and is
- *   actually a request to the operator before the reader agreed to one.
- * - **The connection is disclosed first, in plain words, naming the host**, and the host is
- *   repeated in the control's own label so a reader who reads only the button still learns what
- *   pressing it does. `resolveMedia` refuses a record whose host disagrees with its URL.
- * - **Our server never carries these bytes.** The browser talks to the operator directly.
- * - **`preload="none"`, no autoplay, no poster, controls always present.** Referrer suppression
- *   is `referrerPolicy="no-referrer"` on the `<img>`, and for media elements — where HTML
- *   defines no such attribute — it is the site-wide `Referrer-Policy: no-referrer` header in
- *   `infra/Caddyfile`. Writing the attribute on a `<video>` would be markup the browser ignores
- *   that reads like a guarantee.
- * - **Disconnecting unmounts the element**, which is the only thing that actually ends the
- *   connection. Destroying the HLS instance is the same act for a stream.
- * - **The credit the licence requires renders beside the media**, not in a footer.
+ * A `video` is a periodically replaced file (e.g. TfL JamCam MP4s); a `stream` is live HLS.
+ * The panel says which, and only quotes a refresh cadence the operator publishes.
  *
- * ## `video` and `stream` are not the same thing and this panel will not pretend they are
- *
- * A `video` is a file. TfL replaces the MP4 behind each JamCam every few minutes; the reader's
- * browser downloads whatever is there now and it does not advance while they watch. A `stream`
- * is an HLS manifest whose segments keep arriving. Both are moving pictures and only one of
- * them is live, so the panel states which, in those words, above the control — and where the
- * operator publishes a refresh cadence, it says that too, in the operator's words and never in
- * an estimate of ours.
- *
- * Collapsing the two would be the cheapest possible lie: an investigator looking at an empty
- * road on a five-minute-old clip labelled "live" would draw a conclusion about the road as it
- * is now.
- *
- * ## Focus
- *
- * Pressing "load" removes the button that was focused, and pressing "disconnect" removes that
- * one. Without moving focus, a keyboard reader is dropped onto `<body>` mid-panel and a screen
- * reader announces nothing — which reads as the press having failed. Focus moves to whichever
- * control took the other's place, and that announcement doubles as confirmation.
+ * Focus moves to the replacement button on load/disconnect, since the pressed one unmounts.
  */
 
 export interface MediaPanelProps {
@@ -58,15 +31,11 @@ export interface MediaPanelProps {
   /** Names the subject in the media element's accessible name. A camera or station name. */
   readonly subjectLabel: string;
   /**
-   * Where to send a reader whose browser cannot play a stream — the operator's own page.
-   * `null` when the caller has none, in which case the manifest URL itself is offered with an
-   * honest warning about what the browser will probably do with it.
+   * The operator's page, for browsers that can't play the stream. When `null`, the manifest
+   * URL is offered with a warning that it will probably download.
    */
   readonly fallbackUrl?: string | null;
-  /**
-   * Test seam. Production passes nothing and `attachHlsStream` uses the dynamic import in
-   * `hls.ts`, which is what keeps the library out of every route's initial bundle.
-   */
+  /** Test seam; production uses the dynamic import in `hls.ts`. */
   readonly hlsLoader?: HlsModuleLoader;
 }
 
@@ -99,11 +68,7 @@ export function MediaPanel({ media, subjectLabel, fallbackUrl, hlsLoader }: Medi
       aria-label={`Media from ${media.host}`}
       className="mt-4 rounded-md border border-dashed border-border p-3"
     >
-      {/*
-        THE DISCLOSURE IS ABOVE THE CONTROL AND STAYS THERE. A reader deciding whether to reveal
-        their address to a camera operator has to be able to read the consequence before acting,
-        and to re-read it afterwards without undoing anything. ADR 0015 point 2.
-      */}
+      {/* Disclosure stays above the control, before and after connecting. */}
       <p className="max-w-[68ch] text-sm leading-relaxed text-foreground-secondary">
         {media.disclosure}
       </p>
@@ -131,7 +96,7 @@ export function MediaPanel({ media, subjectLabel, fallbackUrl, hlsLoader }: Medi
           onClick={() => press(true)}
         >
           <MediaIcon kind={media.kind} />
-          {/* The consequence is IN the label, not only in the paragraph above it. */}
+          {/* The label itself names the host. */}
           {controlVerb(media)} — connects you directly to {media.host}
         </Button>
       ) : (
@@ -150,10 +115,8 @@ export function MediaPanel({ media, subjectLabel, fallbackUrl, hlsLoader }: Medi
           )}
 
           {/*
-            THE CREDIT SITS WITH THE MEDIA, because that is what the licence asks for. TfL's
-            wording carries the Ordnance Survey notice and CC BY carries Fintraffic's; neither
-            is satisfied by a line in a footer. Null means the licence asks for nothing, which
-            is true of a public-domain dedication and false of everything else here.
+            Credit next to the media, as the licences require (TfL incl. the Ordnance Survey
+            notice; Fintraffic CC BY). Null means none required (public domain).
           */}
           {media.credit && !problem ? (
             <p className="mt-2 max-w-[68ch] text-xs leading-relaxed text-foreground-secondary">
@@ -170,7 +133,7 @@ export function MediaPanel({ media, subjectLabel, fallbackUrl, hlsLoader }: Medi
             onClick={() => press(false)}
           >
             <PlugZap className="size-4 shrink-0" aria-hidden="true" />
-            {/* Unmounting the element is what actually ends the connection. */}
+            {/* Unmounting the element ends the connection. */}
             disconnect from {media.host}
           </Button>
         </div>
@@ -179,11 +142,7 @@ export function MediaPanel({ media, subjectLabel, fallbackUrl, hlsLoader }: Medi
   );
 }
 
-/**
- * WHAT THE READER IS ABOUT TO BE LOOKING AT, for the two kinds a reader could otherwise
- * reasonably mistake for each other. It renders before the control, because the distinction is
- * part of the decision, and it stays after it, because it is part of reading the picture.
- */
+/** Says whether a moving picture is a file or a live stream; shown before and after loading. */
 function MediaNature({ media }: { media: LayerMedia }) {
   if (media.kind === "video") {
     return (
@@ -210,7 +169,7 @@ function MediaNature({ media }: { media: LayerMedia }) {
   return null;
 }
 
-/** The element itself. Everything about it is an ADR 0015 rule rather than a preference. */
+/** The media element itself. */
 function MediaElement({
   media,
   subjectLabel,
@@ -224,16 +183,8 @@ function MediaElement({
 }) {
   if (media.kind === "image") {
     return (
-      /*
-        A PLAIN `<img>`, DELIBERATELY.
-
-        `next/image` would route these bytes through our own optimiser, which is exactly the
-        relaying ADR 0015 and product-brief §2b forbid: it would make this site a redistributor
-        of an operator's imagery and put their traffic on our bandwidth.
-        `referrerPolicy="no-referrer"` so the operator learns that somebody loaded the image but
-        not which of our pages they were on (ADR 0015 point 3).
-      */
-      // eslint-disable-next-line @next/next/no-img-element -- next/image proxies the bytes through our server, which is the redistribution ADR 0015 forbids. This must be a direct browser-to-operator request.
+      /* Plain `<img>`: `next/image` would proxy the operator's imagery through our server. */
+      // eslint-disable-next-line @next/next/no-img-element -- must be a direct browser-to-operator request, not proxied by next/image.
       <img
         src={media.url}
         alt={`Image from ${subjectLabel}, loaded from ${media.host}. Nothing here describes what it shows.`}
@@ -247,24 +198,18 @@ function MediaElement({
   if (media.kind === "audio") {
     return (
       /*
-        NO CAPTION TRACK, and it is worth saying why rather than leaving a gap: a live radio
-        stream has none to offer and we will not invent one. The station's name, language,
-        country and homepage are in the panel above, which is the text equivalent a reader who
-        cannot hear it actually gets. `jsx-a11y/media-has-caption` is not enabled in this repo's
-        config, so there is no directive to leave here — a disable comment for a rule that is
-        off is itself a lint warning.
+        No caption track: live radio has none. The station details in the panel are the text
+        equivalent.
       */
       <audio
         src={media.url}
         controls
         /*
-          Playback starts because the control the reader just pressed says "play". This is
-          user-initiated, not autoplay: the element did not exist a moment ago. There is no
-          motion here, so `prefers-reduced-motion` has nothing to suppress — which is exactly
-          why `video` and `stream` below do NOT do this.
+          The reader just pressed "play" and the element mounts on that click, so this is
+          user-initiated. Video below doesn't autoplay (reduced motion).
         */
         autoPlay
-        /* `none` matters even here: without it some browsers refetch on mount. */
+        /* Some browsers refetch on mount without this. */
         preload="none"
         onError={() => onProblem(elementFailureSentence(media.host, "play"))}
         className="w-full"
@@ -280,23 +225,14 @@ function MediaElement({
         src={media.url}
         controls
         /*
-          NO `autoPlay`, NO `loop`, NO `poster`.
-
-          Autoplaying video is motion that starts without being asked, which is what
-          `prefers-reduced-motion` is about and what ADR 0015 forbids outright; `poster` is a
-          request to the operator before the reader has pressed play, which is the click-to-load
-          rule undone by an attribute. `preload="none"` means the element's mere existence
-          fetches nothing at all — the first byte moves when the reader presses play.
+          No autoplay, loop or poster (a poster would fetch before play). `preload="none"` so
+          nothing is fetched until the reader presses play.
         */
         preload="none"
         playsInline
         /*
-          NO `referrerPolicy` HERE, and it is not an oversight. HTML defines that attribute on
-          `<img>`, `<a>`, `<link>`, `<script>` and `<iframe>` — not on media elements, which
-          take the document's policy. Writing it here would type-error, and adding a
-          declaration for it would be worse: an attribute the browser ignores, sitting in the
-          markup looking like a guarantee. The real one is `Referrer-Policy: no-referrer`, set
-          site-wide in `infra/Caddyfile`, which covers this request and every other.
+          No `referrerPolicy`: HTML doesn't define it on media elements. The site-wide
+          `Referrer-Policy: no-referrer` header (`infra/Caddyfile`) covers this.
         */
         aria-label={`Video clip from ${subjectLabel}, played directly from ${media.host}`}
         onError={() => onProblem(elementFailureSentence(media.host, "play"))}
@@ -325,13 +261,8 @@ function MediaElement({
 }
 
 /**
- * A live HLS stream, played natively where the browser can and through a dynamically loaded
- * library where it cannot.
- *
- * The element is rendered first and wired up in an effect, because attaching needs the real
- * DOM node. Nothing is fetched by rendering it: `preload="none"`, no `src`, and the library —
- * when it is used at all — is requested inside the effect, which only runs because the reader
- * already pressed the disclosed control.
+ * Live HLS stream, native where possible, otherwise via the lazily loaded library. Wired up
+ * in an effect because attaching needs the DOM node; rendering alone fetches nothing.
  */
 function HlsPlayer({
   url,
@@ -350,12 +281,7 @@ function HlsPlayer({
 }) {
   const elementRef = React.useRef<HTMLMediaElement | null>(null);
 
-  /*
-   * Read through refs rather than listed as dependencies. `onProblem` is a new function on
-   * every render of the panel and `hlsLoader` may be too; either in the dependency array would
-   * tear the stream down and rebuild it on an unrelated re-render, which for a live connection
-   * means dropping it and reconnecting to the operator without anyone asking.
-   */
+  /* Refs, not deps: new callback identities would otherwise drop and reconnect the stream. */
   const onProblemRef = React.useRef(onProblem);
   onProblemRef.current = onProblem;
   const loaderRef = React.useRef(hlsLoader);
@@ -386,7 +312,7 @@ function HlsPlayer({
 
     return () => {
       cancelled = true;
-      /* Destroying the instance is what stops the segment requests. Unmounting alone is not. */
+      /* Destroying the instance stops segment requests; unmounting alone doesn't. */
       detach?.();
       element.removeAttribute("src");
     };
@@ -394,12 +320,7 @@ function HlsPlayer({
 
   const shared = {
     controls: true,
-    /*
-      No autoplay, for a live stream as much as for a clip: motion that starts by itself is
-      what `prefers-reduced-motion` is about. The reader presses play in the element's own
-      controls. `preload="none"` is belt and braces — there is no `src` to preload until
-      either the native path sets one or the library attaches a MediaSource.
-    */
+    /* No autoplay; the reader presses play. */
     preload: "none" as const,
     className:
       medium === "audio"
@@ -427,7 +348,7 @@ function HlsPlayer({
     <video
       {...shared}
       playsInline
-      /* Referrer suppression is the document's, not this element's. See the clip above. */
+      /* Referrer policy comes from the document header (see the clip above). */
       aria-label={label}
       ref={(element) => {
         elementRef.current = element;
@@ -438,11 +359,7 @@ function HlsPlayer({
   );
 }
 
-/**
- * The way out when the in-page player cannot work. The stream is an enhancement; the
- * operator's own page always works, and a reader who came here to look at a camera must not be
- * left holding an error message.
- */
+/** Link out to the operator when the in-page player can't work. */
 function FallbackLink({
   media,
   fallbackUrl,
@@ -488,11 +405,7 @@ function MediaIcon({ kind }: { kind: LayerMedia["kind"] }) {
   return <Radio className={className} aria-hidden="true" />;
 }
 
-/**
- * The verb on the control. Distinct per kind on purpose: a reader scanning by controls hears
- * only this, and "play" on a clip and "play" on a live stream would be the same promise for two
- * different things.
- */
+/** Control verb, distinct per kind so a clip and a live stream aren't labelled alike. */
 function controlVerb(media: LayerMedia): string {
   switch (media.kind) {
     case "image":

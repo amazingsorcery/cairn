@@ -5,22 +5,17 @@ import { clientSubject, consumeSafely } from "@/lib/rate-limit";
 import { suggestQuerySchema } from "@/lib/validation/filters";
 
 /**
- * Type-ahead for the search field. `search.md` §6.5, `sitemap.md` §4.
+ * Type-ahead for the search field. Never cached at any layer: a shared cache of partial
+ * queries would be a readable log of what users are searching for.
  *
- * NEVER CACHED, at any layer — and the reason is not performance. `caching.md` §7: "A shared
- * cache of partial search queries, keyed by prefix and warmed by whoever typed first, is a
- * readable log of what this audience is looking into." Product-brief §3.2 constraint 4
- * covers our own infrastructure, not only third-party trackers.
- *
- * Rate limited per HASHED client identifier (ADR 0009): one indexed query per debounced
- * keystroke, unauthenticated, is the cheapest way to make a small VPS work hard.
+ * Rate limited per hashed client identifier, since it's an unauthenticated query per keystroke.
  */
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 const NO_STORE = {
   "Cache-Control": "private, no-store",
-  // Belt and braces with the Caddyfile, which sets this on /api/* as well.
+  // Caddy sets this on /api/* too.
   "X-Robots-Tag": "noindex",
 } as const;
 
@@ -28,8 +23,7 @@ export async function GET(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const parsed = suggestQuerySchema.safeParse({ q: url.searchParams.get("q") ?? "" });
 
-  // A short or missing query is an empty list, not an error: the field calls this on every
-  // debounce and a 400 in the console on every first keystroke is noise, not information.
+  // Short or missing query: empty list rather than a 400 on every first keystroke.
   if (!parsed.success) {
     return NextResponse.json({ results: [] }, { headers: NO_STORE });
   }

@@ -18,19 +18,11 @@ import {
 import type { ActionResult } from "@/lib/actions/result";
 
 /**
- * A confirmation dialog around one Server Action. `wireframes/11-admin-queue.txt`.
+ * Confirmation dialog around one Server Action. Confirming accuracy is recorded against the
+ * editor's id, so it shouldn't be a one-click button.
  *
- * WHY "CONFIRM STILL ACCURATE" IS A DIALOG AND NOT A ONE-CLICK BUTTON: it is an assertion a
- * named human is making about an entry, recorded with their id and today's date. Making it
- * cheap would make it untrue, which would in turn make every confidence value in the public
- * catalogue decorative (ADR 0007 §8).
- *
- * THE ACTION IS PASSED IN, not chosen here. Tools, playbooks, cameras and connectors each
- * have their own action with its own role check and its own revalidation set; a single
- * dispatcher taking a `kind` string would put that choice on the client, where it is an
- * attacker's to make. Whatever is passed, the action re-checks the session and the role
- * against the database before it writes — a Server Action is a public HTTP endpoint with a
- * generated name, and its authorisation is not inherited from the page that rendered it.
+ * The action is passed in rather than dispatched from a client-side `kind` string. Each
+ * action re-checks session and role itself, since Server Actions are public endpoints.
  */
 
 export interface ConfirmActionProps {
@@ -63,9 +55,7 @@ export function ConfirmAction({
     startTransition(async () => {
       const result = await action({ id });
       if (!result.ok) {
-        // The message is one sentence written for an editor. A database error, a constraint
-        // name or a stack never reaches here — `guard()` in `lib/actions/result.ts` maps
-        // constraint names to sentences and logs the rest.
+        // Already user-safe: `guard()` in `lib/actions/result.ts` maps DB errors to sentences.
         setError(result.message);
         return;
       }

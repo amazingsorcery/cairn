@@ -1,25 +1,10 @@
 import { cn, formatDate, verificationAge } from "@/lib/utils";
 
 /**
- * When a human last confirmed an entry is accurate.
+ * When an entry was last confirmed accurate, as an absolute date plus relative age.
  *
- * Architecture HANDOFF section 9.1 requires this everywhere an entry appears, showing an
- * absolute date *and* a relative age. Both, because they answer different questions: the
- * date is what you cite in a write-up, the age is whether to trust it.
- *
- * Two deliberate choices, both from ADR 0016:
- *
- * 1. Ageing and stale records use `--warning`, never `--destructive`. Destructive is the
- *    delete/revoke red, and on a directory row it reads as a judgement about the TOOL —
- *    the exact confusion this product cannot afford. `lastVerifiedAt` describes the
- *    freshness of OUR RECORD. A tool can be excellent and our note about it a year old.
- *    Escalation is carried by weight and by wording, which can say precisely what is and
- *    is not being claimed. Colour cannot.
- *
- * 2. The visible text is human-readable ("14 Aug 2026", unambiguous across US and UK
- *    reading order in a way a numeric format is not) and the `<time dateTime>` attribute
- *    carries full ISO 8601 for machines. Exports use ISO throughout, because those are
- *    evidence artefacts that get quoted, sorted and diffed.
+ * Stale records use `--warning`, never `--destructive`: this describes our record's age, not
+ * the tool's quality. Visible text is "14 Aug 2026"; `<time dateTime>` carries ISO 8601.
  */
 
 const STATUS_CLASS = {

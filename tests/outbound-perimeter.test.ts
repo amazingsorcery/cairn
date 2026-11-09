@@ -4,42 +4,17 @@ import { join, relative, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 
 /**
- * QA v4 — QA-V4-03. The perimeter of `tests/security/outbound-primitive.test.ts`.
- *
- * That test is the structural guard QV-03's fix rests on, and it is a good one: reverting
- * `flights.ts` or `overpass.ts` to a bare `fetch(` turns it red, which I re-measured by
- * adding `lib/connectors/qa-plain.ts`. Its PERIMETER, not its detector, is what fails:
- *
- *   1. `readdirSync` was not recursive and filtered on `entry.isFile()`, so a file in a
- *      SUBDIRECTORY of `lib/connectors/` or `lib/sources/` was never opened. Measured: a
- *      `lib/connectors/drivers/qa-probe.ts` calling `fetch(url, { redirect: "follow" })`
- *      left all 68 assertions green.
- *
- *      **FIXED, and this file now guards the fix rather than the symptom.** `sourceFiles`
- *      in that test recurses. The assertion here used to be "the layer must stay flat",
- *      which was the right guard while the scan was one level deep and the wrong one the
- *      moment a legitimate subdirectory appeared — `lib/sources/cameras/` holds one camera
- *      provider per operator, none of which may open a socket, and all of which the
- *      recursive scan reads. So what is asserted now is **that the recursion is still
- *      there**: delete it and this turns red, which is the property that actually matters.
- *   2. `FORBIDDEN_IMPORTS` lists HTTP clients and no SOCKET modules, while the test's own
- *      title is "exactly one file per layer may open a socket". Measured: a
- *      `lib/connectors/qa-socket.ts` importing `connect` from `node:net` left it green.
- *
- * This file guards those two, and nothing else — it deliberately does not re-implement the
- * `fetch` detector, which works.
+ * Guards the perimeter of `tests/security/outbound-primitive.test.ts`:
+ *   1. its file scan must keep recursing into subdirectories;
+ *   2. no file in the network layers imports a raw socket module (that test only checks
+ *      HTTP clients).
+ * The `fetch` detector itself lives in that test.
  */
 
 const ROOT = process.cwd();
 const LAYERS = ["lib/connectors", "lib/sources"];
 
-/**
- * Subdirectories that exist today, with what each holds.
- *
- * Kept as documentation rather than as a gate: the scan below is recursive, so a directory
- * missing from this set is read anyway. Its value is that a reader can see at a glance what
- * is nested inside the two layers that may reach the network.
- */
+/** Known subdirectories and what they hold. Documentation only; the scan is recursive. */
 const KNOWN_SUBDIRECTORIES: Readonly<Record<string, string>> = {
   "lib/sources/__fixtures__": "captured upstream payloads and a test context; no code path",
   "lib/sources/cameras": "one camera provider per operator; each maps a payload, none fetches",
@@ -67,20 +42,14 @@ function subdirectories(dir: string): string[] {
 
 const GUARD = "tests/security/outbound-primitive.test.ts";
 
-describe("QA-V4-03: the outbound guard's perimeter", () => {
+describe("the outbound guard's perimeter", () => {
   it(`${GUARD} still walks subdirectories`, () => {
-    /*
-     * THE ASSERTION IS ON THE GUARD, NOT ON THE LAYERS. A perimeter that only checks the
-     * ground floor is a perimeter with a staircase through it — and the previous shape of
-     * this test, "the layer must stay flat", made adding a folder a test failure while
-     * leaving the staircase itself unguarded. What must never regress is the recursion.
-     */
+    // Asserts on the guard itself: the recursion must not regress.
     const guard = readFileSync(join(ROOT, GUARD), "utf8");
     expect(
       /function sourceFiles\([\s\S]*?sourceFiles\(/.test(guard),
-      `${GUARD} no longer recurses into subdirectories, so a driver one folder down opens ` +
-        `its own socket unchecked. That is how QV-03, QV-18 and QV-09 reopen at once — not ` +
-        `by writing bad code, but by making a folder.`,
+      `${GUARD} no longer recurses into subdirectories, so a driver one folder down could ` +
+        `make outbound calls unchecked.`,
     ).toBe(true);
   });
 

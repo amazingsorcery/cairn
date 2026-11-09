@@ -34,8 +34,7 @@ describe("radio-browser normalise", () => {
   });
 
   it("hands the client a direct stream URL, which our server never fetches", () => {
-    // The rule that decides the whole build (product-brief §2b). If this ever becomes a
-    // path on our own origin, the product has started rebroadcasting.
+    // We never relay audio; stream URLs must not point at our own origin.
     for (const feature of normaliseRadioBrowser(fixture, {})) {
       expect(feature.properties.streamUrl).not.toMatch(/^\/(api|proxy)/);
       expect(new URL(feature.properties.streamUrl).hostname).not.toBe("localhost");
@@ -44,12 +43,8 @@ describe("radio-browser normalise", () => {
 
   it("flags the http streams a browser will block as mixed content", () => {
     /**
-     * MEASURED against the live catalogue on 2026-08-31: 2,473 of 12,413 working geolocated
-     * stations publish a plain `http:` URL — 20%. In this captured fixture it is 34 of 200.
-     *
-     * They are flagged rather than dropped: hiding a fifth of the catalogue silently is the
-     * failure mode this codebase has already hit twice. But a play button on one fails with
-     * no error at all on an HTTPS page, so the UI has to know.
+     * ~20% of stations use plain `http:` (34 of 200 in this fixture). Flagged rather than
+     * dropped, since playback fails silently on an HTTPS page and the UI needs to know.
      */
     const features = normaliseRadioBrowser(fixture, {});
     const insecure = features.filter((f) => f.properties.isInsecureStream);
@@ -151,7 +146,7 @@ describe("radio-browser fetch", () => {
     await radioBrowser.fetch({}, testContext({ cache }));
     expect(discoveries()).toBe(1);
 
-    // Volunteer-run infrastructure: a second poll must not cost a second discovery call.
+    // A second poll must not cost a second discovery call.
     await radioBrowser.fetch({}, testContext({ cache }));
     expect(discoveries()).toBe(1);
   });
@@ -171,8 +166,7 @@ describe("radio-browser fetch", () => {
 
 describe("radio-browser server discovery", () => {
   it("only ever accepts hostnames inside the project's own domain", () => {
-    // The discovery response is remote-controlled text going into a server-side fetch URL:
-    // the SSRF shape ADR 0019 calls v2's top risk.
+    // Discovery returns remote-controlled text used in a server-side fetch URL (SSRF risk).
     expect(pickServer([{ name: "evil.example.com" }])).toBe("de1.api.radio-browser.info");
     expect(pickServer([{ name: "de1.api.radio-browser.info.evil.com" }])).toBe(
       "de1.api.radio-browser.info",

@@ -4,17 +4,9 @@ import type { Connector } from "@/db/schema";
 import type { ConnectorDriver } from "./types";
 
 /**
- * QA finding QV-09 — the audit log undercounted outbound requests.
- *
- * `connector_requests` had one row per `runConnector` call. The DNS driver makes six requests
- * per lookup and RIPEstat four, so `cloudflare-doh`'s recorded ceiling of 20 lookups a minute
- * was really 120 requests a minute against Cloudflare and the table said 20 — wrong by a
- * constant factor, on the artefact that found v1's Q-02, in the direction that hides the
- * problem.
- *
- * The count is taken at the `fetch` itself rather than declared by the driver, so it cannot
- * drift when a driver adds a call and it picks up the ones a declaration would miss: a
- * redirect hop, a per-type failure that was still a request.
+ * The audit row must count outbound requests, not `runConnector` calls: drivers fan out
+ * (DNS makes six per lookup). The count is taken at `fetch`, so redirect hops and failed
+ * requests are included.
  */
 
 const consume = vi.fn();
@@ -170,8 +162,8 @@ describe("connector_requests records outbound volume, not attempts", () => {
   it("records zero for a refusal that made no request", async () => {
     const { runConnector, clearConnectorCache } = await import("./runtime");
     clearConnectorCache();
-    // The CONNECTOR quotas refuse; the `connector-entry` door limiter (QV-25) does not,
-    // because it refuses before the registry read and would leave nothing to audit at all.
+    // Connector quotas refuse; the `connector-entry` limiter doesn't, since it refuses before
+    // the registry read and would leave nothing to audit.
     consume.mockImplementation(async (action: string) =>
       action === "connector-entry"
         ? { ok: true, count: 1, limit: 120, remaining: 119, resetAt: new Date() }
@@ -181,8 +173,7 @@ describe("connector_requests records outbound volume, not attempts", () => {
 
     await runConnector(fanOutDriver(6), {}, { subject: "reader" }, { connector: liveConnector() });
 
-    // Counting a refusal as one request would overstate our rate against the very limit this
-    // table exists to let us verify, which is the same error in the other direction.
+    // Counting a refusal as a request would overstate our upstream rate.
     expect(auditedRequests()).toBe(0);
   });
 });

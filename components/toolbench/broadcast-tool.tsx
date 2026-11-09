@@ -31,19 +31,10 @@ import { FieldError, ToolPanel } from "./output-row";
 /**
  * The Broadcast Finder.
  *
- * TWO THINGS ARE LOAD-BEARING AND BOTH ARE STATED IN THE INTERFACE, not only here:
- *
- * 1. **The search goes through our server; the audio does not.** `POST` to our own route
- *    handler, which asks the catalogue on the reader's behalf so their address and their
- *    search never reach a third party. The `<audio>` element then points straight at the
- *    broadcaster. Our server never touches a byte of audio (product-brief §2b), and no
- *    click-tracking request is sent to the catalogue either.
- *
- * 2. **A plain-`http:` stream gets a link, never a play button.** About a fifth of the
- *    catalogue publishes one, and a browser on an HTTPS page blocks it as mixed content with
- *    no error the page can see. A play button on one of those does nothing at all, which is
- *    the worst failure available: the reader concludes the tool is broken. They are listed,
- *    labelled, and given a link that opens the stream outside this page.
+ * 1. Search goes through our server (so the catalogue never sees the reader's address or
+ *    query); audio goes browser-to-broadcaster. No click tracking is sent to the catalogue.
+ * 2. Plain-`http:` streams (~20% of the catalogue) are silently blocked as mixed content,
+ *    so they get a link out instead of a play button.
  */
 
 interface SearchState {
@@ -572,11 +563,8 @@ function Results({
 }
 
 /**
- * One player for the page, pointed straight at the broadcaster.
- *
- * `key` on the element forces a fresh media element per station: reassigning `src` on a
- * playing element leaves the previous connection open in some browsers, which would mean a
- * reader who clicked four stations is holding four connections to four broadcasters.
+ * Single player, pointed at the broadcaster. `key` forces a new element per station, since
+ * some browsers keep the old connection open when `src` changes.
  */
 function Player({ station, onStop }: { station: BroadcastStation; onStop: () => void }) {
   return (

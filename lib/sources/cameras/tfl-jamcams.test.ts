@@ -5,16 +5,8 @@ import { toCameraFeature } from "./provider";
 import { tflJamCams } from "./tfl-jamcams";
 
 /**
- * REAL PAYLOAD, NOT AN INVENTED ONE.
- *
- * 26 places captured verbatim from `https://api.tfl.gov.uk/Place/Type/JamCam` on 2026-09-01
- * — 22 that TfL reports available and 4 it reports unavailable, out of 890 in the full
- * response. Nothing is edited: `$type`, `children`, `childrenUrls` and the escaped slashes in
- * the `view` text are all as TfL sent them.
- *
- * The discipline matters. `alt_baro: "ground"` on a quarter of a real aircraft response is
- * the kind of thing no invented fixture contains, and `available: "false"` — a *string*
- * "false", on 10% of this catalogue — is this feed's version of it.
+ * Real payload: 26 places captured unedited from `https://api.tfl.gov.uk/Place/Type/JamCam`
+ * on 2026-09-01 (22 available, 4 not). Note `available` is the string "false", not a boolean.
  */
 import fixture from "../__fixtures__/tfl-jamcams.json";
 
@@ -29,9 +21,7 @@ function read() {
 describe("tfl-jamcams", () => {
   it("maps the captured catalogue in full, with nothing dropped", () => {
     const { records } = read();
-    // Every place in the capture carries lat, lon, imageUrl and videoUrl, so every one of
-    // them is a camera. A count below the fixture length means something is being silently
-    // filtered, which is the failure this layer keeps meeting.
+    // Every captured place has position and media, so none should be filtered.
     expect(records).toHaveLength(fixture.length);
   });
 
@@ -41,8 +31,7 @@ describe("tfl-jamcams", () => {
     // 4 of the 26 captured; 88 of 890 in the full catalogue on the capture date.
     expect(unavailable).toHaveLength(4);
     expect(unavailable.length).toBeLessThan(records.length);
-    // They still have media — TfL's images resolve for these — so hiding them would be a
-    // count that quietly disagrees with the operator's own catalogue.
+    // Still have media, so they're kept.
     for (const record of unavailable) expect(record.media.still).not.toBeNull();
   });
 
@@ -52,11 +41,7 @@ describe("tfl-jamcams", () => {
       expect(record.media.still?.url).toMatch(/^https:\/\/.+\.jpg$/);
       expect(record.media.video?.url).toMatch(/^https:\/\/.+\.mp4$/);
       expect(record.media.video?.format).toBe("mp4");
-      /*
-       * THE DISTINCTION THAT MATTERS. TfL's MP4 is a file that gets rewritten, not a
-       * manifest that extends. An investigator reading a timestamp needs those to be
-       * different things, so `stream` stays null and `hasLiveStream` stays false.
-       */
+      // The MP4 is a rewritten file, not a live stream.
       expect(record.media.stream).toBeNull();
     }
   });
@@ -64,9 +49,9 @@ describe("tfl-jamcams", () => {
   it("carries TfL's documented still cadence and refuses to invent one for the video", () => {
     const { records } = read();
     for (const record of records) {
-      // "refreshed every three minutes - sometimes more often" — TfL's number, read 2026-09-01.
+      // TfL's documented still refresh.
       expect(record.media.still?.refreshSeconds).toBe(180);
-      // TfL documents the stills and says nothing about the video. Null, not 180.
+      // Undocumented for video.
       expect(record.media.video?.refreshSeconds).toBeNull();
     }
   });
@@ -76,14 +61,12 @@ describe("tfl-jamcams", () => {
     const first = records[0];
     expect(first).toBeDefined();
     expect(first?.subject).not.toBe("");
-    // At least one record in any real sample carries a compass-and-junction description
-    // rather than a category, which is the whole reason this field is TfL's text.
+    // Real records carry a compass-and-junction description.
     expect(records.some((record) => /[A-Za-z]{3,}/.test(record.subject))).toBe(true);
   });
 
   it("puts every still on an origin the CSP allowlist names", () => {
-    // `img-src` is an allowlist. A host missing from it is invisible in development, where
-    // no CSP is applied, and blocks every frame in production. ADR 0017.
+    // A host missing from `img-src` only fails in production (no CSP in dev).
     const { records } = read();
     for (const record of records) {
       const still = record.media.still;
@@ -94,8 +77,7 @@ describe("tfl-jamcams", () => {
   });
 
   it("never points a media URL at our own server", () => {
-    // Product-brief §2b. If one of these ever becomes a path on our origin, this product
-    // has started rebroadcasting.
+    // Media must stay on the operator's host; we never relay it.
     const { records } = read();
     for (const record of records) {
       for (const url of [record.media.still?.url, record.media.video?.url]) {
@@ -124,7 +106,7 @@ describe("tfl-jamcams", () => {
     expect(result.failure.kind).toBe("schemaChanged");
     // The provider names itself, so an operator reading the log knows which upstream moved.
     expect(result.failure.message).toContain("tfl-jamcams");
-    // Never the upstream's own values: they end up in a log line and on a screen.
+    // Never upstream values.
     expect(result.failure.message).not.toContain("JamCams_1");
   });
 

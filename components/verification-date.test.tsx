@@ -43,10 +43,8 @@ describe("VerificationDate", () => {
     expect(stale.firstElementChild?.className).toContain("font-medium");
   });
 
-  it("never uses the destructive colour for a stale record (ADR 0016)", () => {
-    // Destructive is the delete/revoke red. On a directory row it reads as a judgement
-    // about the TOOL, when the claim is only that OUR RECORD is old. This is the single
-    // distinction the catalogue's credibility rests on, so it is pinned by a test.
+  it("never uses the destructive colour for a stale record", () => {
+    // Destructive red would read as a judgement about the tool; the claim is only that our record is old.
     for (const date of ["2026-08-01", "2026-01-01", "2024-01-01"]) {
       const { container } = render(<VerificationDate lastVerifiedAt={date} />);
       expect(container.firstElementChild?.className).not.toContain("destructive");

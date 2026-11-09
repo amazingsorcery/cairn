@@ -1,15 +1,8 @@
 import { expect, type Page } from "@playwright/test";
 
 /**
- * Creating and destroying throwaway cases.
- *
- * The suite must not leave rows behind. `db/seed.ts` is idempotent but does not clean up
- * after anyone, and a hundred "Vertical slice 1788…" cases in the owner account's list is
- * both noise for the next person and a slow `/workspaces` page for the next run.
- *
- * The cleanup goes through the product's own delete dialog rather than through SQL, so it is
- * also the only exercise the one-way door gets: the confirmation names the case, the delete
- * button stays disabled until the typed title matches, and the row really goes.
+ * Creating and deleting throwaway cases. Cleanup uses the real delete dialog, which also
+ * exercises its type-the-title confirmation.
  */
 
 /** Start a case and return its `/workspaces/<uuid>` URL. */
@@ -21,14 +14,9 @@ export async function createCase(page: Page, title: string): Promise<string> {
   return page.url();
 }
 
-/**
- * Delete a case through the UI. Best-effort: a cleanup that throws would replace a real
- * failure message with a cleanup failure message, which is the wrong thing to report.
- */
+/** Delete a case through the UI. Best-effort, so it never masks the real failure. */
 export async function deleteCase(page: Page, workspaceUrl: string, title: string): Promise<void> {
-  // Short, explicit timeouts throughout. Cleanup runs in a `finally`, including after a
-  // failing assertion, and a slow cleanup would turn a precise failure message into an
-  // uninformative "Test timeout exceeded".
+  // Short timeouts: this runs in `finally` and shouldn't turn a failure into a timeout.
   const t = { timeout: 8_000 };
   try {
     await page.goto(workspaceUrl, { timeout: 15_000 });
@@ -47,6 +35,6 @@ export async function deleteCase(page: Page, workspaceUrl: string, title: string
     await confirm.click(t);
     await page.waitForURL(/\/workspaces\/?$/, { timeout: 15_000 });
   } catch {
-    // Leave the row rather than fail the test on cleanup. `docs/qa/e2e.md` records the SQL.
+    // Leave the row rather than fail the test on cleanup.
   }
 }

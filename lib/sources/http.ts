@@ -7,31 +7,17 @@ import { connectorHost, isPinnedHost } from "@/lib/toolbench/net-target";
 import type { SourceFailure } from "./types";
 
 /**
- * The one outbound HTTP path for `lib/sources`.
+ * The one outbound HTTP path for `lib/sources` (worker polls; governance lives in
+ * `governed.ts`).
  *
- * This is a generalisation of `lib/connectors/runtime.ts`, not a replacement for it. The
- * connector seam answers a *user's* request and therefore carries per-user quota, an audit
- * log and a registry row (ADR 0011–0014). A source adapter is polled by the worker on a
- * timer with no user attached (ADR 0019), so per-user quota and the audit log do not apply —
- * but the two lessons that cost us a QA finding do, and they are reimplemented here:
+ *   1. A 429/420 opens a cooldown; no calls until it expires.
+ *   2. Expected failures return typed values, never throw, so one dead upstream can't take
+ *      down the map.
  *
- *   1. **Their limiter is the authority, not our TTL.** A 429 opens a cooldown and we stop
- *      calling until it expires. Q-02 recorded 57 refusals from adsb.lol because nothing
- *      backed off; the TTL alone did not save us and will not save us here.
- *   2. **Nothing throws for an expected failure.** Every path returns a typed value, because
- *      an exception crossing a layer boundary is how one dead upstream takes down a map
- *      (product-brief §2b).
- *
- * SERVER-ONLY. A source poll from the browser would hand the reader's IP and the patch of
- * the world they are looking at to a third party — the interest-graph leak product-brief
- * §3.2 constraint 4 exists to prevent.
+ * Server-only: a browser poll would expose the reader's IP and viewport to a third party.
  */
 
-/**
- * jsdom (Vitest's environment) defines `window` while still running under Node, so `window`
- * alone is not the test. `process.versions.node` is present in every server runtime and in
- * jsdom, and absent in a browser bundle. Same check as `lib/connectors/runtime.ts`.
- */
+/** jsdom defines `window` but still has `process`, so check both. */
 const IN_BROWSER =
   typeof window !== "undefined" &&
   typeof document !== "undefined" &&
@@ -49,17 +35,8 @@ if (IN_BROWSER) {
 export const DEFAULT_TIMEOUT_MS = 8_000;
 
 /**
- * Identify ourselves on every outbound call.
- *
- * Courtesy and self-interest both: an operator who needs to rate-limit or contact us can do
- * so instead of blocking an anonymous pattern — and NOAA/NWS *requires* a User-Agent that
- * identifies the application, returning 403 to the default agent. It says nothing about the
- * person viewing the page.
- *
- * The brand name and contact address come from `config/brand.ts` (product-brief §7 — never
- * hardcode a brand string). The mailbox on the placeholder domain does not exist yet, so
- * `SOURCE_CONTACT_EMAIL` lets an operator substitute a real one without a code change. That
- * matters more than usual here: an upstream that cannot reach us blocks us silently.
+ * Identifies us (not the viewer) on every call; NWS returns 403 without it. Built from
+ * `config/brand.ts`; `SOURCE_CONTACT_EMAIL` overrides the placeholder contact address.
  */
 export function sourceUserAgent(
   env: (name: string) => string | undefined = (name) => process.env[name],
@@ -69,7 +46,7 @@ export function sourceUserAgent(
 }
 
 /* ------------------------------------------------------------------ *
- * Per-source cooldown — the lesson from QA finding Q-02
+ * Per-source cooldown
  * ------------------------------------------------------------------ */
 
 const globalForCooldown = globalThis as typeof globalThis & {
@@ -84,16 +61,8 @@ const globalForLastGood = globalThis as typeof globalThis & {
 const lastGood: Map<string, Date> = (globalForLastGood.__cairnSourceLastGood__ ??= new Map());
 
 /**
- * The HTTP status of the most recent attempt for each source.
- *
- * Exists so the audit row in `governed.ts` can carry the real `upstream_status` rather than a
- * guess. `SourceResult` has nowhere to put it — a status is a fact about the transport, not
- * about the features — and inventing 200 for every success would make the one column an
- * operator uses to tell a 429 from a 502 useless.
- *
- * In-process, bounded by the number of sources, and never persisted. An adapter that makes
- * several calls in one poll (the NWS zone warm-up) leaves the LAST one here, which is the
- * honest reading of "how did this poll end".
+ * Status of each source's most recent request, so the audit row in `governed.ts` carries the
+ * real `upstream_status` (`SourceResult` has no place for it). Multi-call polls keep the last.
  */
 const globalForStatus = globalThis as typeof globalThis & {
   __cairnSourceStatus__?: Map<string, number>;
@@ -106,27 +75,14 @@ export function lastUpstreamStatus(slug: string): number | null {
 }
 
 /**
- * Record a status against a slug that did not make the request itself.
- *
- * One caller: the cameras adapter, which is one `SourceAdapter` over several operators. It
- * fetches under **per-provider** slugs so that one operator's 429 opens a cooldown against
- * that operator alone and not against every camera network on the map. The audit row,
- * though, is written per adapter (`governed.ts` reads `lastUpstreamStatus(adapter.slug)`), so
- * without this the one column an operator uses to tell a 429 from a 502 would be null on
- * every camera poll.
- *
- * It writes the same in-process map `fetchUpstream` writes, so "the last thing that happened
- * on this slug" keeps meaning exactly that.
+ * Record a status against a slug that didn't make the request. Used by the cameras adapter,
+ * which fetches under per-provider slugs (separate cooldowns) but is audited per adapter.
  */
 export function recordUpstreamStatus(slug: string, status: number): void {
   lastStatus.set(slug, status);
 }
 
-/**
- * Used when a 429 carries no `Retry-After`. Deliberately longer than any adapter's TTL: an
- * upstream that refused us needs materially longer to refill than our own poll interval, and
- * backing off for less than one interval just re-enters the burst that caused the refusal.
- */
+/** Used when a 429 has no `Retry-After`. Longer than any adapter TTL. */
 export const DEFAULT_COOLDOWN_SECONDS = 120;
 
 /** Seconds remaining before this source may call upstream again, or 0. */
@@ -144,7 +100,7 @@ export function cooldownRemaining(slug: string, now: Date = new Date()): number 
 export function openCooldown(slug: string, seconds: number, now: Date = new Date()): void {
   const until = new Date(now.getTime() + Math.max(1, seconds) * 1000);
   const existing = cooldownUntil.get(slug);
-  // Never shorten a cooldown already open: a later, shorter refusal must not let us back in.
+  // Never shorten an open cooldown.
   if (!existing || until > existing) cooldownUntil.set(slug, until);
 }
 
@@ -173,11 +129,7 @@ export function isRateLimitStatus(status: number): boolean {
   return status === 429 || status === 420;
 }
 
-/**
- * `Retry-After` in either documented form: delta-seconds, or an HTTP-date. Read on EVERY
- * non-2xx rather than only on 429, because a 503 may carry one too and a header we were
- * given always beats a constant we chose.
- */
+/** `Retry-After` as delta-seconds or HTTP-date, capped at an hour. Read on any non-2xx. */
 export function parseRetryAfter(header: string | null, now: Date = new Date()): number | null {
   if (!header) return null;
   const trimmed = header.trim();
@@ -205,35 +157,21 @@ export type FetchOptions = {
   readonly signal: AbortSignal;
   readonly timeoutMs?: number;
   readonly headers?: Readonly<Record<string, string>>;
-  /**
-   * Bytes we will read before giving up. Adapters return small JSON (product-brief §2b);
-   * a cap means a misbehaving or redirected upstream cannot exhaust the worker's memory.
-   */
+  /** Max bytes to read, so a misbehaving upstream can't exhaust worker memory. */
   readonly maxBytes?: number;
   /**
-   * The only host this request may reach, checked before it is made and again on every
-   * redirect hop. **Defaults to the host of `url` itself**, which is the right default here
-   * because every adapter builds its URL from module constants — so the pin is "the operator
-   * we meant to call", with no caller left to forget it. QA finding QV-18.
-   *
-   * `radio-browser` is the one adapter whose host comes from a remote discovery response; it
-   * anchors that host against `/^[a-z0-9-]+\.api\.radio-browser\.info$/` before building a
-   * URL, so the pin is still a host this codebase chose.
+   * Only host this request may reach, checked before the request and on every redirect hop.
+   * Defaults to the host of `url` (adapters build URLs from constants). radio-browser's
+   * discovered host is validated against its domain pattern first.
    */
   readonly pinnedHost?: string;
-  /**
-   * Same-host redirect hops to follow. Three is enough for the usual `/x` -> `/x/` and
-   * http->https tidying an API does, and small enough that a loop ends.
-   */
+  /** Same-host redirect hops to follow; enough for trailing-slash tidying, small enough to end loops. */
   readonly maxRedirects?: number;
 };
 
 const DEFAULT_MAX_BYTES = 12 * 1024 * 1024;
 
-/**
- * The host of a URL we built, or `null` if it will not parse. `null` refuses the request:
- * a URL we cannot parse is a URL we cannot pin, and an unpinnable request is not one we make.
- */
+/** Host of a URL, or `null` if unparseable (which refuses the request: can't pin it). */
 function safeHost(url: string): string | null {
   try {
     return connectorHost(url);
@@ -243,10 +181,8 @@ function safeHost(url: string): string | null {
 }
 
 /**
- * One GET, with a timeout, a byte cap and typed failures.
- *
- * Returns TEXT rather than parsed JSON on purpose: several of these upstreams serve CSV or
- * plain-text TLE, and the adapter that knows the format should be the one that decodes it.
+ * One GET with timeout, byte cap and typed failures. Returns text, since some upstreams serve
+ * CSV or plain text and the adapter decodes.
  */
 export async function fetchUpstream(options: FetchOptions): Promise<HttpOutcome> {
   const { slug, url, signal } = options;
@@ -258,12 +194,7 @@ export async function fetchUpstream(options: FetchOptions): Promise<HttpOutcome>
     return { ok: false, failure: { kind: "rateLimited", retryAfterSeconds: waiting } };
   }
 
-  /**
-   * The caller's signal and our timeout are combined by hand rather than with
-   * `AbortSignal.any`, for one reason worth the extra lines: we need to know WHICH fired.
-   * A timeout and a shutdown are different states to a reader — "the source is slow" versus
-   * "we stopped asking" — and `AbortError` alone cannot tell them apart.
-   */
+  // Combined by hand rather than `AbortSignal.any` so we know whether timeout or caller fired.
   const controller = new AbortController();
   let timedOut = false;
   const timer = setTimeout(() => {
@@ -274,27 +205,10 @@ export async function fetchUpstream(options: FetchOptions): Promise<HttpOutcome>
   signal.addEventListener("abort", onCallerAbort, { once: true });
 
   try {
-    /**
-     * THE REDIRECT PIN — QA finding QV-18.
-     *
-     * This used to send `redirect: "follow"` with no pin at all, while the connector layer's
-     * primitive four files away explained why that is wrong: *"`follow` would walk a 302
-     * anywhere the upstream pointed, and 'the upstream is trustworthy' is exactly the
-     * assumption an SSRF exploits — an open redirect on an otherwise honest service is
-     * enough."* The exposure was bounded — every URL here is built from a module constant —
-     * but the cloud metadata endpoint is one `Location:` header away from six named
-     * operators, and the whole deployment is one VPS.
-     *
-     * So: `redirect: "manual"`, and each hop re-checked against the pin, which defaults to
-     * the host of the URL the adapter asked for. `isPinnedHost` is the SAME predicate the
-     * connector primitive uses — it also refuses a scheme downgrade, userinfo before the
-     * host, and a non-443 port — because QV-18's own note is that maintaining two copies "is
-     * how one of them ends up with QV-03 fixed and the other not".
-     *
-     * The two primitives are still two functions: they return different failure vocabularies
-     * (a typed `SourceFailure` here, a thrown `UpstreamStatusError` there) and own different
-     * cooldown maps. What is shared is what a copy would get wrong — the pin predicate and
-     * the streaming byte cap.
+    /*
+     * Redirect pin: `redirect: "manual"` and every hop re-checked with `isPinnedHost` (shared
+     * with the connector primitive; also refuses scheme downgrade, userinfo and non-443
+     * ports). An open redirect upstream could otherwise point us at cloud metadata.
      */
     const pinnedHost = options.pinnedHost ?? safeHost(url);
     const maxRedirects = options.maxRedirects ?? 3;
@@ -304,17 +218,8 @@ export async function fetchUpstream(options: FetchOptions): Promise<HttpOutcome>
     for (let hop = 0; ; hop += 1) {
       if (pinnedHost === null || !isPinnedHost(target, pinnedHost)) {
         /*
-         * Nothing is sent: not the request, and therefore not our User-Agent either.
-         *
-         * `redirected` is its OWN failure kind, not an `upstreamError`. An operator reads
-         * these under pressure and "they moved" and "they are down" lead to opposite
-         * investigations — one is fixed by checking where the source now points and updating
-         * a module constant, the other by waiting. Reporting the first as the second sends
-         * somebody hunting an outage that is not there, which is how several findings in this
-         * build began.
-         *
-         * The destination host goes in the LOG, where an operator can find it, and not in the
-         * failure: it is upstream-controlled text and the failure is rendered.
+         * Nothing is sent. `redirected` is its own kind so "they moved" isn't reported as
+         * "they're down". The destination host goes to the log only (upstream-controlled text).
          */
         logger.error(
           {
@@ -322,7 +227,7 @@ export async function fetchUpstream(options: FetchOptions): Promise<HttpOutcome>
             slug,
             reason: "offHostRedirect",
             pinnedHost,
-            // The hostname only — never the path, which can echo back what we asked for.
+            // Hostname only; the path can echo the query.
             redirectHost: safeHost(target),
             hop,
           },
@@ -331,15 +236,12 @@ export async function fetchUpstream(options: FetchOptions): Promise<HttpOutcome>
         return { ok: false, failure: { kind: "redirected" } };
       }
 
-      // Counted at the request itself (QV-09). The NWS adapter makes one index call plus up
-      // to twelve zone lookups in a single poll; the audit row has to say thirteen, not one.
-      // A hop is a request we made, so it counts too.
+      // Count every request, including redirect hops, for the audit row.
       countOutboundRequest();
       response = await fetch(target, {
         signal: controller.signal,
         redirect: "manual",
-        // The freshness contract is ours (ADR 0014). A second cache with its own clock is the
-        // two-clocks-disagreeing failure that makes an age display lie.
+        // Our own cache owns freshness; avoid a second cache clock.
         cache: "no-store",
         headers: {
           accept: "application/json",
@@ -350,8 +252,7 @@ export async function fetchUpstream(options: FetchOptions): Promise<HttpOutcome>
 
       if (response.status < 300 || response.status >= 400) break;
 
-      // Recorded before the branch, so `auditOutcome` can put the real 3xx on the row rather
-      // than a null or a status left over from the previous poll.
+      // Record the 3xx so the audit row has the real status.
       lastStatus.set(slug, response.status);
 
       const location = response.headers.get("location");
@@ -365,14 +266,12 @@ export async function fetchUpstream(options: FetchOptions): Promise<HttpOutcome>
           },
         };
       }
-      // Resolved against the CURRENT url, so a relative Location behaves as a browser would.
-      // The loop re-checks the pin at the top, which is the point.
+      // Resolve relative Location against the current URL; the pin is re-checked next loop.
       target = new URL(location, target).toString();
-      // The body of a redirect is never read, so it is cancelled rather than buffered.
       await response.body?.cancel();
     }
 
-    // Recorded before any branch, so a 429 and a 502 are equally visible to the audit row.
+    // Recorded before branching so every status reaches the audit row.
     lastStatus.set(slug, response.status);
 
     if (isRateLimitStatus(response.status)) {
@@ -383,7 +282,7 @@ export async function fetchUpstream(options: FetchOptions): Promise<HttpOutcome>
     }
 
     if (!response.ok) {
-      // A Retry-After on any non-2xx is still an instruction. Obey it.
+      // Honour Retry-After on any non-2xx.
       const retryAfter = parseRetryAfter(response.headers.get("retry-after"));
       if (retryAfter !== null) openCooldown(slug, retryAfter);
       return {
@@ -391,21 +290,13 @@ export async function fetchUpstream(options: FetchOptions): Promise<HttpOutcome>
         failure: {
           kind: "upstreamError",
           status: response.status,
-          // Never the response body: it is attacker- or upstream-controlled text that would
-          // end up in a log and, worse, on a page.
+          // Never the response body (upstream-controlled; would reach logs and pages).
           message: `upstream returned HTTP ${response.status}`,
         },
       };
     }
 
-    /*
-     * The cap is applied to the STREAM (QV-03). The previous shape checked `Content-Length`
-     * — which is absent on every chunked response and describes the compressed size when
-     * present — and then called `response.text()`, so the ceiling was only ever tested
-     * against a string already in the heap. `readCappedText` cancels the body the moment the
-     * running total passes the cap, which is what "a misbehaving or redirected upstream
-     * cannot exhaust the worker's memory" was always meant to mean.
-     */
+    // Cap applied to the stream: `Content-Length` may be absent or describe compressed bytes.
     const capped = await readCappedText(response, maxBytes);
     if (!capped.ok) {
       return {
@@ -454,14 +345,8 @@ export function decodeJson(text: string): { ok: true; body: unknown } | { ok: fa
 }
 
 /**
- * Read an API key through the context's env reader.
- *
- * Takes the reader rather than touching `process.env`, so an adapter is testable without
- * mutating the process and cannot reach for a global (`SourceContext.env`).
- *
- * Returns a `notConfigured` failure naming the variable rather than throwing, so a deployment
- * missing one key disables one layer and the rest of the map comes up. ADR 0018: the build
- * must not require runtime secrets.
+ * Read an API key via the context's env reader (not `process.env`, for testability). A
+ * missing key returns `notConfigured` naming the variable, disabling only that layer.
  */
 export function requireApiKey(
   env: (name: string) => string | undefined,

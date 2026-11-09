@@ -21,24 +21,13 @@ import {
 import { fail, fromZodError, guard, ok, type ActionResult } from "./result";
 
 /**
- * Live registry mutations.
- *
- * Connectors are ADMIN-only, not editor (sitemap.md §8): they carry the kill-switch, the
- * quota envelope and the recorded legal basis, which are operator responsibilities rather
- * than editorial ones. Cameras are ordinary editorial work at `editor` level — a camera is
- * content, held to the same standard as a tool.
+ * Live registry mutations. Connectors are admin-only (kill-switch, quotas, legal basis);
+ * cameras are editorial content at `editor` level.
  */
 
 /**
- * The kill-switch. ADR 0011 rule 6: "a source that changes its terms can be disabled without
- * a deploy".
- *
- * It is deliberately the smallest possible action — one boolean, no other field — so that
- * turning a connector off at 3am cannot fail validation on some unrelated field an operator
- * has not filled in. That is the whole point of a kill-switch.
- *
- * It does NOT touch `status`. ADR 0012 §1: the two axes must not be merged, so re-publishing
- * cannot silently re-enable something an operator switched off.
+ * Kill-switch: disables a source without a deploy. Takes only a boolean so it can't fail on
+ * unrelated validation, and never touches `status`.
  */
 export async function setConnectorEnabled(input: unknown): Promise<ActionResult<{ id: string }>> {
   return guard("connector.enabled", async () => {
@@ -56,22 +45,15 @@ export async function setConnectorEnabled(input: unknown): Promise<ActionResult<
     const row = updated[0];
     if (!row) return fail("notFound", "That connector does not exist.");
 
-    // Loud, because an operator will want this line in the log during an incident. The
-    // actor is a user id, not an address.
+    // Logged at warn for incident visibility; actor is a user id, not an address.
     logger.warn(
       { scope: "connector.enabled", slug: row.slug, enabled: parsed.data.enabled, by: user.id },
       parsed.data.enabled ? "Connector ENABLED" : "Connector DISABLED (kill-switch)",
     );
 
-    // The registry read is deliberately uncached, so switching a source OFF takes effect on
-    // the very next request with no TTL in between. Switching one back ON has to clear the
-    // remembered refusal (QV-05), which is what these calls do — in this process. Another
-    // process waits out its own window, at most `MAX_REFUSAL_MEMO_SECONDS`.
-    //
-    // BOTH memos, because there are two governed paths and they are not the same one:
-    // `governed.ts` serves the map's six adapters, `runtime.ts` serves the Toolbench and
-    // `/live/flights` (QV-25). Forgetting one of them is how "I turned it back on and nothing
-    // happened" becomes an incident report.
+    // The registry read is uncached, so disabling is immediate. Re-enabling must clear the
+    // refusal memos in this process (other processes wait up to `MAX_REFUSAL_MEMO_SECONDS`):
+    // `governed.ts` for map adapters, `runtime.ts` for the Toolbench and `/live/flights`.
     resetGovernanceMemo();
     clearRefusalMemo();
     // The `/live` landing page's connector list is cached and does need purging.
@@ -92,9 +74,7 @@ export async function updateConnector(input: unknown): Promise<ActionResult<{ id
 
     const updated = await db
       .update(connectors)
-      // `lastCheckedAt` is absent: like `lastVerifiedAt` on a tool, it moves only on the
-      // explicit "terms re-read" action, never as a side effect of an edit (ADR 0007 §8
-      // applied to connectors by ADR 0012's consequences).
+      // `lastCheckedAt` only moves via `recheckConnector`, never as a side effect of an edit.
       .set({ ...fields, updatedById: user.id })
       .where(eq(connectors.id, id))
       .returning({ id: connectors.id });
@@ -108,13 +88,8 @@ export async function updateConnector(input: unknown): Promise<ActionResult<{ id
 }
 
 /**
- * Publish a connector.
- *
- * `connectors_published_requires_legal_basis_check` is the enforcement; this Zod gate exists
- * so the operator is told WHICH of the three is missing rather than being shown a constraint
- * name. ADR 0012: "the constraint fails at write time, in front of the person who caused it".
- *
- * Publishing does NOT enable. Fail closed (ADR 0012 §1).
+ * Publish a connector. The DB constraint enforces the legal-basis fields; the Zod gate says
+ * which one is missing. Publishing does not enable.
  */
 export async function publishConnector(input: unknown): Promise<ActionResult<{ id: string }>> {
   return guard("connector.publish", async () => {
@@ -156,14 +131,7 @@ export async function publishConnector(input: unknown): Promise<ActionResult<{ i
   });
 }
 
-/**
- * "Terms re-read." The connector equivalent of ADR 0007 §8's re-verify: the date is `now()`,
- * never supplied, because the claim is that a human read the terms now.
- *
- * ADR 0012: "a connector whose terms were last read fourteen months ago is a live legal
- * risk, and the only thing that makes that visible is a queue someone looks at" — this is
- * how a row leaves `/admin/queue`.
- */
+/** "Terms re-read": sets `lastCheckedAt` to `now()`, removing the row from `/admin/queue`. */
 export async function recheckConnector(input: unknown): Promise<ActionResult<{ id: string }>> {
   return guard("connector.recheck", async () => {
     const user = await requireAdmin();
@@ -200,7 +168,7 @@ export async function updateCamera(input: unknown): Promise<ActionResult<{ id: s
 
     const updated = await db
       .update(cameras)
-      // No `lastVerifiedAt`: a save never moves it (ADR 0007 §8).
+      // No `lastVerifiedAt`: a save never moves it.
       .set({ ...fields, updatedById: user.id })
       .where(eq(cameras.id, id))
       .returning({ id: cameras.id, slug: cameras.slug, status: cameras.status });
@@ -224,13 +192,7 @@ export async function publishCamera(input: unknown): Promise<ActionResult<{ id: 
     const parsed = cameraIdSchema.safeParse(input);
     if (!parsed.success) return fromZodError(parsed.error);
 
-    /**
-     * No hand-written gate here: `cameras_published_requires_verification_check` and
-     * `cameras_embed_requires_connector_check` will reject the UPDATE, and `guard` maps both
-     * constraint names to a sentence. This is the one place where letting the constraint be
-     * the primary check is right — the two conditions are compound and the constraint states
-     * them once, correctly, for every write path including the seed.
-     */
+    // No Zod gate: the DB constraints reject the UPDATE and `guard` maps them to messages.
     const [current] = await db
       .select({ publishedAt: cameras.publishedAt })
       .from(cameras)
@@ -267,7 +229,7 @@ export async function unpublishCamera(input: unknown): Promise<ActionResult<{ id
 
     const updated = await db
       .update(cameras)
-      // `published_at` is not cleared, as on tools and playbooks (HANDOFF §4).
+      // `published_at` is not cleared, as on tools and playbooks.
       .set({ status: "draft", updatedById: user.id })
       .where(eq(cameras.id, parsed.data.id))
       .returning({ id: cameras.id, slug: cameras.slug });
@@ -281,7 +243,7 @@ export async function unpublishCamera(input: unknown): Promise<ActionResult<{ id
   });
 }
 
-/** "Confirm still accurate" for a camera. The date is `now()` (ADR 0007 §8). */
+/** "Confirm still accurate" for a camera. The date is `now()`. */
 export async function reverifyCamera(input: unknown): Promise<ActionResult<{ id: string }>> {
   return guard("camera.reverify", async () => {
     const user = await requireEditor();

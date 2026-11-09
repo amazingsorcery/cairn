@@ -2,11 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { countOutboundRequest, tallyOutbound } from "./outbound-tally";
 
-/**
- * QV-09. The audit log's request count has to be right, including under the two conditions
- * that would make a naive module-level counter wrong: a failure part-way through, and two
- * attempts in flight at once.
- */
+/** The audit count must survive a mid-scope failure and concurrent scopes. */
 describe("tallyOutbound", () => {
   it("counts every request made inside the scope, including awaited ones", async () => {
     const result = await tallyOutbound(async () => {
@@ -28,8 +24,7 @@ describe("tallyOutbound", () => {
   });
 
   it("keeps the count when the scope throws", async () => {
-    // A driver that made four requests and then failed made four requests. Recording zero
-    // for the attempt that hit the rate limit would be wrong in the direction that hides it.
+    // Requests made before a failure still count.
     const result = await tallyOutbound(async () => {
       countOutboundRequest();
       countOutboundRequest();

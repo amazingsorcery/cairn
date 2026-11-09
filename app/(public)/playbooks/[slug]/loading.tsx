@@ -1,12 +1,6 @@
 import { Skeleton } from "@/components/ui/skeleton";
 
-/**
- * First paint for `/playbooks/[slug]`.
- *
- * The skeleton reserves the confidence chip and the last-verified line, because neither is
- * optional anywhere in this product (`docs/design/states.md` §0) and omitting them here
- * would shift the layout the moment the real header arrives.
- */
+/** Skeleton includes the confidence chip and last-verified line to avoid layout shift. */
 export default function PlaybookDetailLoading() {
   return (
     <div className="mx-auto w-full max-w-[80rem] px-4 py-10 md:px-6 md:py-14">

@@ -15,65 +15,22 @@ import { upstreamRequest } from "./upstream";
 import type { ConnectorDriver } from "./types";
 
 /**
- * `/toolbench/overpass-builder` — OpenStreetMap feature queries against the public Overpass
- * API. product-brief §3.3: an outbound request on a user's behalf lives here and nowhere
- * else.
+ * `/toolbench/overpass-builder`: OpenStreetMap feature queries against the public Overpass API.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * WHAT WAS CONFIRMED, AND HOW — 2026-09-01
- * ─────────────────────────────────────────────────────────────────────────────
- * 1. **Endpoint.** `POST https://overpass-api.de/api/interpreter` with the query in a
- *    `data=` form field. `GET https://overpass-api.de/api/status` answered on 2026-09-01
- *    with `Connected as: 1590912601 / Rate limit: 2 / 2 slots available now`, confirming
- *    both the host and the documented status format.
+ * Notes (verified 2026-09-01):
+ * - `POST /api/interpreter` with the query in a `data=` form field.
+ * - Results are OSM data (ODbL 1.0); attribution is rendered next to results.
+ * - Usage policy (https://dev.overpass-api.de/overpass-doc/en/preface/commons.html): ~10k
+ *   requests and <1 GB per day per user; 429 for rate limits, 504 for resource refusals;
+ *   undeclared queries get 180s / 512 MiB.
+ * - The policy names "an app ... relying on the public instances as backend" as problematic
+ *   and recommends self-hosting. So the row seeds disabled, quotas are a small fraction of the
+ *   guideline, results are cached across readers, and the tool page points heavy use at
+ *   overpass-turbo. Long term: run our own instance.
  *
- * 2. **Data licence.** The results are OpenStreetMap data, **ODbL 1.0**. Every response
- *    carries the project's own notice in `osm3s.copyright`. ODbL requires attribution, so
- *    `attribution_required = true` and the credit is rendered next to the results rather
- *    than in a footer.
+ * Not a legal opinion.
  *
- * 3. **Usage policy, read at
- *    https://dev.overpass-api.de/overpass-doc/en/preface/commons.html on 2026-09-01.** The
- *    numbers, quoted: about 30,000 daily users share the two servers behind
- *    `overpass-api.de`; "users are expected to send a maximum of about 10000 requests per
- *    day and keep their download volume below about 1 GB per day"; rate-limit refusals are
- *    answered with **HTTP 429** and resource refusals with **HTTP 504**; an undeclared query
- *    gets a default 180-second run time and 512 MiB memory limit, and the scheduler admits a
- *    request only if it promises to use at most half the remaining resources.
- *
- * 4. **THE PART THAT MUST NOT BE SMOOTHED OVER.** That same page lists, as an example of
- *    problematic behaviour: *"Setting up an app for more than just OSM mappers and relying
- *    on the public instances as backend"*, and says that in that case "only running your own
- *    instance sustainably serves your mission."
- *
- *    We are that case. This is recorded rather than argued away, and it has three
- *    consequences that are built rather than promised:
- *
- *    a. The connector row seeds `enabled = false, status = draft`. An operator has to read
- *       the paragraph above and decide, which is what ADR 0012 §1 is for.
- *    b. The quota columns are set at a small fraction of the published guideline, and the
- *       payload cache is shared across all readers (ADR 0014 §4) so identical queries cost
- *       one upstream call.
- *    c. The tool page tells the reader, in words, that overpass-turbo runs the same query
- *       from their own browser against their own rate-limit identity, and that heavy or
- *       exploratory work belongs there. A tool that quietly spends a donated service's
- *       capacity on our behalf would be taking from the commons this product depends on.
- *
- *    **The honest resolution is our own Overpass instance**, which the project documents and
- *    explicitly recommends for this case. That is an infrastructure decision, not this
- *    file's, and it is written up in `docs/toolbench/HANDOFF-geo-tools.md`.
- *
- * 5. **robots.txt.** Checked 2026-09-01: `https://overpass-api.de/robots.txt` is not a crawl
- *    directive we are subject to here — we submit one documented API request per user action
- *    and crawl nothing. No access control exists on the endpoint and none is circumvented.
- *
- * NONE OF THIS IS A LEGAL OPINION. See `docs/content/legal-review.md`.
- * ─────────────────────────────────────────────────────────────────────────────
- *
- * ADR 0013: the audit row records THAT a query happened and never WHAT it asked for. The
- * query text is never logged, never persisted and never put in a log line — it is a
- * bounding box around the place a reader is investigating, which is the single most
- * sensitive thing this tool handles.
+ * The query text (a reader's area of interest) is never logged or persisted.
  */
 
 export const OVERPASS_CONNECTOR_SLUG = "overpass-api-de";
@@ -81,11 +38,7 @@ export const OVERPASS_CONNECTOR_SLUG = "overpass-api-de";
 /** The only host this driver will send a query to. See the check in `fetch`. */
 const OVERPASS_HOST = "overpass-api.de";
 
-/**
- * The request, as it arrives from the browser. One field, and it is not trusted: `normalise`
- * runs it back through the Toolbench grammar and re-emits it, so the string that reaches the
- * upstream is one `buildQuery` produced from a parsed structure.
- */
+/** Untrusted; `normalise` parses and re-emits it via the Toolbench grammar. */
 const requestSchema = z.object({ query: z.string() });
 
 export type OverpassParams = { readonly query: string };
@@ -96,13 +49,7 @@ export type OverpassPayload = {
   readonly query: string;
 };
 
-/**
- * Validate, canonicalise, and refuse anything else.
- *
- * Throwing here is correct and is the documented contract: `runConnector` catches it, makes
- * no outbound call, writes no audit row, and returns a degraded envelope. A malformed query
- * is ours to reject, not the upstream's to be bothered with.
- */
+/** Validate and canonicalise. Throws on bad input; `runConnector` then makes no call. */
 function normalise(raw: unknown): OverpassParams {
   const parsed = requestSchema.parse(raw);
   const canonical = canonicaliseQuery(parsed.query);
@@ -111,69 +58,31 @@ function normalise(raw: unknown): OverpassParams {
 }
 
 export const overpassDriver: ConnectorDriver<OverpassParams, OverpassPayload> = {
-  /**
-   * `infrastructure` is the `SOURCE_KINDS` member the integrations engineer's handoff §6
-   * reserves for exactly this: "crt.sh, Wayback CDX, RIPEstat, BGPView and urlscan are all
-   * Toolbench tools taking a user-supplied query, not map layers... Owned by the
-   * tools-engineer." A feature query against OSM is the same shape.
-   */
+  /** `infrastructure` covers Toolbench tools that take a user-supplied query. */
   kind: "infrastructure",
   slug: OVERPASS_CONNECTOR_SLUG,
   normalise,
 
   /**
-   * The cache key is a digest of the canonical query and nothing else. ADR 0014 §4: one
-   * shared entry per connector plus normalised parameters, NEVER per user — two readers
-   * asking the same question of the same box share one upstream call, and the key carries
-   * no trace of who asked.
-   *
-   * A digest rather than the query itself because the key ends up in a Map and in log
-   * scopes, and the query is the reader's search area. SHA-256 truncated to 128 bits: long
-   * enough that a collision is not a thing that happens, short enough to read.
+   * Shared across readers, nothing about the caller. Hashed (SHA-256, 128 bits) because keys
+   * can appear in log scopes and the query is the reader's search area.
    */
   cacheKey: (params) => createHash("sha256").update(params.query).digest("hex").slice(0, 32),
 
   async fetch(connector: Connector, params, signal) {
-    /**
-     * BELT AND BRACES ON THE REGISTRY ROW.
-     *
-     * `runConnector` used to resolve its row by `kind`, and several connectors now share
-     * `infrastructure`. That handed this driver a DNS resolver's row and it POSTed an
-     * Overpass query at `https://cloudflare-dns.com/api/interpreter` — the request went out,
-     * to the wrong operator, under the wrong quota and the wrong recorded legal basis, and
-     * it presented as an ordinary "source unreachable". `runtime.ts` resolves by slug now,
-     * and this check stays so that a future caller which does not cannot repeat it. A driver
-     * must never send its payload to a host it does not recognise.
-     */
+    // Never send to an unrecognised host, whatever the registry row says (several
+    // connectors share the `infrastructure` kind).
     const base = connector.baseUrl.replace(/\/+$/, "");
     if (new URL(base).hostname !== OVERPASS_HOST) {
       throw new UpstreamStatusError(502);
     }
     const url = `${base}/api/interpreter`;
 
-    /**
-     * `application/x-www-form-urlencoded` with the query in `data`, which is the documented
-     * POST form. POST rather than GET because a query in a URL ends up in the upstream's
-     * access log as a bounded query string; the body does not, and this body describes the
-     * patch of the world a reader is investigating.
-     */
+    // POST rather than GET so the query stays out of the upstream's access log.
     const body = new URLSearchParams({ data: params.query }).toString();
 
-    /**
-     * THROUGH THE ONE OUTBOUND PRIMITIVE, not through `fetch` (QA finding QV-03, reopened).
-     *
-     * This driver used to call `fetch` itself and read `await response.text()` with no
-     * ceiling of any kind. QA measured 513 MiB pulled on the path whose request body is a
-     * reader-supplied query — the most attacker-influenced response size in the product —
-     * while the sibling path stopped at 5 MiB. It also sent the runtime's default
-     * `redirect: "follow"` with no host re-pin, which is QV-18 inside the layer whose own
-     * comment rejects exactly that.
-     *
-     * `upstreamRequest` gives all three controls in one place: the pin (before the request
-     * and on every hop), the streaming byte cap, and the outbound tally. `maxRedirects`
-     * defaults to zero and a body is never resent across a hop, so a 3xx here is an error
-     * rather than a second POST of the reader's query to a location Overpass chose.
-     */
+    // `upstreamRequest` pins the host, caps the streamed body and counts the request. No
+    // redirects are followed, so the query is never re-POSTed elsewhere.
     const response = await upstreamRequest({
       url,
       pinnedHost: OVERPASS_HOST,
@@ -181,28 +90,12 @@ export const overpassDriver: ConnectorDriver<OverpassParams, OverpassPayload> = 
       body: { contentType: "application/x-www-form-urlencoded", text: body },
       accept: "application/json",
       signal,
-      /**
-       * 8 MiB. The query this driver emits declares `[maxsize:32MiB]` server-side and
-       * `out center 1000`, so a well-behaved answer is a few hundred kilobytes at most —
-       * but "the upstream will send a small body" is precisely the assumption
-       * `DEFAULT_MAX_BYTES`'s own comment rejects, and Overpass answers a refused query
-       * with an HTML document at HTTP 200 often enough that this driver already parses
-       * defensively for it.
-       */
+      // Normal answers (`out center 1000`) are a few hundred KB.
       maxBytes: 8 * 1024 * 1024,
     });
 
-    /**
-     * Overpass answers a malformed or refused query with an HTML error document at HTTP 200
-     * often enough that parsing must be attempted rather than assumed. A body that is not
-     * JSON is an upstream error, not zero features.
-     *
-     * The two documented refusals never reach here: `upstreamRequest` throws
-     * `UpstreamStatusError` carrying the real status and any `Retry-After`, so a 429 (their
-     * rate limiter — "they told us to stop", which opens the cooldown in `runtime.ts`) and a
-     * 504 (the resource scheduler refusing this particular query as too large for the
-     * capacity free right now) stay distinguishable on the audit board.
-     */
+    // Overpass sometimes returns an HTML error page with a 200; non-JSON is an upstream error,
+    // not zero features. 429/504 are thrown by `upstreamRequest` with the real status.
     let body_: unknown;
     try {
       body_ = JSON.parse(response.text) as unknown;
@@ -217,14 +110,7 @@ export const overpassDriver: ConnectorDriver<OverpassParams, OverpassPayload> = 
   },
 };
 
-/**
- * The registry row this driver expects. Seeded by `db/seed.ts`, which this role does not
- * own — see `docs/toolbench/HANDOFF-geo-tools.md` §"What the maintainer needs to do".
- *
- * `enabled: false, status: draft`. ADR 0012 §1, and here it is not a formality: the usage
- * policy paragraph in `legalBasis` is something an operator should read before any traffic
- * leaves for a donated community service.
- */
+/** Registry row, seeded by `db/seed.ts`. Disabled/draft; read the usage policy in `legalBasis` first. */
 export const OVERPASS_CONNECTOR_SEED = {
   slug: OVERPASS_CONNECTOR_SLUG,
   name: "Overpass API",
@@ -255,27 +141,17 @@ export const OVERPASS_CONNECTOR_SEED = {
     "against their own rate-limit identity. The durable answer is our own Overpass instance, " +
     "which the project documents and recommends for this case. No access control exists on the " +
     "endpoint and none is circumvented; we submit one documented API request per user action " +
-    "and crawl nothing. NOT A LEGAL OPINION — see docs/content/legal-review.md.",
+    "and crawl nothing. NOT A LEGAL OPINION.",
   baseUrl: "https://overpass-api.de",
   requiresApiKey: false,
   apiKeyEnvVar: null,
-  /**
-   * Deliberately small. The published guideline is ~10,000 requests/day across a user; at 4
-   * per minute sustained we would reach that in under two days of continuous saturation,
-   * which no real usage pattern approaches — and the shared payload cache means repeat
-   * queries cost nothing. These are a ceiling well below what the policy tolerates, not a
-   * rate anybody told us was permitted.
-   */
+  /** Well below the ~10k/day guideline; repeat queries hit the shared cache. */
   perUserQuota: 2,
   globalCeiling: 4,
   windowSeconds: 60,
   /** Above the declared 25s query timeout, with room for the response to transfer. */
   timeoutMs: 30_000,
-  /**
-   * OSM's own extract behind Overpass is minutes old at best, and a geolocation query does
-   * not become wrong in five minutes. Repeat submissions of the same query — which is what
-   * a reader does while reading the results — cost one upstream call.
-   */
+  /** OSM data is minutes old anyway; resubmitting the same query costs one call. */
   cacheTtlSeconds: 300,
   staleWhileRevalidateSeconds: 900,
   enabled: false,

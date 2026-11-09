@@ -10,13 +10,9 @@ import {
 } from "./feature-cache";
 
 /**
- * QV-13/QV-14. The save path resolves a live feature HERE and nowhere else, so these tests
- * are about the two properties the snapshot's honesty rests on:
- *
- *   1. a feature is found by `(sourceSlug, featureRef)` across every cached viewport, so a
- *      viewport-scoped source is savable without the client naming a cache key;
- *   2. a feature the cache no longer holds resolves to `null`, so the action fails the save
- *      rather than trusting a request body for the attribution and licence.
+ * The save path resolves live features here:
+ *   1. found by `(sourceSlug, featureRef)` across all cached viewports, with no client cache key;
+ *   2. an evicted feature resolves to `null`, so the save fails rather than trusting the client.
  */
 
 const CREDIT: Attribution = {
@@ -56,9 +52,7 @@ describe("findCachedFeature", () => {
   });
 
   it("finds a feature without being told which viewport answered for it", () => {
-    // The cache key is `slug:normalisedQuery` (QV-04). The save path does not know the
-    // reader's viewport, and asking the client for it would put a cache key under the
-    // client's control — which is the whole shape of the bug being closed here.
+    // Keys are `slug:normalisedQuery`; the save path shouldn't need the client's viewport.
     writePayload("usgs-earthquakes:bbox=-10,40,10,60", payload());
 
     const found = findCachedFeature("usgs-earthquakes", "us7000abcd");
@@ -80,8 +74,7 @@ describe("findCachedFeature", () => {
   });
 
   it("prefers the most recently observed payload when two viewports overlap", () => {
-    // Two overlapping bounding boxes both contain the same aircraft, a minute apart. The
-    // later observation is the more truthful record of where the thing is.
+    // Same aircraft in two overlapping bboxes, a minute apart: the later one wins.
     writePayload(
       "adsb-lol:bbox=-5,50,5,55",
       payload({
@@ -109,7 +102,7 @@ describe("findCachedFeature", () => {
   });
 
   it("does not grow without bound", () => {
-    // A crafted stream of viewport parameters must not be able to fill a small VPS.
+    // Crafted viewport params must not grow memory unboundedly.
     for (let index = 0; index < 300; index += 1) {
       writePayload(`usgs-earthquakes:bbox=${index}`, payload({ features: [] }));
     }

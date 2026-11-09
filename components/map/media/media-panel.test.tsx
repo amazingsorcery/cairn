@@ -7,16 +7,11 @@ import type { LayerMedia } from "../registry/types";
 import { MediaPanel } from "./media-panel";
 
 /**
- * `video` AND `stream` ARE DIFFERENT THINGS AND THIS SUITE IS MOSTLY ABOUT SAYING SO.
+ * A `video` is a periodically replaced file; a `stream` is live HLS. The panel must never
+ * call a clip live.
  *
- * A `video` is a file the operator replaces every few minutes. A `stream` is HLS, whose
- * segments keep arriving. Both are moving pictures; only one is live. Labelling the first
- * "live" would tell an investigator that a clip of an empty road is the road as it is now —
- * the cheapest possible lie for a product whose entire value is that its claims hold up.
- *
- * The other half is the ADR 0015 promise about network behaviour, which is why the most
- * valuable assertions here are negative: no element exists before the press, no `autoplay`, no
- * `poster`, and no HLS library requested on a browser that does not need one.
+ * Network behaviour: no element before the press, no `autoplay`, no `poster`, and no HLS
+ * library on browsers that don't need it.
  */
 
 const base = {
@@ -81,8 +76,7 @@ describe("a video clip", () => {
   });
 
   it("carries the operator's own refresh statement when the registry records one", () => {
-    // Verbatim, and only when it exists. A cadence we estimated and printed as the operator's
-    // would be a fabricated fact under product-brief §6.
+    // Verbatim, and only when it exists; we never estimate a cadence.
     renderPanel({ ...clip, refreshNote: "TfL replaces this clip every five minutes." });
     expect(screen.getByText(/TfL replaces this clip every five minutes\./)).toBeInTheDocument();
   });
@@ -105,7 +99,7 @@ describe("a video clip", () => {
 
     const video = container.querySelector("video");
     expect(video).not.toBeNull();
-    // Never our origin. Video through this VPS is about a thousand times its bandwidth.
+    // Never our origin; we don't relay video.
     expect(video?.getAttribute("src")).toBe(clip.url);
     expect(video?.getAttribute("preload")).toBe("none");
     expect(video?.hasAttribute("controls")).toBe(true);
@@ -113,14 +107,8 @@ describe("a video clip", () => {
 
   it("carries no `referrerpolicy` attribute, because HTML defines none on media elements", async () => {
     /*
-     * A REGRESSION TEST FOR A GUARANTEE THAT WOULD HAVE BEEN FAKE.
-     *
-     * `referrerPolicy` is valid on <img>, <a>, <link>, <script> and <iframe>. It is not valid
-     * on <video> or <audio>, which take the document's policy — so writing it here would be
-     * markup the browser ignores, sitting in a privacy-critical component looking exactly like
-     * a promise. The real suppression is `Referrer-Policy: no-referrer`, set for the whole site
-     * in `infra/Caddyfile`. If somebody adds the attribute back "for consistency", this fails
-     * and sends them to that header instead.
+     * `referrerpolicy` is ignored on <video>/<audio>; they use the document policy, which is
+     * the site-wide `Referrer-Policy: no-referrer` header in `infra/Caddyfile`.
      */
     const user = userEvent.setup();
     const { container } = renderPanel(clip);
@@ -134,11 +122,7 @@ describe("a video clip", () => {
     await user.click(screen.getByRole("button", { name: /load the clip/i }));
 
     const video = container.querySelector("video");
-    /*
-     * Autoplay is motion that starts without being asked, which ADR 0015 forbids and which is
-     * what `prefers-reduced-motion` is about. `poster` is subtler and just as bad: it looks
-     * like a picture and is actually a request to the operator before the reader pressed play.
-     */
+    // `poster` would be a request to the operator before the reader presses play.
     expect(video?.hasAttribute("autoplay")).toBe(false);
     expect(video?.hasAttribute("poster")).toBe(false);
     expect(video?.hasAttribute("loop")).toBe(false);
@@ -186,7 +170,7 @@ describe("a live HLS stream", () => {
 
   it("uses a different control label from the clip, because it is a different promise", () => {
     renderPanel(liveStream);
-    // A screen-reader user moving by controls hears only this label.
+    // Screen readers navigating by controls hear only the label.
     expect(screen.queryByRole("button", { name: /load the clip/i })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /open the live stream/i })).toBeInTheDocument();
   });
@@ -200,7 +184,7 @@ describe("a live HLS stream", () => {
     await waitFor(() => expect(record.loaded).toEqual([liveStream.url]));
 
     const video = container.querySelector("video");
-    // The library feeds the element through MediaSource; there is no `src` on our side at all.
+    // The library feeds the element through MediaSource, so no `src`.
     expect(video?.getAttribute("src")).toBeNull();
     expect(video?.hasAttribute("autoplay")).toBe(false);
     expect(video?.hasAttribute("controls")).toBe(true);
@@ -240,8 +224,7 @@ describe("a live HLS stream", () => {
 
     await user.click(screen.getByRole("button", { name: /open the live stream/i }));
 
-    // The stream is an enhancement. The operator's own page always works, and a reader who
-    // came here to look at a camera must not be left holding an error message.
+    // Falls back to the operator's own page.
     await waitFor(() =>
       expect(screen.getByText(/player this browser needs .* could not be loaded/i)).toBeInTheDocument(),
     );
@@ -261,8 +244,7 @@ describe("a live HLS stream", () => {
     renderPanel(liveStream, { hlsLoader: () => Promise.resolve({ default: Unsupported }) });
     await user.click(screen.getByRole("button", { name: /open the live stream/i }));
 
-    // Two different remedies, so two different sentences. Telling a reader on an old browser
-    // that our player failed sends them to the wrong one.
+    // Different remedy, so a different message.
     await waitFor(() =>
       expect(screen.getByText(/neither built-in support nor the Media Source Extensions/i)).toBeInTheDocument(),
     );
@@ -277,12 +259,7 @@ describe("a live HLS stream", () => {
     await waitFor(() => expect(record.fire).not.toBeNull());
     act(() => record.fire?.());
 
-    /*
-     * This is what a CSP block looks like from inside the page: the manifest request is
-     * refused and hls.js raises a fatal error. It must reach the reader as a sentence, because
-     * the alternative is a player that sits there forever — the silent failure this whole
-     * change exists to end.
-     */
+    // e.g. a CSP block: hls.js raises a fatal error, which must be shown to the reader.
     await waitFor(() =>
       expect(screen.getByText(/stream from stream\.example\.org stopped/i)).toBeInTheDocument(),
     );
@@ -295,7 +272,7 @@ describe("a live HLS stream", () => {
 
     const link = await screen.findByRole("link", { name: /open the stream URL at/i });
     expect(link.getAttribute("href")).toBe(liveStream.url);
-    // Not a promise it will play. Most browsers download an .m3u8 rather than playing it.
+    // Most browsers download an .m3u8 rather than play it.
     expect(screen.getByText(/download the playlist rather than play it/i)).toBeInTheDocument();
   });
 });

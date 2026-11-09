@@ -10,21 +10,13 @@ import { createWorkspace } from "@/lib/actions/workspaces";
 import { useUnsavedGuard } from "./use-unsaved-guard";
 
 /**
- * Create a case.
+ * Create a case via `createWorkspace`, which builds the checklist from the playbook's
+ * published steps in one transaction.
  *
- * The action is `createWorkspace` from `lib/actions/workspaces.ts` — this component writes
- * no SQL and invents no action. That action re-checks the session, Zod-validates, and
- * derives the checklist from the playbook's PUBLISHED steps inside one transaction, so a
- * case never exists without the steps it was started from.
+ * `playbookId` isn't trusted: the action reads step titles from published playbooks only,
+ * so a forged id yields an empty checklist.
  *
- * `playbookId` is passed as a prop rather than as a form field, but it is not trusted
- * either way: the action only accepts a uuid, only reads steps from a *published* playbook,
- * and snapshots every step title from the database rather than from this client
- * (ADR 0008). A forged id buys an empty checklist, not somebody else's content.
- *
- * The title is prefilled from the playbook and SELECTED on mount, so the common path is one
- * keystroke-free click and renaming is one keystroke. `flows.md` step 10: "creating from
- * here needs only a title".
+ * The prefilled title is selected on mount so renaming is one keystroke.
  */
 
 export interface NewCaseFormProps {
@@ -44,7 +36,7 @@ export function NewCaseForm({ playbookId, defaultTitle, cancelHref }: NewCaseFor
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // A half-typed case name is work too, if a smaller amount of it than a note.
+  // Guard an edited, non-empty title.
   useUnsavedGuard(!pending && title.trim() !== defaultTitle.trim() && title.trim() !== "");
 
   useEffect(() => {
@@ -65,8 +57,7 @@ export function NewCaseForm({ playbookId, defaultTitle, cancelHref }: NewCaseFor
     if (!result.ok) {
       setPending(false);
       if (result.code === "unauthenticated") {
-        // `flows.md` M3: never discard what was typed. The text stays on screen and the
-        // sign-in round trip returns to this same form.
+        // Keep the typed text; sign-in returns to this form.
         setError("You were signed out. Sign back in — your text is still here.");
         return;
       }

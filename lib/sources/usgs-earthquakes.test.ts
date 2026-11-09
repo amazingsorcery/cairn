@@ -3,12 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetSourceRuntime } from "./http";
 import { normaliseUsgs, usgsEarthquakes, usgsResponseSchema } from "./usgs-earthquakes";
 
-/**
- * The fixture is a REAL payload, captured from the live feed on 2026-08-31 and committed
- * unedited. An invented fixture tests that our own imagination is self-consistent; a captured
- * one is the only thing that catches the failure these tests exist for — the upstream
- * quietly changing shape.
- */
+/** Real payload captured from the live feed on 2026-08-31, unedited. */
 import fixture from "./__fixtures__/usgs-earthquakes.json";
 import { jsonResponse, testContext } from "./__fixtures__/context";
 
@@ -37,7 +32,7 @@ describe("usgs-earthquakes normalise", () => {
     const withDepth = normaliseUsgs(fixture, {}).find((f) => f.properties.depthKm !== null);
     expect(withDepth).toBeDefined();
     if (!withDepth) return;
-    // A quake is BELOW the surface. A positive altitude would draw it in the stratosphere.
+    // Depth is below the surface.
     expect(withDepth.altitude).toBeCloseTo(-(withDepth.properties.depthKm as number) * 1000, 3);
   });
 
@@ -64,7 +59,7 @@ describe("usgs-earthquakes normalise", () => {
 
   it("applies a viewport, because the summary feeds are global and cannot filter upstream", () => {
     const all = normaliseUsgs(fixture, {});
-    // A one-degree box somewhere in the Pacific: strictly fewer features, and every one inside.
+    // A box in the western Pacific: fewer features, all inside.
     const boxed = normaliseUsgs(fixture, {
       bbox: { west: 140, south: 30, east: 160, north: 50 },
     });
@@ -97,8 +92,7 @@ describe("usgs-earthquakes schema", () => {
   });
 
   it("rejects an unrelated document, so a shape change cannot read as zero earthquakes", () => {
-    // The decision that matters, and it is made by the SCHEMA in `fetch` — never by
-    // `normalise`, which has no way to signal failure.
+    // Decided by the schema in `fetch`; `normalise` can't signal failure.
     expect(usgsResponseSchema.safeParse({ error: "service unavailable" }).success).toBe(false);
     expect(usgsResponseSchema.safeParse({ metadata: { generated: "nope" }, features: [] }).success).toBe(
       false,
@@ -129,8 +123,7 @@ describe("usgs-earthquakes fetch", () => {
     const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(fixture));
 
     await usgsEarthquakes.fetch({}, testContext({ env: { USGS_QUAKE_FEED: "../../etc/passwd" } }));
-    // An operator-supplied string reaching a server-side fetch URL is the SSRF shape ADR 0019
-    // calls v2's top risk. An unrecognised value falls back rather than being interpolated.
+    // Config value must not be interpolated into a fetch URL (SSRF); unknown values fall back.
     expect(String(spy.mock.calls[0]?.[0])).toBe(
       "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_day.geojson",
     );

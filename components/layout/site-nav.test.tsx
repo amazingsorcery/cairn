@@ -6,18 +6,11 @@ import { describe, expect, it, vi } from "vitest";
 import { SiteNav, SiteNavStacked } from "./site-nav";
 
 /**
- * The nav in a deployment with no sign-in method.
+ * Nav behaviour with no sign-in method. In public-only mode `/workspaces` 404s, so the
+ * entry must not render.
  *
- * "If it isn't built, it isn't linked" (product-brief §8). `tests/nav-links.test.ts` checks
- * that every entry in the route table resolves to a route *file*; it cannot check that a
- * route which exists is actually being served. In public-only mode `/workspaces` 404s, so
- * the entry must not render at all.
- *
- * THE STRONGEST ASSERTION HERE IS THAT NOTHING IS WRAPPED IN A `SessionProvider`.
- * `useSession` throws outside one, so a nav that renders without one is a nav that provably
- * did not read the session — which is the behaviour worth having, because in this mode there
- * is no session to read and `/api/auth/session` would be a request per page view for an
- * answer that is always the same.
+ * Rendering without a `SessionProvider` proves the nav doesn't read the session
+ * (`useSession` throws outside one), avoiding a `/api/auth/session` request per page view.
  */
 
 vi.mock("next/navigation", () => ({ usePathname: () => "/directory" }));
@@ -42,8 +35,7 @@ describe("public-only mode", () => {
   });
 
   it("ignores a session that somehow exists — a stale cookie is not a working sign-in", () => {
-    // An operator who removes SMTP leaves live session cookies behind. Those readers must
-    // not be shown a link to a route that now 404s.
+    // Removing SMTP leaves live session cookies behind; don't link them to a 404.
     render(
       <SessionProvider session={SESSION}>
         <SiteNav signInEnabled={false} />

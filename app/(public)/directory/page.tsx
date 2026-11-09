@@ -36,32 +36,14 @@ import { pageMetadata } from "@/lib/metadata";
 import { parseDirectoryFilters, type DirectoryFilters as Filters } from "@/lib/validation/filters";
 
 /**
- * `/directory` — the filtered, paginated catalogue.
+ * `/directory`: the filtered, paginated catalogue.
  *
- * **Dynamic on purpose** (`docs/architecture/sitemap.md` §1). This route reads
- * `searchParams`, which opts it out of the Full Route Cache in Next 15 whatever `revalidate`
- * says — so `revalidate` is deliberately NOT exported here (architecture HANDOFF §8, "the
- * trap", and QA assertion 11). The expensive part is still cached: `listTools()` wraps the
- * SQL in `unstable_cache` keyed by the *normalised* filter tuple, so the unfiltered first
- * page is one entry shared by every visitor and a crafted query string cannot mint new ones.
+ * Dynamic because it reads `searchParams`, so no `revalidate` export. `listTools()` caches
+ * by the normalised filter tuple, so crafted query strings can't mint new cache entries.
  *
- * Everything on this page is a Server Component except three leaves: the facet inputs, the
- * sort select and the name field (`components/directory/filter-controls.tsx`), plus the sheet
- * that holds the facets at 375px. The result list never crosses the client boundary.
- *
- * **There is deliberately no `loading.tsx` in this segment.** A route-level `loading.tsx`
- * wraps child segments too, and a Suspense fallback that streams commits the HTTP status
- * line — which made `notFound()` in `/directory/[category]` return `200 OK` instead of 404
- * (finding I-15). The skeleton lives in an in-page `<Suspense>` below instead, where it wraps
- * only this page's own body. Do not reintroduce `app/(public)/directory/loading.tsx`.
- *
- * STATES BUILT HERE — `docs/design/states.md` §2:
- *   §2.1 zero results, naming the computed widest single removal
- *   §2.2 delegated to `/directory/[category]` and `/tags/[slug]`
- *   §2.3 the skeleton, as an in-page `<Suspense>` fallback — see the shell below
- *   §2.4 the list query failed — in-region, filter bar still live
- *   §2.5 facet counts unavailable — checkboxes render without them
- *   §2.6 success
+ * No `loading.tsx` in this segment: it would wrap `/directory/[category]` too and its
+ * streamed fallback would turn that route's 404s into 200s. The skeleton is an in-page
+ * `<Suspense>` instead.
  */
 
 export const metadata = pageMetadata({
@@ -77,13 +59,7 @@ interface DirectoryPageProps {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }
 
-/**
- * The catalogue read, degraded rather than thrown.
- *
- * A failure here must not take the filter bar down with it (`states.md` §2.4), so the error
- * is carried in the return value and rendered in-region. Next's `error.tsx` still covers
- * anything thrown outside this boundary.
- */
+/** Returns null on failure so the error renders in-region and the filter bar stays usable. */
 async function readTools(filters: Filters): Promise<ToolListPage | null> {
   try {
     return await listTools(filters);
@@ -103,17 +79,11 @@ async function readTaxonomy() {
 }
 
 /**
- * The page shell. It touches no database, so it paints immediately and the Suspense boundary
- * below is the only thing that waits — which is what keeps the skeleton out of the segment
- * boundary that was breaking `/directory/[category]`'s 404 (finding I-15).
+ * Page shell; touches no database, so it paints immediately.
  *
- * The `<Suspense>` is deliberately UNKEYED. Keying it on the filter tuple would remount the
- * subtree on every filter change, which would tear down the client leaves inside it: the open
- * mobile filter sheet would slam shut on each checkbox tick. Unkeyed, React reconciles the
- * client components by position and they keep their state, while the in-flight styling comes
- * from the `useTransition` pending state in `DirectoryFilters` — which is the behaviour
- * `states.md` §2.3 and shell handoff §10.1 describe anyway: announce the new count, do not
- * move the reader.
+ * The `<Suspense>` is unkeyed: keying it on the filters would remount the client leaves and
+ * close the open mobile filter sheet on every tick. Pending styling comes from
+ * `useTransition` in `DirectoryFilters`.
  */
 export default async function DirectoryPage({ searchParams }: DirectoryPageProps) {
   const filters = parseDirectoryFilters(await searchParams);
@@ -128,16 +98,8 @@ export default async function DirectoryPage({ searchParams }: DirectoryPageProps
       </p>
 
       {/*
-        The second skip link — WCAG 2.4.1, technique G123.
-
-        The shell's own skip link targets `#main`, and `#main` CONTAINS the filter panel, so it
-        is no help in bypassing it (audit Q-21). With the results now ahead of the filters in
-        DOM order, the traverse that needs bypassing is the other one: a keyboard reader who
-        wants to filter would otherwise tab through every result card to get there.
-
-        It is `md:` and up because that is exactly where the sidebar exists. Below `md:` the
-        facets live in the sheet, whose trigger is three stops into the toolbar — a skip link
-        to a `display:none` sidebar would be a link to nowhere.
+        Skip link past the results to the filter sidebar (WCAG 2.4.1). `md:` only, since
+        below that the sidebar is hidden and facets live in the sheet.
       */}
       <a
         href="#directory-filters"
@@ -168,12 +130,8 @@ async function DirectoryBody({ filters }: { filters: Filters }) {
   const clearHref = filtersHref(BASE, clearedFilters());
 
   /**
-   * `states.md` §2.1 requires the empty state to name the single filter whose removal widens
-   * the result set most, "computed, not guessed: the backend returns, alongside the empty
-   * result set, the count each active filter would yield if it alone were dropped". There is
-   * no such combined query in `lib/queries`, so the page runs the same cached list query once
-   * per active filter. It fires ONLY on a zero-result page — never on the hot path — and
-   * every call is an `unstable_cache` hit after the first, keyed on the normalised tuple.
+   * On zero results, find the single filter whose removal yields the most results by
+   * re-running the cached list query once per active filter. Only runs on empty pages.
    */
   let widest: { label: string; href: string; total: number } | null = null;
   if (page !== null && page.total === 0 && chips.length > 0) {
@@ -201,10 +159,8 @@ async function DirectoryBody({ filters }: { filters: Filters }) {
 
   const groups = buildGroups(filters, categories, tags);
   /**
-   * Each form owns part of the tuple and mirrors the rest. The facet panel owns the six
-   * facet keys and carries `q` and `sort`; the toolbar owns `q` and `sort` and carries the
-   * six facets. A GET form submits only what it contains, so without the mirror, changing a
-   * checkbox would silently drop the reader's query.
+   * Each GET form carries the other form's params as hidden inputs, otherwise changing a
+   * facet would drop `q`/`sort` and vice versa.
    */
   const facetHidden = hiddenPairs(filters, [
     "category",
@@ -232,17 +188,8 @@ async function DirectoryBody({ filters }: { filters: Filters }) {
     <DirectoryFilters>
       <div className="mt-8 grid gap-8 md:grid-cols-[16rem_minmax(0,1fr)]">
         {/*
-          DOM ORDER IS RESULTS FIRST, FILTERS SECOND — audit finding Q-21, WCAG 2.4.1.
-
-          Visually the sidebar is still on the left at `md:` and above: `md:col-start-*` plus
-          `md:row-start-1` place both children explicitly, so the grid ignores source order
-          and the design is unchanged. What changes is the TAB order. A keyboard reader used
-          to pass 351 facet controls — 366 stops in all — before reaching the first catalogue
-          entry; now the results come first and the facet panel follows.
-
-          The reverse trip is served by the "skip to filters" link in the page shell, so
-          neither direction costs a traverse of the other. Do not "tidy" this back into
-          source order.
+          Results come before filters in DOM order so keyboard users don't tab through
+          hundreds of facet controls first. Grid placement keeps the sidebar visually left.
         */}
         <div className="min-w-0 md:col-start-2 md:row-start-1">
           <DirectoryToolbar
@@ -338,14 +285,8 @@ async function DirectoryBody({ filters }: { filters: Filters }) {
 }
 
 /**
- * The facet groups.
- *
- * Counts render for `category` and `tag` because `listCategories()` and `listTags()` return
- * them. Cost, confidence, input and output carry `null` — the read layer has no facet-count
- * query for them, and `states.md` §2.5 is explicit that a checkbox renders without its count
- * rather than not rendering. A guessed or zero count would be a claim nobody measured, which
- * is the one thing this catalogue may not print. See `docs/frontend/HANDOFF-directory.md` for
- * the query this needs.
+ * Facet groups. Only category and tag have counts; the others pass `null` (no count shown)
+ * because there's no facet-count query for them yet.
  */
 function buildGroups(
   filters: Filters,

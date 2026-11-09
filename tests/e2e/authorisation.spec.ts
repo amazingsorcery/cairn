@@ -5,50 +5,24 @@ import { expectNotFoundBody, renderedIdentity } from "./helpers/dom";
 import { signIn } from "./helpers/session";
 
 /**
- * Authorisation — architecture HANDOFF §11 assertions 1 and 2, `sitemap.md` §8, ADR 0008.
- *
- * The property under test is not "the wrong person is stopped". It is **the wrong person
- * learns nothing**. For this audience a case file's *existence* is sensitive: a 403 says "that
- * workspace is real and belongs to someone else", which is an enumeration oracle, and a
- * `<title>Connectors · Cairn</title>` above a 404 body discloses exactly what the 404 was for.
- *
- * On the status code: integration finding **I-15** (now closed, `d3d86f2`/`753cf1a`) meant
- * `notFound()` returned 200 with the right body. It returns a real 404 again, so the denial
- * paths assert the status **and** the body — see `expectNotFoundBody` for why both.
+ * Authorisation: the wrong person must learn nothing. A 403, or an admin page title above a
+ * 404 body, would reveal that the resource exists. Denials assert both status and body.
  */
 
 const OWNER_WORKSPACE_PATH_ENV = "E2E_OWNER_WORKSPACE_ID";
 
-/**
- * A long-lived case belonging to the `owner` account, used as the "exists but is not yours"
- * target. Created once and then reused, rather than created and deleted per run: this test
- * needs a workspace that certainly exists, and churning a row per run to prove it is waste.
- */
+/** A reusable case owned by `owner`, used as the "exists but is not yours" target. */
 const OWNER_PROBE_CASE = "Ownership boundary probe";
 
 /**
- * Split a response into the two things that carry information, with the dev server's
- * scheduling artefacts removed.
+ * Normalise streaming/timing artefacts so two responses can be compared byte-for-byte.
+ * Under `next dev`, flush boundaries and suspense holder ids (`S:2`) vary with load.
  *
- * A literal `expect(htmlA).toBe(htmlB)` is the assertion one wants, and against `next start`
- * it is the assertion one gets. Against `next dev` it is load-sensitive for reasons that have
- * nothing to do with authorisation: React streams the document in flushes, and **where** the
- * flush boundaries fall, **how many** suspense holders are inlined, and what those holders
- * are numbered (`S:2` vs `S:3`) all depend on how busy the machine was. Two responses with
- * byte-identical content can therefore differ in framing.
+ *   `markup`:  the document without scripts, holder ids normalised.
+ *   `payload`: the `self.__next_f.push` chunks concatenated, so cut points don't matter.
  *
- * So the comparison canonicalises the framing and nothing else:
- *   · `markup`  — the document with every `<script>` removed and the streaming holder ids
- *                 normalised. Everything a browser paints.
- *   · `payload` — every `self.__next_f.push([1,"…"])` chunk concatenated in order. The RSC
- *                 stream, which is where a leak would actually surface, reassembled so that
- *                 *where* it was cut does not matter.
- * Plus three values that are timestamps rather than content: the `?v=` asset cache-buster and
- * the `:N…` / `"start"`/`"end"` React server-timing spans.
- *
- * The workspace id itself is replaced in both: each response legitimately echoes the id that
- * was *requested* into the header's own `callbackUrl`. That is the address the reader typed,
- * not a fact about whether a row exists.
+ * Also normalises `?v=` cache-busters and server-timing spans, and the requested workspace id
+ * (echoed into `callbackUrl`).
  */
 function canonicalise(html: string, workspaceId: string): { markup: string; payload: string } {
   const normalised = html
@@ -73,13 +47,7 @@ function isDevServer(html: string): boolean {
 }
 
 test.describe("signed out", () => {
-  /**
-   * DEFECT THIS CATCHES: a new route under `/workspaces` or `/admin` that forgets its guard.
-   * `sitemap.md` §10.2 calls for exactly this check, path by path, because the guard lives in
-   * two places (`middleware.ts` and the per-route session/role check) and neither is
-   * authorisation on its own. A route added without either renders a broken page to a
-   * stranger — or worse, does not.
-   */
+  /** Every protected route redirects signed-out visitors. */
   for (const path of [
     "/workspaces",
     "/workspaces/new",
@@ -95,9 +63,7 @@ test.describe("signed out", () => {
     test(`${path} redirects to /signin`, async ({ page }) => {
       await page.goto(path);
       await expect(page).toHaveURL(/\/signin\?callbackUrl=/);
-      // The callback carries the reader back to where they were, and is built from this
-      // request's own path — never reflected from a query string (that is how a sign-in
-      // redirect becomes an open redirect).
+      // Built from the request's own path, never a query value (open redirect).
       expect(decodeURIComponent(new URL(page.url()).searchParams.get("callbackUrl") ?? "")).toBe(
         path,
       );
@@ -107,41 +73,26 @@ test.describe("signed out", () => {
 
 test.describe("a signed-in non-owner", () => {
   /**
-   * DEFECT THIS CATCHES: a 403, a "this case belongs to another user" message, or any other
-   * response that differs between "not yours" and "does not exist". `getWorkspace(id, userId)`
-   * binds `user_id = $2` in SQL and returns null for both cases; the moment someone adds a
-   * friendlier error for the first case, workspace ids become enumerable.
-   *
-   * The comparison is byte-for-byte over both halves of the response — the painted markup and
-   * the streamed RSC payload — with the dev server's streaming and timing artefacts
-   * canonicalised away. See `canonicalise` above for exactly what is removed and why.
+   * "Not yours" must be indistinguishable from "does not exist", or workspace ids become
+   * enumerable. Compares markup and RSC payload after `canonicalise`.
    */
   test("gets a response byte-identical to a non-existent id", async ({ browser, baseURL }) => {
-    // Two contexts, two page loads and a workspace creation against `next dev`, which
-    // compiles routes on first request. Comfortably inside the budget on `next start`; this
-    // keeps it inside it locally too.
+    // next dev compiles routes on first request.
     test.slow();
 
     const context = await browser.newContext({ baseURL });
     await signIn(context, "other", baseURL!);
     const page = await context.newPage();
 
-    // A workspace that certainly exists and certainly is not this account's: an existing one
-    // belonging to the owner account, or a new one if that account has none yet.
+    // A workspace owned by `owner`: reuse the probe case or create it.
     const ownerContext = await browser.newContext({ baseURL });
     await signIn(ownerContext, "owner", baseURL!);
     const ownerPage = await ownerContext.newPage();
     let targetId = process.env[OWNER_WORKSPACE_PATH_ENV] ?? null;
     if (!targetId) {
       await ownerPage.goto("/workspaces");
-      /*
-       * Wait for the list to RESOLVE before looking in it. Two traps here, both of which bit:
-       *   · the list streams behind `loading.tsx`, and `count()` does not auto-wait, so a
-       *     bare count reads "no cases" off the skeleton and creates a fresh row every run;
-       *   · waiting for "the probe, or the empty state" is not exhaustive — the common case
-       *     is *other* cases existing and the probe not, and that wait can only time out.
-       * So: wait for any case link or the empty state, THEN look for the probe.
-       */
+      // Wait for the streamed list (any case or the empty state) before counting; `count()`
+      // doesn't auto-wait.
       const anyCase = ownerPage.locator('a[href^="/workspaces/"]');
       const empty = ownerPage.getByRole("heading", { name: "No cases yet" });
       await expect(anyCase.first().or(empty).first()).toBeVisible();
@@ -165,7 +116,7 @@ test.describe("a signed-in non-owner", () => {
     const notThere = await page.request.get(`/workspaces/${unknownId}`);
 
     expect(notYours.status(), "no 403 — a 403 confirms the row exists").toBe(notThere.status());
-    expect(notYours.status(), "and both are a real 404 (I-15 is closed)").toBe(404);
+    expect(notYours.status(), "and both are a real 404").toBe(404);
 
     const notYoursHtml = await notYours.text();
     const notThereHtml = await notThere.text();
@@ -174,16 +125,8 @@ test.describe("a signed-in non-owner", () => {
 
     expect(served.markup, "the served markup must not differ").toBe(absent.markup);
 
-    /*
-     * The RSC payload comparison runs against a production build only.
-     *
-     * In `next dev` the payload carries React's owner stacks, server-timing spans and the
-     * Next devtools segment tree — development instrumentation whose row numbering shifts
-     * with scheduling, so two byte-identical *renders* produce different payload bytes under
-     * load. None of it exists in `next build && next start`, which is what the Playwright
-     * `webServer` block runs and therefore what CI asserts against. Comparing it in dev would
-     * be asserting on the dev server's instrumentation, not on this application.
-     */
+    // Payload comparison only against a production build; next dev adds instrumentation
+    // whose numbering varies under load.
     if (isDevServer(notYoursHtml) || isDevServer(notThereHtml)) {
       test.info().annotations.push({
         type: "scope",
@@ -208,12 +151,7 @@ test.describe("a signed-in non-owner", () => {
     await ownerContext.close();
   });
 
-  /**
-   * DEFECT THIS CATCHES: the export handler checking ownership *after* it starts rendering,
-   * or checking it in the page but not in the handler. `app/workspaces/[id]/export/route.ts`
-   * makes the order of operations the security property — session, uuid shape, ownership in
-   * SQL, *then* bytes — because a leaked case file cannot be un-leaked.
-   */
+  /** The export handler checks ownership itself, before producing any bytes. */
   test("cannot export another account's case", async ({ browser, baseURL }) => {
     test.slow();
     const context = await browser.newContext({ baseURL });
@@ -244,11 +182,8 @@ test.describe("a signed-in non-owner", () => {
 
 test.describe("a plain user under /admin", () => {
   /**
-   * DEFECT THIS CATCHES: a static `export const metadata` on an admin route. Next resolves
-   * page metadata even when the page body calls `notFound()`, so a `user` who guessed
-   * `/admin/connectors` would get the not-found body under `<title>Connectors · Cairn</title>`
-   * — which discloses precisely what the 404 exists to withhold. `adminMetadata()` gates the
-   * title behind the same role check; this is the test that keeps it gated.
+   * Next resolves metadata even when the page calls `notFound()`, so a static admin title
+   * would leak. `adminMetadata()` gates it on the role.
    */
   for (const path of ["/admin", "/admin/queue", "/admin/connectors", "/admin/taxonomy"]) {
     test(`${path} is not found, and its title leaks nothing`, async ({ browser, baseURL }) => {
@@ -271,11 +206,7 @@ test.describe("a plain user under /admin", () => {
   }
 
   /**
-   * DEFECT THIS CATCHES: a role gate applied in `app/admin/layout.tsx` alone. A layout guard
-   * is real but is one refactor away from not being — a parallel route, or a `loading.tsx`
-   * that streams before the layout resolves. `/admin/connectors` and `/admin/taxonomy` are
-   * `admin`, not `editor`, because they carry the kill-switch and the taxonomy; an `editor`
-   * reaching them is a privilege escalation that no test outside this one would notice.
+   * Connectors and taxonomy are admin-only; checked per page, not just in the admin layout.
    */
   test("an editor reaches the queue but not the connectors", async ({ browser, baseURL }) => {
     const context = await browser.newContext({ baseURL });

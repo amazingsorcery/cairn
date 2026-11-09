@@ -4,22 +4,10 @@ import { brand } from "@/config/brand";
 import { FOOTER_NAV } from "./nav-links";
 
 /**
- * The footer.
+ * Site footer. Social, contact and repo links stay hidden until `brand.domainRegistered` /
+ * `brand.socialsRegistered` are set, so we never link to an unclaimed address.
  *
- * WHAT IS NOT HERE, AND WHY
- * -------------------------
- * No social handles, no contact address, no repository link. `brand.socialsRegistered` and
- * `brand.domainRegistered` are both `false`: no domain has been bought, no handle has been
- * claimed, and `brand.repoUrl` is built from the same unclaimed handle. Rendering any of
- * them would be a link to an address that either does not resolve or — worse, once the
- * placeholder TLD is swapped — belongs to a stranger. `docs/design/states.md` §1.1 is
- * explicit that nothing renders for them, not a disabled link.
- *
- * The gate is on the flag, never on a hardcoded condition (`docs/brand/HANDOFF.md` §1), so
- * the commit that registers the real identifiers flips one boolean and these appear.
- *
- * Attribution for live-data connectors does **not** belong here. It renders next to the
- * data it belongs to (ADR 0011 rule 2, architecture HANDOFF §9.11).
+ * Live-data attribution renders next to the data, not here.
  */
 export function SiteFooter() {
   const identifiersPending = !brand.domainRegistered || !brand.socialsRegistered;

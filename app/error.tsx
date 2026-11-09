@@ -6,20 +6,10 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 
 /**
- * The root error boundary. Copy is verbatim from `docs/design/states.md` §1.3, and §1.4
- * when the browser is offline.
+ * Root error boundary. Nothing from `error` is rendered (message, stack or digest), since it
+ * can leak internals; Next.js already logs it server-side.
  *
- * NOTHING FROM `error` IS RENDERED. Not the message, not the stack, not the digest. A
- * server error message can carry a table name, a file path, a query fragment or an
- * environment detail, and this product's readers are not the people who should be handed
- * any of that. Next.js has already logged the real error server-side with its digest; that
- * is where an operator looks.
- *
- * The offline branch matters because the two failures need different actions: "try again
- * in a minute" is useless advice to someone whose train went into a tunnel, and "check your
- * connection" is useless advice when our own server threw. `navigator.onLine` is only a
- * negative signal — `false` reliably means no network, `true` means very little — which is
- * exactly how it is used here.
+ * Offline gets different copy. `navigator.onLine === false` is reliable; `true` means little.
  */
 export default function Error({ reset }: { error: Error & { digest?: string }; reset: () => void }) {
   const [offline, setOffline] = useState(false);

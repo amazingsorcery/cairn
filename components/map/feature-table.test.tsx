@@ -9,12 +9,8 @@ import { FeatureTable } from "./feature-table";
 import type { TableSort } from "./registry";
 
 /**
- * THE TABLE IS A REQUIRED EQUIVALENT (product-brief §2a), so its semantics get tests rather
- * than a comment. A blind investigator has to be able to read every feature, sort them, and
- * open one — and none of that may need WebGL.
- *
- * These render the real earthquakes layer definition rather than a fixture layer, so the test
- * also fails if the registry entry loses its row header or its formatters.
+ * The table is the accessible equivalent of the map: every feature must be readable,
+ * sortable and openable without WebGL. Uses the real earthquakes layer definition.
  */
 
 function quake(
@@ -106,8 +102,7 @@ describe("FeatureTable", () => {
 
   it("renders an absent value as an em dash with a spoken word, never a blank cell", () => {
     renderTable();
-    // A blank cell is indistinguishable from a rendering failure, and on a live surface the
-    // difference between "not reported" and "we lost it" is the difference that matters.
+    // A blank cell would look like a rendering failure.
     expect(screen.getAllByText("not reported").length).toBeGreaterThan(0);
   });
 

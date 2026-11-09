@@ -5,19 +5,9 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
 /**
- * The search entry point in the header.
- *
- * A plain `<form method="get" action="/search">`, so it works with no JavaScript, produces
- * a real, shareable, back-buttonable URL, and needs no client bundle. `/search` reads `q`
- * from `searchParams` (`docs/architecture/sitemap.md` §4), which is exactly what this form
- * submits.
- *
- * The type-ahead on `/search` itself is a separate, richer control owned by that route
- * (`SearchField` + `SuggestList` in `docs/design/components.md`). This one is deliberately
- * dumber: it is on every page in the product and must cost nothing.
- *
- * At 375px there is no room for a field beside the logo, so the header renders the icon
- * link instead — `docs/design/wireframes/01-home.txt` draws exactly that.
+ * Header search: a plain GET form to `/search?q=`, so it works without JavaScript and ships
+ * no client bundle. The type-ahead lives on `/search` itself. On mobile the header uses
+ * `HeaderSearchLink` instead.
  */
 export function HeaderSearch({ className }: { className?: string }) {
   return (

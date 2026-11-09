@@ -4,28 +4,14 @@ import { Badge } from "@/components/ui/badge";
 import type { QueueEntry } from "@/lib/queries/admin";
 
 /**
- * One list in the verification queue. `wireframes/11-admin-queue.txt`.
+ * One list in the verification queue.
  *
- * A REAL `<table>` with a `<caption>` and `scope="col"` headers, because it is scanned,
- * sorted and compared — the three things a table is for. The ordering is the database's
- * (`confidence`, then `last_verified_at ASC NULLS FIRST`), served by
- * `tools_confidence_verified_idx` and its siblings; there is no client-side re-sort, because
- * the order is the editorial priority and letting an editor shuffle it away would defeat the
- * queue.
+ * Order comes from the database (`confidence`, then `last_verified_at ASC NULLS FIRST`) and
+ * is the editorial priority, so there's no client-side sort. Uses the same public confidence
+ * chip and verification line readers see.
  *
- * THE CONFIDENCE CHIP IS THE PUBLIC ONE. Same component, same four channels. An editor and a
- * reader must be looking at the same object, or the editor is calibrating against something
- * the reader never sees.
- *
- * THE VERIFICATION LINE IS ALSO THE PUBLIC ONE, for the same reason — which means "never
- * verified" renders in `--warning`, not `--destructive`. The wireframe draws it destructive;
- * ADR 0016 §3 is the later and more general ruling, and it is right: destructive is the
- * delete/revoke red, and on a row it reads as a judgement about the entry rather than about
- * the freshness of our record. The escalation is carried by weight and wording instead.
- *
- * NO BULK "CONFIRM ALL". Each confirmation is a claim a named human is making about one
- * entry; a bulk action would make that claim cheap and untrue. `reverifyTools` exists in
- * `lib/actions/tools.ts` and is deliberately not wired to anything here.
+ * No bulk "confirm all": each confirmation is per entry. `reverifyTools` is intentionally
+ * not wired up here.
  */
 
 export interface QueueTableProps {

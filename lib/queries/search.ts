@@ -6,24 +6,13 @@ import { searchCacheKey, type SearchFilters } from "@/lib/validation/filters";
 import { TAG, TTL, cached } from "./cache";
 
 /**
- * Postgres full-text search. `docs/architecture/search.md` is the specification; this file
- * is the implementation of §6.
+ * Postgres full-text search. Raw SQL (no builder equivalents for these functions); all
+ * values are bound.
  *
- * Every query here is raw SQL through the Drizzle `sql` tag, because none of
- * `websearch_to_tsquery`, `ts_rank_cd`, `@@` or `similarity()` has a builder equivalent.
- * Every value is a bound parameter.
- *
- * THREE things that look like details and are not:
- *
- *  - `websearch_to_tsquery`, never `to_tsquery`. It accepts what people actually type —
- *    quoted phrases, `or`, a leading `-` for negation — and it NEVER raises on malformed
- *    input. `to_tsquery` turns `foo &` into a 500; a search box that can be crashed by
- *    punctuation is a bug report waiting to happen.
- *  - `ts_rank_cd(vector, query, 32)`. Cover density, normalised `rank/(rank+1)` into (0,1),
- *    so a long description cannot accumulate score by length alone.
- *  - `confidence` is NOT a ranking input (ADR 0007 §6). Down-ranking `needsReview` would
- *    bury exactly the entries a reader most needs to approach sceptically, and would turn a
- *    transparency field into a silent editorial filter.
+ *  - `websearch_to_tsquery`, never `to_tsquery`: it never raises on malformed input.
+ *  - `ts_rank_cd(vector, query, 32)`: cover density normalised to (0,1), so length doesn't
+ *    inflate score.
+ *  - `confidence` is not a ranking input; it's shown, not used to filter.
  */
 
 export const SEARCH_PAGE_SIZE = 20;
@@ -54,12 +43,8 @@ export type SearchResults = {
   tools: ToolHit[];
   playbooks: PlaybookHit[];
   /**
-   * Populated ONLY when both ranked groups are empty. search.md §5: the fallback fires when
-   * the tsquery returns zero rows and is never merged into the primary result set — mixing
-   * a rank scale with a similarity scale produces rankings nobody can explain, and this
-   * product's whole proposition is being explainable.
-   *
-   * The UI presents this as "No exact matches. Did you mean:", never as ordinary results.
+   * Only when both ranked groups are empty; never mixed with ranked results (different
+   * scales). Shown as "Did you mean:".
    */
   didYouMean: FuzzyHit[];
   toolTotal: number;
@@ -68,7 +53,7 @@ export type SearchResults = {
   pageSize: number;
 };
 
-/** search.md §6.1. Ordering is total, so a row cannot swap between pages. */
+/** Ordering is total, so a row can't swap between pages. */
 async function searchToolsUncached(
   query: string,
   limit: number,
@@ -114,7 +99,7 @@ async function searchToolsUncached(
   };
 }
 
-/** search.md §6.2. Playbooks have no reliability rating, so the tiebreak is title alone. */
+/** Playbooks have no reliability rating, so the tiebreak is title alone. */
 async function searchPlaybooksUncached(
   query: string,
   limit: number,
@@ -158,12 +143,8 @@ async function searchPlaybooksUncached(
 }
 
 /**
- * search.md §6.4 — the `pg_trgm` fallback.
- *
- * The 0.3 threshold is written into the predicate rather than set through
- * `pg_trgm.similarity_threshold`, because that GUC is connection state and this application
- * uses a pool: the value a query sees would depend on which pooled connection served it.
- * In the predicate it is visible in the query and identical everywhere.
+ * `pg_trgm` fallback. The 0.3 threshold is in the predicate, not the
+ * `pg_trgm.similarity_threshold` GUC, which is per-connection state in a pool.
  */
 async function fuzzyToolsUncached(query: string): Promise<FuzzyHit[]> {
   const rows = await db.execute<{
@@ -188,23 +169,9 @@ async function fuzzyToolsUncached(query: string): Promise<FuzzyHit[]> {
 }
 
 /**
- * `/search` — both groups, queried independently and merged in the UI, never in SQL
- * (search.md §1). A `UNION` would force one ranking scale across two corpora with very
- * different document lengths.
- *
- * ROUND TRIPS: 2 in the ordinary case, run concurrently; 3 when both groups are empty and
- * the fuzzy fallback fires. Zero when the query is empty.
- */
-/**
- * One ranked GROUP of results, with its own total. `/search` renders two of these.
- *
- * Split out so `docs/design/states.md` §8.3 — "Partial: one group failed", which renders the
- * group that worked and says "Playbook results are unavailable right now. Tool results are
- * below." — is reachable. It is not reachable if one function awaits both queries, because a
- * rejection in either takes down both.
- *
- * A caller wanting that state composes `searchTools` and `searchPlaybooks` with
- * `Promise.allSettled`. `search()` below composes them for callers that do not.
+ * One ranked group with its own total. Tools and playbooks are queried separately (no
+ * `UNION`: different ranking scales) so a caller can use `Promise.allSettled` and render one
+ * group if the other fails.
  */
 export type SearchGroup<Hit> = {
   hits: Hit[];
@@ -213,12 +180,7 @@ export type SearchGroup<Hit> = {
   pageSize: number;
 };
 
-/**
- * The tools group alone. search.md §6.1.
- *
- * `revalidate: 60` and the `search` tag, exactly as the combined function had — the two
- * groups are cached independently, so a failure in one does not evict the other's entry.
- */
+/** The tools group, cached independently of playbooks. */
 export async function searchTools(filters: SearchFilters): Promise<SearchGroup<ToolHit>> {
   const empty = { hits: [], total: 0, page: filters.page, pageSize: SEARCH_PAGE_SIZE };
   if (!filters.q) return empty;
@@ -236,7 +198,7 @@ export async function searchTools(filters: SearchFilters): Promise<SearchGroup<T
   )(key);
 }
 
-/** The playbooks group alone. search.md §6.2. */
+/** The playbooks group. */
 export async function searchPlaybooks(
   filters: SearchFilters,
 ): Promise<SearchGroup<PlaybookHit>> {
@@ -257,15 +219,7 @@ export async function searchPlaybooks(
 }
 
 /**
- * The trigram fallback. search.md §5 and §6.4.
- *
- * Exported so a caller composing the two groups itself can still reach it — the rule is that
- * it fires ONLY when both ranked groups returned zero rows, and a caller doing its own
- * `Promise.allSettled` has to apply that rule itself.
- *
- * A group that FAILED is not a group that returned zero rows. Do not run the fallback when
- * one side rejected: "no exact matches, did you mean…" would be a claim we cannot support,
- * and §8.3 already has honest copy for that case.
+ * Trigram fallback. Call only when both groups returned zero rows; not when one failed.
  */
 export async function didYouMean(query: string): Promise<FuzzyHit[]> {
   if (!query) return [];
@@ -275,10 +229,7 @@ export async function didYouMean(query: string): Promise<FuzzyHit[]> {
   })(query);
 }
 
-/**
- * `revalidate: 60`, not an hour. Search results are the one public surface where an hour of
- * staleness is noticeable and a minute is not (caching.md §6).
- */
+/** Both groups plus the fallback. Cached for a minute. */
 export async function search(filters: SearchFilters): Promise<SearchResults> {
   const base = {
     query: filters.q,
@@ -290,14 +241,12 @@ export async function search(filters: SearchFilters): Promise<SearchResults> {
     return { ...base, tools: [], playbooks: [], didYouMean: [], toolTotal: 0, playbookTotal: 0 };
   }
 
-  // COMPOSES the split reads rather than duplicating their SQL, so there is exactly one
-  // definition of each query. Concurrent, as before.
   const [toolGroup, playbookGroup] = await Promise.all([
     searchTools(filters),
     searchPlaybooks(filters),
   ]);
 
-  // Only when BOTH ranked groups are genuinely empty (search.md §5).
+  // Only when both groups are empty.
   const fallback =
     toolGroup.total === 0 && playbookGroup.total === 0 ? await didYouMean(filters.q) : [];
 
@@ -312,14 +261,8 @@ export async function search(filters: SearchFilters): Promise<SearchResults> {
 }
 
 /**
- * `/api/search/suggest` — the type-ahead. search.md §6.5.
- *
- * NOT cached, at any layer. A shared cache of partial search queries, keyed by prefix and
- * warmed by whoever typed first, is a readable log of what this audience is looking into.
- * caching.md §7 is explicit that product-brief §3.2 constraint 4 covers our own
- * infrastructure and not only third-party trackers.
- *
- * The route handler rate-limits this per hashed client identifier before calling it.
+ * `/api/search/suggest` type-ahead. Not cached: a prefix cache would be a log of what people
+ * search for. The route handler rate-limits it.
  */
 export async function suggest(query: string): Promise<{ slug: string; name: string }[]> {
   const rows = await db.execute<{ slug: string; name: string }>(sql`

@@ -1,11 +1,6 @@
-# What NOT to send to the Docker daemon as build context.
-#
-# Two reasons this file matters more than it looks:
-#   1. Secrets. A stray .env in the build context ends up in the `builder` and `migrator`
-#      layers via `COPY . .` and is then readable forever with `docker history` /
-#      `docker save`, even though the runner stage never copies it.
-#   2. Cache. node_modules is ~700 MB; shipping it as context invalidates the build cache
-#      on every unrelated file-watcher touch and makes every build minutes slower.
+# Excluded from the Docker build context.
+# - Secrets: `COPY . .` would bake a stray .env into the builder/migrator layers.
+# - Cache: node_modules (~700 MB) would bust the build cache and slow every build.
 
 # --- Dependencies: reinstalled inside the image from the lockfile ---
 node_modules
@@ -47,8 +42,7 @@ blob-report
 .playwright
 tests/**/__screenshots__
 
-# --- Infra and docs: not needed to build the app, and changing the runbook must not
-#     invalidate the image cache ---
+# --- Infra and docs: not needed to build the app; editing them must not bust the cache ---
 Dockerfile
 .dockerignore
 docker-compose.yml

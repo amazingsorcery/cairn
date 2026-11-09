@@ -2,22 +2,12 @@
 #
 # One-command first deploy on a fresh Ubuntu VPS.
 #
-# This is the whole of docs/deploy/RUNBOOK.md sections 2 through 7, collapsed into a script
-# for an operator who has not read it. The runbook is still the reference — it explains why
-# each step exists and how to recover when one fails. This exists so a first deploy does not
-# require reading 2,300 lines first.
-#
 #   sudo ./infra/bootstrap.sh wrath.rip you@example.com
 #
-# Idempotent: safe to run again after a failure, and safe to run twice. Every step checks
-# whether it has already been done.
+# Idempotent: each step checks whether it has already been done.
 #
-# WHAT IT DELIBERATELY DOES NOT DO
-#
-#   It does not disable password SSH login and it does not remove your existing user. Both
-#   are in the runbook as manual steps, on purpose: automating them is how an operator locks
-#   themselves out of a machine they have no console access to. Do them once you have
-#   confirmed key-based login works, following RUNBOOK section 2.
+# Does not disable SSH password login or remove existing users; do that by hand once
+# key-based login is confirmed, to avoid locking yourself out.
 #
 set -euo pipefail
 
@@ -34,8 +24,7 @@ note() { printf '    %s\n' "$*"; }
 [ -n "$ACME_EMAIL" ] || die "Second argument missing: an email address for Let's Encrypt expiry notices."
 [ "$(id -u)" -eq 0 ] || die "Run with sudo."
 [ -f "${APP_DIR}/docker-compose.prod.yml" ] || die "No application at ${APP_DIR}.
-  Put the repository there first, then run this again. See the note printed by
-  'Getting the code onto the server' in docs/deploy/RUNBOOK.md."
+  Put the repository there first (git clone, or git archive | ssh ... tar -x), then run this again."
 
 step "1/8  System packages"
 export DEBIAN_FRONTEND=noninteractive
@@ -44,9 +33,7 @@ apt-get install -y -qq ca-certificates curl gnupg ufw fail2ban unattended-upgrad
 note "done"
 
 step "2/8  Swap"
-# next build peaks above 1.5 GB and runs on the host, outside every container limit. On a
-# 4 GB box it is the most common cause of a failed deploy (exit 137, the OOM killer). A
-# swap file turns that failure into a slow build. Cheap insurance even on 8 GB.
+# The build peaks above 1.5 GB; swap avoids OOM kills (exit 137) on small boxes.
 if swapon --show | grep -q '/swapfile'; then
   note "already present"
 else
@@ -59,8 +46,7 @@ else
 fi
 
 step "3/8  Firewall"
-# Order matters: allow SSH BEFORE enabling, or enabling the firewall ends this session and
-# every future one.
+# Allow SSH before enabling, or this session is cut off.
 ufw allow OpenSSH >/dev/null
 ufw allow 80/tcp >/dev/null
 ufw allow 443/tcp >/dev/null
@@ -94,8 +80,7 @@ if [ -f "$ENV_FILE" ]; then
   note "${ENV_FILE} already exists — leaving it alone."
   note "Delete it and re-run if you want it regenerated."
 else
-  # Secrets are generated here rather than asked for. An operator who has to invent a
-  # 32-byte secret usually invents a weak one.
+  # Generate secrets rather than asking for them.
   AUTH_SECRET="$(openssl rand -base64 32)"
   RATE_LIMIT_SECRET="$(openssl rand -base64 32)"
   POSTGRES_PASSWORD="$(openssl rand -base64 24 | tr -d '/+=' | head -c 32)"
@@ -153,9 +138,7 @@ fi
 
 step "7/8  Deploy"
 cd "$APP_DIR"
-# --no-pull when there is no git checkout. The code can arrive by other means than a clone —
-# it arrived by tar over ssh on the first real deploy — and deploy.sh's `git pull --ff-only`
-# aborts the whole run on a directory that is not a repository.
+# --no-pull when the code was copied in without git (deploy.sh's `git pull` would abort).
 if [ -d "${APP_DIR}/.git" ]; then
   ./infra/deploy.sh
 else
@@ -164,9 +147,7 @@ else
 fi
 
 step "8/8  Seed the catalogue"
-# Deliberately not part of deploy.sh: loading content should be a deliberate act, not a
-# silent side effect of every deploy. Safe to run again — it upserts by slug and never
-# resets an editor's decisions.
+# Not part of deploy.sh, so deploys never touch content. Safe to re-run (upserts by slug).
 if docker compose -f docker-compose.prod.yml exec -T db psql -U app -d app -tAc \
      'select count(*) from tools' 2>/dev/null | grep -qE '^[1-9]'; then
   note "catalogue already present — skipping"
@@ -186,8 +167,11 @@ cat <<DONEEOF
   source off". Turning one on is a deliberate act because some of these
   sources ask, in their own terms, that a human reads them first.
 
-    docs/deploy/RUNBOOK.md section 18.5  — how to enable a source
-    docs/deploy/RUNBOOK.md section 2     — SSH hardening, still to do by hand
+  To enable a source, read its legal_basis, then:
+    docker compose -f docker-compose.prod.yml exec db psql -U app -d app \\
+      -c "update connectors set enabled = true where slug = '<slug>'"
+
+  Still to do by hand: SSH hardening (disable password login).
 ============================================================================
 
 DONEEOF

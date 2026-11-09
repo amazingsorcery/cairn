@@ -18,24 +18,12 @@ import { useAnnounce } from "./announcer";
 import { FieldError } from "./output-row";
 
 /**
- * The parts every server-side Toolbench tool shares: the query field, the four honest
- * outcome states, and the provenance line.
+ * Shared pieces for server-side Toolbench tools: the query field, the outcome states and
+ * the provenance line.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * NEVER A SPINNER THAT LIES
- * ─────────────────────────────────────────────────────────────────────────────
- * These four tools call a third party, and third parties are down, slow, and sometimes
- * refuse us. The interface has to distinguish, in words the reader can act on:
- *
- *   - **We refused your input**, and here is what to change. Nothing was requested.
- *   - **An operator switched this source off.** Nothing was requested. Not a fault.
- *   - **You, or everyone, hit a limit.** Ours, or theirs. Different sentences, because the
- *     first clears on a timer and the second means we have stood down.
- *   - **The source did not answer.** Which is emphatically not "there is nothing to find" —
- *     for this audience that confusion turns a failed lookup into a published claim.
- *
- * And an answer always carries the instant it was obtained, computed from `fetchedAt` on
- * every render rather than baked in at response time (ADR 0014 §1).
+ * Failures are distinguished: input rejected, source switched off, a limit hit (ours or
+ * theirs), or the source didn't answer (which is not the same as "nothing found"). Results
+ * show their age, recomputed from `fetchedAt`.
  */
 
 /* ------------------------------------------------------------------ *
@@ -118,17 +106,9 @@ export function LookupForm({
  * ------------------------------------------------------------------ */
 
 /**
- * The four (now six) honest failure states.
- *
- * The copy is NOT written here. It comes from `describeDegraded` in
- * `lib/toolbench/connector-envelope.ts`, which is also what the Overpass builder and the
- * broadcast finder render — so a reader who meets "the source asked us to slow down" on one
- * tool meets the same sentence on the others. This component used to carry its own table,
- * which is how two tools end up disagreeing about what `rate-limited` means.
- *
- * `bad-request` is given its own icon and tone: it is the only reason that is about the
- * reader's input rather than about a third party, and telling somebody a source is down when
- * we rejected what they typed sends them to check the wrong thing.
+ * Failure states. Copy comes from `describeDegraded` (`lib/toolbench/connector-envelope.ts`),
+ * shared with the other tools. `bad-request` gets its own icon since it's about the reader's
+ * input, not the source.
  */
 export function LookupStatus({ outcome }: { outcome: LookupOutcome<unknown> | null }) {
   const announce = useAnnounce();
@@ -174,14 +154,7 @@ export function LookupStatus({ outcome }: { outcome: LookupOutcome<unknown> | nu
  * Provenance
  * ------------------------------------------------------------------ */
 
-/**
- * When the answer was obtained, how old it is now, and who it came from.
- *
- * The age ticks. `fetchedAt` is the instant the upstream answered, and the age is recomputed
- * from it on an interval rather than being computed once on the server — a number baked in
- * at response time is wrong the moment the response is a second old, and on a page whose
- * whole value is provenance that is the one number that must never lie.
- */
+/** When the answer was obtained, its current age (recomputed on an interval), and its source. */
 export function Provenance({
   outcome,
   className,
@@ -234,13 +207,7 @@ export function EmptyResult({ title, children }: { title: string; children: Reac
   );
 }
 
-/**
- * Render an ISO instant as a plain UTC date, never a locale string and never a relative age.
- *
- * `docs/frontend/HANDOFF-toolbench.md` §2: the Toolbench renders instants, not editorial
- * dates. Every timestamp on these four pages is an evidentiary fact that goes into somebody's
- * notes, and "3 months ago" is not a fact you can cite.
- */
+/** An ISO instant as a plain UTC date (no locale formatting or relative age), so it can be cited. */
 export function IsoDate({ value, withTime = false }: { value: string | null; withTime?: boolean }) {
   if (value === null) return <span className="text-muted-foreground">unknown</span>;
   const parsed = new Date(value);

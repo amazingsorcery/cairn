@@ -1,41 +1,21 @@
 /**
- * Database schema — the single structural source of truth.
+ * Database schema.
  *
- * Conventions (see `docs/architecture/data-model.md` and the ADRs referenced there):
+ * Conventions:
+ * - `uuid` primary keys with `gen_random_uuid()`, except where Auth.js dictates otherwise.
+ * - Enums are `text` + a CHECK constraint; no Postgres ENUM types.
+ * - Timestamps are `timestamptz` mapped to `Date`.
+ * - snake_case columns, camelCase properties (Auth.js tables keep the adapter's names).
+ * - Ownership-bearing rows carry `user_id`, so authorisation is a join.
+ * - Hard deletes with cascade, except where a user's record must survive an editorial
+ *   change: `on delete set null` plus a denormalised snapshot.
+ * - No PostGIS and no `cached_features` table. Live data stays in memory; only features a
+ *   user saves are persisted (`workspace_feature_snapshots`). Coordinates are
+ *   `double precision` with range CHECKs.
  *
- * - Primary keys are Postgres native `uuid` with `gen_random_uuid()` defaults,
- *   except where Auth.js dictates otherwise. See ADR 0003.
- * - Enumerated values are `text` columns with a Drizzle `enum` type hint plus a
- *   Postgres CHECK constraint. There are no Postgres ENUM types. See ADR 0004.
- * - All timestamps are `timestamptz` mapped to JS `Date`.
- * - Database identifiers are snake_case; TypeScript property names are camelCase.
- *   The Auth.js tables are the exception: their *property* names are fixed by the
- *   adapter (`refresh_token`, `providerAccountId`, ...); their column names are not.
- * - Every ownership-bearing row carries a `user_id` FK so authorisation is a join,
- *   not an application-layer assumption.
- * - Deletion is hard with `on delete cascade` except where a user's own record must
- *   survive an editorial change; those FKs are `on delete set null` and the row keeps a
- *   denormalised snapshot of what it referenced. See ADR 0008.
- * - The Live subtree (`connectors`, `connector_requests`, `cameras`) implements ADR 0011.
- *   Read the block comment above `connectors` before adding anything to it: what that
- *   subtree must never grow is as much a part of the design as what it contains.
- * - There is no `cached_features` table and no PostGIS, and both absences are decisions
- *   rather than gaps. ADR 0022. The live layers live in Redis with per-source TTLs, because
- *   the product does not claim to keep them; the one thing that is persisted is a feature a
- *   user deliberately saved (`workspace_feature_snapshots`, ADR 0025). Every coordinate in
- *   this file is `double precision` with a range CHECK, because nothing in this product
- *   issues a spatial predicate.
- *
- * Things this file deliberately does NOT contain, because drizzle-kit cannot generate
- * them and they live in a hand-written follow-up migration instead — the exact SQL is in
- * `docs/architecture/search.md` §7 and `docs/architecture/HANDOFF.md` §6:
- *
- * - `CREATE EXTENSION pg_trgm`
- * - the two `gin_trgm_ops` fuzzy-fallback indexes
- * - the DEFERRABLE unique constraint on `playbook_steps (playbook_id, order_index)`
- *
- * `drizzle-kit push` must never be run against any environment: it diffs against the live
- * database and would drop the objects created by that hand-written migration.
+ * Not here (hand-written migrations, since drizzle-kit can't generate them): `pg_trgm`, the
+ * two `gin_trgm_ops` indexes, and the DEFERRABLE unique on `playbook_steps`. Never run
+ * `drizzle-kit push`; it would drop them.
  */
 
 import { relations, sql } from 'drizzle-orm'
@@ -59,11 +39,7 @@ import {
  * Shared column helpers
  * ------------------------------------------------------------------ */
 
-/**
- * `tsvector` has no first-class Drizzle column type. We only ever reference the column
- * inside raw SQL (`@@`, `ts_rank_cd`) and never select it, so a string-shaped custom type
- * is sufficient and keeps the generated DDL honest.
- */
+/** Drizzle has no tsvector type; it's only used in raw SQL, so a string type suffices. */
 const tsvector = customType<{ data: string; driverData: string }>({
   dataType() {
     return 'tsvector'
@@ -75,10 +51,8 @@ const timestamptz = (name: string) => timestamp(name, { withTimezone: true, mode
 /* ------------------------------------------------------------------ *
  * Enumerated value sets
  *
- * These arrays are the canonical definition. Zod schemas at every boundary are built from
- * them (`z.enum(CONFIDENCE_LEVELS)`), the CHECK constraints below are rendered from the
- * same literals, and the UI label maps key off them. Adding a value is a two-line change:
- * this array, and a migration that replaces the CHECK constraint.
+ * Canonical definitions for Zod schemas, CHECK constraints and UI label maps. Adding a value
+ * means editing the array and adding a migration that replaces the CHECK.
  * ------------------------------------------------------------------ */
 
 export const USER_ROLES = ['user', 'editor', 'admin'] as const
@@ -93,26 +67,9 @@ export const PUBLICATION_STATUSES = ['draft', 'published'] as const
 export type PublicationStatus = (typeof PUBLICATION_STATUSES)[number]
 
 /**
- * product-brief.md §2, Directory table, `costModel`. Ordered as an ascending ladder of both
- * cost and exposure, so a UI that renders the array in order reads correctly.
- *
- * `freeWithRegistration` is a tier rather than a `costNotes` string because for this
- * audience it is a threat-model fact, not a pricing nuance. "Free" and "free once the
- * operator knows who you are" are materially different propositions: registration means an
- * identity, an email address and a query log held by the operator, which is a decision a
- * journalist or human-rights researcher must be able to make *before* touching the source.
- * Buried in prose it cannot be filtered on, cannot be badged, and will be missed by exactly
- * the reader who most needed it. As a tier it is a first-class facet of the directory.
- *
- * Spelling: camelCase, like every other CLOSED vocabulary here (`needsReview`,
- * `checklistStep`, `upstreamError`). The kebab-case forms in `lib/content/schema.ts` are
- * correct for the OPEN vocabularies it owns — `input_types` and `output_types` are
- * unconstrained `text[]`, never TypeScript union members, and kebab reads better as a
- * facet value. `costModel` is not one of those: it is a CHECK-constrained enum that code
- * branches on and that needs a label map, so it follows `confidence`. If the content
- * contract's `free-with-registration` is preferred instead, this array and
- * `lib/content/schema.ts` must change together — the CHECK constraint will reject any
- * mismatch loudly at seed time rather than storing a value the filters cannot see.
+ * Ordered by ascending cost and exposure. `freeWithRegistration` is its own tier because
+ * registration gives the operator an identity and query log, which users need to filter on.
+ * camelCase like the other closed vocabularies; must match `lib/content/schema.ts`.
  */
 export const COST_MODELS = [
   'free',
@@ -124,10 +81,7 @@ export const COST_MODELS = [
 ] as const
 export type CostModel = (typeof COST_MODELS)[number]
 
-/**
- * product-brief.md §6.2 — how sure *we* are about an entry. Stored camelCase; the
- * human-readable labels live in the UI layer. See ADR 0007.
- */
+/** How sure we are about an entry. Labels live in the UI layer. */
 export const CONFIDENCE_LEVELS = ['verified', 'high', 'medium', 'needsReview'] as const
 export type ConfidenceLevel = (typeof CONFIDENCE_LEVELS)[number]
 
@@ -138,15 +92,9 @@ export const WORKSPACE_STATUSES = ['active', 'completed', 'archived'] as const
 export type WorkspaceStatus = (typeof WORKSPACE_STATUSES)[number]
 
 /**
- * `tool` = a saved directory entry. `checklistStep` = an entry derived from a playbook step.
- * `mapFeature` = a live feature the user saved off the map (ADR 0025).
- *
- * The first two point at a row we own, so the item keeps an FK plus a snapshotted `title`.
- * `mapFeature` has nothing to point at: the referent is a position an upstream published
- * once and will not publish again. Its snapshot therefore has to be complete, and it lives
- * in `workspace_feature_snapshots` rather than in seven nullable columns here.
- *
- * `mapFeature` was added in migration 0006, which replaces the CHECK constraint.
+ * `tool`: saved directory entry. `checklistStep`: from a playbook step. Both keep an FK plus
+ * a snapshotted `title`. `mapFeature`: a saved live feature, stored in full in
+ * `workspace_feature_snapshots` since there is no row to point at.
  */
 export const WORKSPACE_ITEM_KINDS = ['tool', 'checklistStep', 'mapFeature'] as const
 export type WorkspaceItemKind = (typeof WORKSPACE_ITEM_KINDS)[number]
@@ -155,16 +103,9 @@ export const REVIEW_STATUSES = ['pending', 'approved', 'rejected'] as const
 export type ReviewStatus = (typeof REVIEW_STATUSES)[number]
 
 /**
- * What a source's data is *about*. Mirrors `SOURCE_KINDS` in `lib/sources/types.ts`
- * value-for-value and must keep mirroring it.
- *
- * Deliberately duplicated rather than imported, for the same reason `COST_MODELS` is not
- * imported from `lib/content/schema.ts`: the CHECK constraint rendered from this array is a
- * database object, and a database object cannot be changed by editing a TypeScript file in
- * another package. If someone adds a twelfth kind to `lib/sources/types.ts` and not here,
- * the write is rejected loudly by `connectors_kind_check` at seed time rather than storing a
- * value the ops board cannot group. `db/schema.test.ts` asserts the two lists are equal, so
- * the drift is caught before it reaches a database at all.
+ * What a source's data is about. Duplicated from `lib/sources/types.ts` rather than
+ * imported, because the CHECK constraint needs a migration to change; `db/schema.test.ts`
+ * asserts they match.
  */
 export const SOURCE_KINDS = [
   'aircraft',
@@ -182,65 +123,32 @@ export const SOURCE_KINDS = [
 export type SourceKind = (typeof SOURCE_KINDS)[number]
 
 /**
- * One registry, not two. ADR 0024.
+ * Connectors and map sources share one registry (legal basis, attribution, TTL, quotas,
+ * kill-switch).
  *
- * `connectors` was designed in v1 for the two Live surfaces (`flights`, `cameras`); v2 adds
- * a dozen map sources with exactly the same needs — a recorded legal basis, an attribution
- * string, a TTL, a quota envelope, a kill-switch and a verification date. They are the same
- * concept and share this table. The alternative — a parallel `sources` table — would have
- * needed either a second audit log or a polymorphic FK on `connector_requests`, and would
- * have given an operator two places to look for a kill-switch during an incident.
- *
- * `flights` IS DEPRECATED AND MEANS `aircraft`. It is retained only because the v1 value is
- * live in seeded data and in `lib/connectors/flights.ts`, `db/seed.ts` and
- * `app/(public)/live/page.tsx`, which this file does not own. Two spellings for one data
- * kind is exactly the conflation this schema rejects elsewhere, so it is debt, recorded as
- * such: the coordinated rename is in ADR 0024 §Consequences and belongs in migration 0007.
- * **Do not write `flights` to a new row.**
+ * `flights` is a deprecated alias for `aircraft`, kept for existing rows and code. Don't
+ * write it to new rows.
  */
 export const CONNECTOR_KINDS = [...SOURCE_KINDS, 'flights'] as const
 export type ConnectorKind = (typeof CONNECTOR_KINDS)[number]
 
 /**
- * How a source is polled, which is the difference between an upstream call rate that is
- * constant and one that scales with the number of people looking. ADR 0021 named the fix and
- * deferred it; this column is the half of it that is data rather than code.
+ * How a source is polled.
+ *   `onDemand`: fetched in the request path and cached; traffic follows readers.
+ *   `worker`:   polled once globally on `cacheTtlSeconds`; viewports filter that payload.
  *
- *   `onDemand` — fetched in the request path, cached per source. The upstream call rate is
- *                bounded by the TTL but the *shape* of the traffic follows our readers.
- *   `worker`   — the worker container polls once, globally, on `cacheTtlSeconds`, and every
- *                viewport is served by filtering that one payload server-side. The upstream
- *                sees exactly one caller at one fixed rate, whether there is one reader or
- *                three hundred.
- *
- * The quota columns mean different things in the two modes and must not be read as if they
- * meant the same. Under `onDemand`, `globalCeiling` is the number of calls readers may
- * collectively cause; under `worker` it is a ceiling on the worker alone, and `perUserQuota`
- * governs nothing outbound at all — it is only a request-path limit on our own API.
- *
- * Defaults to `onDemand`, which is what every source does today. A source is promoted to
- * `worker` by an operator, deliberately, when the worker is actually running — not by
- * inheriting a default from a migration.
+ * Under `worker`, `globalCeiling` limits the worker alone and `perUserQuota` only limits our
+ * own API. Defaults to `onDemand`.
  */
 export const POLL_MODES = ['onDemand', 'worker'] as const
 export type PollMode = (typeof POLL_MODES)[number]
 
 /**
- * Outcome of one outbound call. `quotaDenied`, `rateLimited` and `disabled` are recorded even
- * though no request left the building — a refusal is exactly the event an operator needs to
- * see. Stored camelCase, like every other vocabulary here (product-brief §6.2: one spelling,
- * no translation layer).
+ * Outcome of one outbound call. Refusals (`quotaDenied`, `rateLimited`, `disabled`) are
+ * recorded even though no request was made.
  *
- * `quotaDenied` AND `rateLimited` ARE DIFFERENT OPERATIONAL FACTS AND MUST NOT BE MERGED.
- * `quotaDenied` is *we* refused the caller, against a ceiling we chose. `rateLimited` is
- * *they* refused us — an HTTP 429 or 420, or our own cooldown standing down afterwards. An
- * operator reading the health board at 3am who sees `quotaDenied` will tune OUR quota; the
- * fix for `rateLimited` is to back off from THEIRS. Collapsing them sends the reader to the
- * wrong knob, which is the same conflation this codebase rejects everywhere else: confidence
- * versus reliability, our record versus the tool, intentionally published versus merely
- * reachable. QA finding Q-02.
- *
- * `rateLimited` was added in migration 0005, which replaces the CHECK constraint.
+ * Keep `quotaDenied` (we refused the caller) separate from `rateLimited` (upstream 429/420,
+ * or our cooldown after one); they point at different fixes.
  */
 export const CONNECTOR_REQUEST_OUTCOMES = [
   'ok',
@@ -252,10 +160,7 @@ export const CONNECTOR_REQUEST_OUTCOMES = [
 ] as const
 export type ConnectorRequestOutcome = (typeof CONNECTOR_REQUEST_OUTCOMES)[number]
 
-/**
- * What a camera looks at. Exactly the three kinds product-brief §2 names for the Live
- * pillar — no invented vocabulary. Extending is a two-line change (ADR 0004).
- */
+/** What a camera looks at. */
 export const CAMERA_VIEW_KINDS = ['traffic', 'transport', 'tourism'] as const
 export type CameraViewKind = (typeof CAMERA_VIEW_KINDS)[number]
 
@@ -266,13 +171,9 @@ const oneOf = (column: string, values: readonly string[]) =>
 /* ================================================================== *
  * Auth.js v5 — @auth/drizzle-adapter tables
  *
- * The TypeScript *property* names below are load-bearing: PostgresDrizzleAdapter accesses
- * them directly (`usersTable.emailVerified`, `accountsTable.providerAccountId`,
- * `accountsTable.refresh_token`). Renaming a property breaks authentication at runtime.
- * Database column names are ours to choose.
- *
- * The optional `authenticators` (WebAuthn) table is intentionally absent: v1 ships email
- * magic link and GitHub OAuth only (product-brief §5).
+ * Property names are read directly by the adapter (`emailVerified`, `providerAccountId`,
+ * `refresh_token`); don't rename them. Column names are ours.
+ * No `authenticators` table: only magic link and GitHub OAuth are supported.
  * ================================================================== */
 
 export const users = pgTable(
@@ -350,12 +251,7 @@ export const verificationTokens = pgTable(
  * Taxonomy
  * ================================================================== */
 
-/**
- * A single flat taxonomy of investigative domains, shared by tools and playbooks. There is
- * no `kind` discriminator: "corporate records" is the same domain whether it names a
- * directory section or a methodology, and splitting it would duplicate every label.
- * See data-model.md §4.
- */
+/** One flat taxonomy of investigative domains, shared by tools and playbooks. */
 export const categories = pgTable(
   'categories',
   {
@@ -411,11 +307,7 @@ export const tools = pgTable(
       .notNull()
       .references(() => categories.id, { onDelete: 'restrict' }),
 
-    /**
-     * Controlled vocabularies, but open-ended ones — the canonical value lists live in the
-     * Zod layer, not in the database, because they grow with the catalogue and a CHECK on
-     * array membership would turn every content addition into a migration. See ADR 0004.
-     */
+    /** Open vocabularies validated in Zod, not CHECKed, so new values need no migration. */
     inputTypes: text('input_types')
       .array()
       .notNull()
@@ -429,7 +321,7 @@ export const tools = pgTable(
     /** Free text. Where a price is stated it must be quoted from the vendor's own page. */
     costNotes: text('cost_notes'),
 
-    /** Where the tool or its underlying data sits. Free text; convention in HANDOFF §3. */
+    /** Where the tool or its underlying data sits. Free text. */
     jurisdiction: text('jurisdiction'),
     /** What that jurisdiction implies for a user of this tool. Markdown. */
     legalNotes: text('legal_notes'),
@@ -446,10 +338,8 @@ export const tools = pgTable(
     publishedAt: timestamptz('published_at'),
 
     /**
-     * Denormalised search surface: category name, tag names, input types and output types,
-     * flattened to whitespace-separated text on write. It exists because a Postgres
-     * generated column may only call IMMUTABLE functions and `array_to_string` is STABLE.
-     * See ADR 0005 and search.md §3.
+     * Category, tag, input and output names flattened to text on write. Needed because
+     * generated columns require IMMUTABLE functions and `array_to_string` is STABLE.
      */
     searchKeywords: text('search_keywords').notNull().default(''),
     searchVector: tsvector('search_vector').generatedAlwaysAs(
@@ -481,10 +371,7 @@ export const tools = pgTable(
     check('tools_cost_model_check', oneOf('cost_model', COST_MODELS)),
     check('tools_confidence_check', oneOf('confidence', CONFIDENCE_LEVELS)),
     check('tools_reliability_range_check', sql`reliability is null or reliability between 1 and 5`),
-    /**
-     * Credibility is enforced in the database, not only in the form: nothing reaches the
-     * public catalogue without a verification date and a reliability rating. ADR 0007.
-     */
+    /** Published tools must have a verification date and reliability rating. */
     check(
       'tools_published_requires_verification_check',
       sql`status <> 'published' or (last_verified_at is not null and reliability is not null)`,
@@ -531,7 +418,7 @@ export const playbooks = pgTable(
     /** Estimated duration in whole minutes. Formatted by the UI, never stored pre-formatted. */
     estimatedMinutes: integer('estimated_minutes').notNull(),
 
-    /** Playbooks carry the same accuracy metadata as tools: product-brief §6.2 says *every* entry. */
+    /** Same accuracy metadata as tools. */
     lastVerifiedAt: timestamptz('last_verified_at'),
     confidence: text('confidence', { enum: CONFIDENCE_LEVELS }).notNull().default('needsReview'),
 
@@ -588,7 +475,7 @@ export const playbookSteps = pgTable(
     objective: text('objective').notNull(),
     /** How to do it. Markdown. */
     body: text('body').notNull(),
-    /** The completion criterion. product-brief §2: "states how you know the step is done". */
+    /** How you know the step is done. */
     doneWhen: text('done_when').notNull(),
     createdAt: timestamptz('created_at').notNull().defaultNow(),
     updatedAt: timestamptz('updated_at')
@@ -598,10 +485,8 @@ export const playbookSteps = pgTable(
   },
   (t) => [
     /**
-     * Ordering index only. Uniqueness of (playbook_id, order_index) is enforced by a
-     * DEFERRABLE INITIALLY DEFERRED constraint added in the hand-written migration, so a
-     * drag-to-reorder can rewrite every index inside one transaction without shuffling
-     * through temporary values. drizzle-kit cannot express DEFERRABLE. See HANDOFF §6.
+     * Ordering only. Uniqueness is a DEFERRABLE constraint in a hand-written migration
+     * (drizzle-kit can't express it), so reorders can run in one transaction.
      */
     index('playbook_steps_playbook_order_idx').on(t.playbookId, t.orderIndex),
     check('playbook_steps_order_index_check', sql`order_index >= 0`),
@@ -630,11 +515,9 @@ export const playbookStepTools = pgTable(
 )
 
 /* ================================================================== *
- * Workspaces — the user's own case file
+ * Workspaces: the user's own case file
  *
- * product-brief §3.2: the user is the controller of their case file, not us. Nothing here
- * is an entity record about an investigation *subject*; these are the user's saved links,
- * their checklist state, and their own prose.
+ * The user's saved links, checklist state and notes. No records about investigation subjects.
  * ================================================================== */
 
 export const workspaces = pgTable(
@@ -680,11 +563,7 @@ export const workspaceItems = pgTable(
     /** Populated when kind = 'checklistStep'. `set null` — see `title`. */
     stepId: uuid('step_id').references(() => playbookSteps.id, { onDelete: 'set null' }),
 
-    /**
-     * Snapshot of the referenced tool name or step title, taken when the item was added.
-     * A user's checklist must not silently change or vanish because an editor renamed or
-     * removed the source. ADR 0008.
-     */
+    /** Tool name or step title at save time, so editorial changes don't alter the checklist. */
     title: text('title').notNull(),
     orderIndex: integer('order_index').notNull().default(0),
     checked: boolean('checked').notNull().default(false),
@@ -711,10 +590,8 @@ export const workspaceItems = pgTable(
     check('workspace_items_kind_check', oneOf('kind', WORKSPACE_ITEM_KINDS)),
     check('workspace_items_order_index_check', sql`order_index >= 0`),
     /*
-     * Deliberately no CHECK tying `kind` to a non-null `tool_id` / `step_id`: those FKs are
-     * ON DELETE SET NULL, and Postgres re-evaluates CHECK constraints on the resulting
-     * UPDATE, which would make the constraint block editorial deletes. The invariant is
-     * enforced in Zod on write instead. ADR 0004.
+     * No CHECK tying `kind` to a non-null tool_id/step_id: ON DELETE SET NULL would then
+     * fail the CHECK and block editorial deletes. Enforced in Zod instead.
      */
   ],
 )
@@ -756,54 +633,19 @@ export const notes = pgTable(
 )
 
 /**
- * A live map feature, as it was when a user saved it into a case file. ADR 0025.
+ * A live map feature as it was when a user saved it into a case file. The only persisted
+ * live data, written only on an explicit save; cascades from `users`.
  *
- * ## Why this table exists when there is no `cached_features` table
- *
- * ADR 0022 refuses to persist the live layers: an aircraft position from six hours ago is
- * not something this product claims to keep, and a durable table of them is the aircraft
- * position table the block comment below `reviews` forbids on sight. This table is the one
- * exception, and it is an exception for a reason that does not generalise: **the user asked
- * for it.** A feature saved into a workspace is the user's own case material, the same
- * category as a `note`, and it must survive the upstream forgetting it — which upstreams do,
- * within seconds. Nothing here is written unless a signed-in person clicked save.
- *
- * The distinction is the same one product-brief §3.2 constraint 3 draws: we are not the
- * controller of a dossier we assembled, we are the host of a case file its owner assembled.
- * Everything here cascades from `users`, so a deleted account takes it with it.
- *
- * ## The snapshot is complete, and it is immutable
- *
- * `workspace_items` snapshots a `title` and keeps an FK for the rest (ADR 0008). That is not
- * available here: there is no local row to point at and never will be, because the referent
- * is one observation an upstream published once. So every field the export and the feature
- * panel render is on this row, including the attribution and licence owed at save time — a
- * saved feature rendered in an exported case file still owes its credit, and the connector
- * row it came from may have been edited or deleted by then.
- *
- * There is a `createdAt` and deliberately **no `updatedAt`**: a record of what an upstream
- * said at 14:32 has no correct edit. The user's changing view of it belongs in a `note`.
- *
- * ## One save per feature per workspace, and no track history
- *
- * `workspace_feature_snapshots_unique_idx` allows a feature to be saved into a workspace
- * once. Re-saving is a no-op that reports "already saved". The rejected alternative was to
- * let a user accumulate positions for the same aircraft over time, which is a flight-track
- * table assembled one click at a time — the thing the Live block comment forbids, arrived at
- * by a route that felt like a feature. A user who needs a sequence of observations writes
- * timestamped notes, which is what `notes` is for.
- *
- * ## `featureRef` is deliberately not indexed on its own
- *
- * Same reasoning as the absent index on `connector_requests.actor_key`. A standalone index
- * would make "every workspace that saved this aircraft" a fast query across users, which is
- * a surveillance affordance this product has no use for. The leading column of every index
- * here is a workspace or a user.
+ * - Complete and immutable: there's no row to point at, so everything the export renders
+ *   (including attribution and licence) is copied in. No `updatedAt`.
+ * - One save per feature per workspace, so repeated saves can't build a track.
+ * - `featureRef` is never indexed on its own, so "every workspace that saved this aircraft"
+ *   isn't a cheap cross-user query.
  */
 export const workspaceFeatureSnapshots = pgTable(
   'workspace_feature_snapshots',
   {
-    /** PK *and* FK: exactly one snapshot per `mapFeature` item, enforced structurally. */
+    /** PK and FK: one snapshot per `mapFeature` item. */
     workspaceItemId: uuid('workspace_item_id')
       .primaryKey()
       .references(() => workspaceItems.id, { onDelete: 'cascade' }),
@@ -815,62 +657,35 @@ export const workspaceFeatureSnapshots = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
 
-    /**
-     * The adapter slug (`SourceAdapter.slug`), as text and deliberately **not** an FK to
-     * `connectors`. A source we retire, or a registry row an operator deletes, must not take
-     * a user's saved evidence with it — the same reasoning that makes `workspaceItems.toolId`
-     * `on delete set null` with the name kept alongside it. ADR 0008.
-     */
+    /** `SourceAdapter.slug`. Not an FK, so retiring a source doesn't delete saved evidence. */
     sourceSlug: text('source_slug').notNull(),
     /** The source's display name at save time, so the export reads correctly without a join. */
     sourceName: text('source_name').notNull(),
     sourceKind: text('source_kind', { enum: SOURCE_KINDS }).notNull(),
 
-    /**
-     * `SourceFeature.id` — stable within a source across polls. Used only to recognise a
-     * re-save within the same workspace. Never joined on, never indexed alone.
-     */
+    /** `SourceFeature.id`. Only used to detect a re-save within a workspace. */
     featureRef: text('feature_ref').notNull(),
 
-    /**
-     * Plain `double precision`, not PostGIS. ADR 0022: there is no spatial predicate anywhere
-     * in this product. The only query over this table is "the features in this workspace",
-     * and the map draws them from a list of at most a few hundred points. `cameras` already
-     * stores coordinates this way for the same reason.
-     */
+    /** Plain double precision; no spatial queries are needed. */
     latitude: doublePrecision('latitude').notNull(),
     longitude: doublePrecision('longitude').notNull(),
     /** Metres, where the source published it. */
     altitudeMetres: doublePrecision('altitude_metres'),
 
-    /**
-     * When the **upstream** observed this, not when we cached it and not when the user
-     * clicked save. It is the whole value of the row: a saved feature is a claim about a
-     * moment, and a moment we recorded from our own clock would be a different claim.
-     */
+    /** When the upstream observed this, not when it was saved. */
     observedAt: timestamptz('observed_at').notNull(),
 
     /** Where a reader gets back to the origin, when the source publishes a per-feature URL. */
     sourceUrl: text('source_url'),
 
-    /**
-     * The credit owed for this data, captured at save time. Not nullable: several of these
-     * licences — ODbL, CC BY, the TfL terms — make attribution a condition of use, so a
-     * feature saved without its credit is a licence breach waiting to be exported. The same
-     * fail-closed posture as `connectors_attribution_check`.
-     */
+    /** Credit captured at save time. Required: ODbL, CC BY and TfL terms mandate it. */
     attribution: text('attribution').notNull(),
     licence: text('licence').notNull(),
 
-    /**
-     * `SourceFeature.properties` as stored — the adapter-specific detail the feature panel
-     * and the export render. `jsonb` because the shape is genuinely per-source and modelling
-     * eleven source kinds as columns would be eleven mostly-null column sets. A CHECK keeps
-     * it an object rather than a bare scalar or array.
-     */
+    /** `SourceFeature.properties`; shape varies per source. CHECKed to be an object. */
     properties: jsonb('properties').notNull().default({}),
 
-    /** Set once. There is no `updatedAt` — see the block comment. */
+    /** Set once; no `updatedAt`. */
     createdAt: timestamptz('created_at').notNull().defaultNow(),
   },
   (t) => [
@@ -894,7 +709,7 @@ export const workspaceFeatureSnapshots = pgTable(
 )
 
 /* ================================================================== *
- * Reviews — designed, NOT exposed in v1. See data-model.md §8 and ADR 0010.
+ * Reviews: modelled but not exposed yet.
  * ================================================================== */
 
 export const reviews = pgTable(
@@ -929,41 +744,23 @@ export const reviews = pgTable(
 )
 
 /* ================================================================== *
- * Live — the connector seam, built. ADR 0011, 0012, 0013, 0014.
+ * Live connectors
  *
- * WHAT THIS SUBTREE MUST NEVER GROW
- * ---------------------------------
- * product-brief §2 (Live) and ADR 0011 rule 8: *live means live*. The following tables and
- * columns are forbidden, and a pull request adding one is rejected on sight:
- *
- *   - Any table of aircraft positions, tracks, callsigns, registrations or flight history.
- *   - Any table or column holding camera imagery, thumbnails, frames or video, in any
- *     encoding, including a "cache" of them. Retaining imagery turns us from a viewer into
- *     a redistributor and, for anything with a person in frame, a controller of their image
- *     data.
- *   - Any column on `connector_requests` recording *what* was asked for: no path, no query
- *     string, no parameters, no bounding box, no camera id, no response body. The audit log
- *     records that a call happened, what it cost and how it ended. Never its content.
- *   - Any raw actor identifier anywhere in this subtree. See `connectorRequests.actorKey`.
- *   - Any durable store of live map features — a `cached_features` table, a "layer cache"
- *     table, a materialised view of the last poll. ADR 0022. Renaming the aircraft position
- *     table to `cached_features` and giving it a `kind` column does not make it a different
- *     table. The live cache is Redis, it expires, and that is the product's claim about it.
- *
- * The absence of these tables is the design, not an omission to be filled in later.
+ * Never add to this subtree:
+ *   - tables of aircraft positions, tracks, callsigns, registrations or flight history;
+ *   - camera imagery of any kind, including caches (we'd become a redistributor);
+ *   - columns on `connector_requests` recording what was asked for (path, query, bbox,
+ *     camera id, response body);
+ *   - raw actor identifiers (see `connectorRequests.actorKey`);
+ *   - any durable store of live map features. The live cache is in memory and expires.
  * ================================================================== */
 
 /**
- * The connector registry. One row per upstream we are permitted to call, carrying the legal
- * basis for calling it, the attribution we owe, its quota envelope, its freshness policy and
- * its kill-switch.
+ * One row per upstream we may call: legal basis, attribution, quotas, freshness and
+ * kill-switch.
  *
- * Two independent axes, deliberately not merged:
- *   - `status`  — editorial. Is this connector part of the shipped product? draft/published.
- *   - `enabled` — operational. May it make a request *right now*? Defaults to false, so a
- *                 newly seeded connector is inert until an operator turns it on, and a
- *                 source that changes its terms is stopped by a config change rather than
- *                 a deploy (ADR 0011 rule 6).
+ *   - `status`:  editorial (draft/published).
+ *   - `enabled`: operational kill-switch. Defaults to false so new connectors are inert.
  */
 export const connectors = pgTable(
   'connectors',
@@ -978,11 +775,7 @@ export const connectors = pgTable(
     homepageUrl: text('homepage_url').notNull(),
     /** URL of the licence or terms of service that permit our use. Required to publish. */
     termsUrl: text('terms_url'),
-    /**
-     * The exact string we are obliged to render next to the data. Nullable *only* when
-     * `attributionRequired` is false — the pair forces an explicit editorial statement so
-     * "no attribution is required" is distinguishable from "nobody filled this in".
-     */
+    /** Attribution to render with the data. Null only when `attributionRequired` is false. */
     attribution: text('attribution'),
     attributionRequired: boolean('attribution_required').notNull().default(true),
     /** Why we are permitted to do this, in prose, citing the clause. Required to publish. */
@@ -991,28 +784,24 @@ export const connectors = pgTable(
     baseUrl: text('base_url').notNull(),
     requiresApiKey: boolean('requires_api_key').notNull().default(false),
     /**
-     * The NAME of the environment variable holding the credential — never the credential.
-     * A CHECK constraint restricts this to `^[A-Z][A-Z0-9_]*$`, which no real API key
-     * matches, so the schema itself refuses to become a place secrets can be pasted.
+     * Name of the env var holding the key, never the key. CHECKed against
+     * `^[A-Z][A-Z0-9_]*$` so a pasted secret is rejected.
      */
     apiKeyEnvVar: text('api_key_env_var'),
 
-    /** Requests per `windowSeconds`, per user. Enforced through `rate_limits` (ADR 0009). */
+    /** Requests per `windowSeconds`, per user. Enforced through `rate_limits`. */
     perUserQuota: integer('per_user_quota').notNull(),
     /** Requests per `windowSeconds` across all users, so we cannot breach upstream fair use. */
     globalCeiling: integer('global_ceiling').notNull(),
     windowSeconds: integer('window_seconds').notNull(),
     timeoutMs: integer('timeout_ms').notNull(),
 
-    /** How long a fetched payload is served as fresh. ADR 0014. */
+    /** How long a fetched payload is served as fresh. */
     cacheTtlSeconds: integer('cache_ttl_seconds').notNull(),
     /** How long past the TTL we keep serving, labelled stale, before the degraded state. */
     staleWhileRevalidateSeconds: integer('stale_while_revalidate_seconds').notNull(),
 
-    /**
-     * Whether the worker polls this source once for everyone, or the request path fetches it.
-     * See `POLL_MODES`. Added in migration 0006; ADR 0021's deferred fan-out, as data.
-     */
+    /** See `POLL_MODES`. */
     pollMode: text('poll_mode', { enum: POLL_MODES }).notNull().default('onDemand'),
 
     /** The operator kill-switch. False means: make no outbound call, serve the degraded state. */
@@ -1030,23 +819,19 @@ export const connectors = pgTable(
       .$onUpdate(() => new Date()),
   },
   (t) => [
-    /** "Give me the live connectors for this surface" — the only hot read on this table. */
+    /** Live connectors for a surface: the only hot read. */
     index('connectors_kind_status_enabled_idx').on(t.kind, t.status, t.enabled),
     index('connectors_updated_by_id_idx').on(t.updatedById),
 
     check('connectors_kind_check', oneOf('kind', CONNECTOR_KINDS)),
     check('connectors_status_check', oneOf('status', PUBLICATION_STATUSES)),
     check('connectors_poll_mode_check', oneOf('poll_mode', POLL_MODES)),
-    /**
-     * ADR 0011 rule 1, enforced by the database rather than by remembering: a connector
-     * with no recorded licence, no legal basis and no verification date cannot be published.
-     * Mirrors `tools_published_requires_verification_check`. ADR 0012.
-     */
+    /** Publishing requires terms URL, legal basis and a check date. */
     check(
       'connectors_published_requires_legal_basis_check',
       sql`status <> 'published' or (terms_url is not null and legal_basis is not null and last_checked_at is not null)`,
     ),
-    /** ADR 0011 rule 2: if attribution is owed, the string we owe must be on the row. */
+    /** If attribution is owed, the string must be present. */
     check(
       'connectors_attribution_check',
       sql`attribution_required = false or attribution is not null`,
@@ -1068,11 +853,8 @@ export const connectors = pgTable(
 )
 
 /**
- * The outbound audit log required by product-brief §3.3 and ADR 0011 rule 6.
- *
- * It answers operational questions — is this connector failing, how often are we being
- * quota-denied, how slow is upstream — and deliberately cannot answer "who looked at what".
- * There is no column for the request content, and the actor is a keyed hash. ADR 0013.
+ * Outbound audit log. Answers operational questions (failures, denials, latency) but not
+ * "who looked at what": no request content, and the actor is a keyed hash.
  */
 export const connectorRequests = pgTable(
   'connector_requests',
@@ -1088,46 +870,26 @@ export const connectorRequests = pgTable(
     /** Upstream HTTP status. Null when no request was made, or when it timed out. */
     upstreamStatus: integer('upstream_status'),
     /**
-     * How many outbound HTTP requests this one attempt actually made. QA finding QV-09.
-     *
-     * One row did not mean one request. The DNS driver queries six record types per lookup
-     * and RIPEstat four endpoints, so `cloudflare-doh`'s recorded ceiling of 20 lookups a
-     * minute was really 120 requests a minute against Cloudflare, and the table said 20. The
-     * artefact that found v1's Q-02 — where the ratio of `ok` to `429` proved we were
-     * exceeding adsb.lol's rate — was wrong by a constant factor on two connectors, in the
-     * direction that hides the problem.
-     *
-     * THIS IS NOT A BREACH OF ADR 0013. That ADR forbids recording *what was asked for*: no
-     * path, no query string, no bounding box, no response body, because those reconstruct a
-     * reader's research when set beside a timestamp. A count of requests is **volume**, the
-     * same class of fact as `duration_ms`, which this table has always carried. Six is six
-     * whichever domain was resolved.
-     *
-     * Zero when nothing left the building — `disabled`, `quotaDenied`, a cooldown — matching
-     * the `duration_ms = 0` convention for the same rows. The column default is 1 so that a
-     * hand-written INSERT understates nothing.
+     * Outbound HTTP requests made by this attempt (DNS queries six record types, RIPEstat
+     * four endpoints). Volume only, like `duration_ms`. 0 when nothing was sent; default 1.
      */
     upstreamRequests: integer('upstream_requests').notNull().default(1),
     /**
-     * `HMAC-SHA256(userId or client IP, RATE_LIMIT_SECRET)`, lowercase hex — the same
-     * construction as `rate_limits.key` (ADR 0009). A CHECK constraint requires exactly 64
-     * hex characters, so a raw user id, email or IP address is structurally impossible to
-     * store here: a uuid contains hyphens, an email an `@`, an IPv4 address dots. The
-     * constraint is the enforcement; the code convention is only the first line of defence.
+     * `HMAC-SHA256(userId or client IP, RATE_LIMIT_SECRET)`, lowercase hex. The CHECK
+     * (64 hex chars) rejects raw uuids, emails and IPs.
      */
     actorKey: text('actor_key').notNull(),
-    /** Retention horizon. This table grows unboundedly and is swept, not archived. ADR 0013. */
+    /** Retention horizon; rows are swept, not archived. */
     expiresAt: timestamptz('expires_at').notNull(),
   },
   (t) => [
-    /** Per-connector health and error rate over a time window — the ops read. */
+    /** Per-connector health over a time window. */
     index('connector_requests_connector_time_idx').on(t.connectorId, t.requestedAt.desc()),
     index('connector_requests_outcome_time_idx').on(t.outcome, t.requestedAt.desc()),
     index('connector_requests_expires_at_idx').on(t.expiresAt),
     /*
-     * There is deliberately NO index on `actor_key`. Indexing it would make "everything this
-     * actor did" a fast query, which is the surveillance affordance ADR 0013 exists to
-     * remove. Quota enforcement does not need it either — that runs against `rate_limits`.
+     * No index on `actor_key`, so "everything this actor did" isn't a cheap query. Quotas
+     * use `rate_limits` instead.
      */
     check('connector_requests_outcome_check', oneOf('outcome', CONNECTOR_REQUEST_OUTCOMES)),
     check('connector_requests_duration_check', sql`duration_ms >= 0`),
@@ -1141,13 +903,9 @@ export const connectorRequests = pgTable(
 )
 
 /**
- * The curated registry of *officially published* camera feeds. Content, held to the same
- * editorial standard as `tools`: operator, jurisdiction, source, confidence, verification
- * date, and the same publish gate.
- *
- * Cameras carry no `search_vector` and no tags. See `data-model.md` §11 for why: the browse
- * axes here are geography and subject, both of which are columns, and the registry is small
- * enough that the whole published set is one cached query.
+ * Curated registry of officially published camera feeds, with the same editorial gate as
+ * `tools`. No search vector or tags: browsing is by geography and subject, and the set is
+ * small.
  */
 export const cameras = pgTable(
   'cameras',
@@ -1158,11 +916,7 @@ export const cameras = pgTable(
     /** The authority or company that publishes this feed. */
     operatorName: text('operator_name').notNull(),
 
-    /**
-     * The connector this feed is reached through. Nullable: an entry we merely link out to
-     * needs no connector, because the user's browser goes to the operator directly and we
-     * make no outbound call. A CHECK below requires one as soon as we embed.
-     */
+    /** Null for link-out entries; required once embedded (see CHECK below). */
     connectorId: uuid('connector_id').references(() => connectors.id, { onDelete: 'restrict' }),
 
     /** Not nullable: a camera whose jurisdiction is unknown cannot have its position assessed. */
@@ -1210,18 +964,14 @@ export const cameras = pgTable(
     check('cameras_confidence_check', oneOf('confidence', CONFIDENCE_LEVELS)),
     check('cameras_latitude_check', sql`latitude between -90 and 90`),
     check('cameras_longitude_check', sql`longitude between -180 and 180`),
-    /** Same credibility gate as tools and playbooks. ADR 0007. */
+    /** Same publish gate as tools and playbooks. */
     check(
       'cameras_published_requires_verification_check',
       sql`status <> 'published' or (last_verified_at is not null and embed_notes is not null)`,
     ),
     /** You cannot embed what you have no embed URL for. */
     check('cameras_embed_url_check', sql`embed_permitted = false or embed_url is not null`),
-    /**
-     * ADR 0011 rule 1 again: the moment we render a third party's feed inside our own page
-     * we are making a call that needs a recorded legal basis, and a legal basis lives on a
-     * connector. A link-out entry needs none.
-     */
+    /** Embedding needs a recorded legal basis, which lives on a connector. */
     check(
       'cameras_embed_requires_connector_check',
       sql`status <> 'published' or embed_permitted = false or connector_id is not null`,
@@ -1230,17 +980,15 @@ export const cameras = pgTable(
 )
 
 /* ================================================================== *
- * Rate limiting — fixed-window counters in Postgres. There is no Redis. ADR 0009.
+ * Rate limiting: fixed-window counters in Postgres.
  * ================================================================== */
 
 export const rateLimits = pgTable(
   'rate_limits',
   {
     /**
-     * `<action>:<hashed subject>`, e.g. `signin-email:<hex>`. The subject is an
-     * HMAC-SHA256 of the email address or IP with a server-side secret, never the raw
-     * value: product-brief §3.2 forbids building an interest graph of this audience, and a
-     * plaintext IP column in a rate-limit table is exactly that.
+     * `<action>:<hashed subject>`, e.g. `signin-email:<hex>`. The subject is an HMAC of the
+     * email or IP, never the raw value.
      */
     key: text('key').notNull(),
     /** Start of the fixed window, truncated to the window size by the caller. */
@@ -1338,7 +1086,7 @@ export const workspaceItemsRelations = relations(workspaceItems, ({ one, many })
   tool: one(tools, { fields: [workspaceItems.toolId], references: [tools.id] }),
   step: one(playbookSteps, { fields: [workspaceItems.stepId], references: [playbookSteps.id] }),
   notes: many(notes),
-  /** Present exactly when `kind = 'mapFeature'`. ADR 0025. */
+  /** Present exactly when `kind = 'mapFeature'`. */
   featureSnapshot: one(workspaceFeatureSnapshots, {
     fields: [workspaceItems.id],
     references: [workspaceFeatureSnapshots.workspaceItemId],

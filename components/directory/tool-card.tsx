@@ -12,24 +12,12 @@ import { cn, displayHost } from "@/lib/utils";
 import { costLabel, typeLabel } from "./facets";
 
 /**
- * One catalogue entry, as it appears in every list.
+ * One catalogue entry in a list.
  *
- * THE CARD FOOTER IS PINNED. `docs/design/wireframes/02-directory.txt`: the confidence chip
- * and the last-verified line sit at the bottom of every card so they align across a row and
- * can be scanned down a column. ADR 0007 calls that a design constraint rather than a
- * preference — the whole grid exists so a reader can compare *our certainty* across entries
- * at a glance, and a footer that floats up and down with the summary length defeats it.
- * `h-full` + `flex-col` + `mt-auto` is what holds it.
+ * The footer (confidence chip, last-verified) is pinned with `h-full` + `flex-col` +
+ * `mt-auto` so it aligns across a row. Plain-HTTP URLs get a badge.
  *
- * Architecture HANDOFF §9.1: `confidence` and `lastVerifiedAt` render everywhere an entry
- * appears. There is no compact variant of this card that drops them.
- *
- * §9.7: a plain-HTTP catalogue link is badged here as well as on the detail page. It is
- * detected from the stored URL scheme; there is no column for it and none is needed.
- *
- * The whole card is not a link. The name is. A card-wide click target swallows the
- * confidence chip's link to `/methodology`, which is the one link on the card that must
- * always be reachable.
+ * Only the name is a link; a card-wide link would swallow the chip's `/methodology` link.
  */
 
 export function ToolCard({ tool, className }: { tool: ToolCardData; className?: string }) {
@@ -87,7 +75,7 @@ export function ToolCard({ tool, className }: { tool: ToolCardData; className?: 
         </p>
       ) : null}
 
-      {/* Pinned footer — see the note above. */}
+      {/* Pinned footer. */}
       <div className="mt-auto flex flex-col gap-1.5 pt-4">
         <ConfidenceChipLink level={tool.confidence} className="self-start" />
         <VerificationDate lastVerifiedAt={tool.lastVerifiedAt} className="tabular" />
@@ -97,12 +85,8 @@ export function ToolCard({ tool, className }: { tool: ToolCardData; className?: 
 }
 
 /**
- * The loading placeholder. `states.md` §2.3 requires it to reserve the confidence chip and
- * the last-verified line, so the layout does not jump when the real card arrives — and so
- * that a reader never sees a card that briefly appears to have no confidence value.
- *
- * `aria-hidden` via `Skeleton`; the accessible signal is the one `aria-live` region on the
- * route (shell handoff §10.1).
+ * Loading placeholder. Reserves space for the chip and last-verified line so the layout
+ * doesn't jump. `aria-hidden` via `Skeleton`; the route's live region announces loading.
  */
 export function ToolCardSkeleton() {
   return (
@@ -123,11 +107,7 @@ export function ToolCardSkeleton() {
   );
 }
 
-/**
- * The grid. One column at 375px, two at `md:`, three at `xl:` —
- * `docs/design/wireframes/00-conventions.txt`. `items-stretch` is what lets `h-full` on the
- * card do its job.
- */
+/** 1/2/3-column grid. `items-stretch` lets the card's `h-full` work. */
 export function ToolGrid({ children }: { children: React.ReactNode }) {
   return (
     <ul className="grid grid-cols-1 items-stretch gap-4 md:grid-cols-2 xl:grid-cols-3">

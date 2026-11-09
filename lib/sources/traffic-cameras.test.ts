@@ -6,10 +6,8 @@ import { LINK_ONLY_REGISTRY, normaliseCameras, trafficCameras } from "./traffic-
 import { jsonResponse, testContext } from "./__fixtures__/context";
 
 /**
- * Real payloads, captured verbatim on 2026-09-01 from the two operators' own catalogues.
- * The per-provider mapping is tested next to each provider; this file tests the composition:
- * that both catalogues reach the layer, that one failing takes only itself off, and that
- * nothing is capped on the way through.
+ * Uses real catalogue payloads captured on 2026-09-01. Tests the composition of both
+ * providers: both reach the layer, one failing doesn't take down the other, nothing is capped.
  */
 import fintrafficFixture from "./__fixtures__/fintraffic-weathercams.json";
 import tflFixture from "./__fixtures__/tfl-jamcams.json";
@@ -49,12 +47,7 @@ describe("traffic-cameras", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    /*
-     * THE BUG THIS REPLACES. The adapter used to serve ten cameras from
-     * `content/cameras/*.json` while these two operators published 890 and 2,279. The count
-     * is asserted exactly, not as "more than ten": a cap that looks complete is the failure
-     * this build has hit repeatedly, and an exact count is what makes one visible.
-     */
+    // Exact count, so an accidental cap shows up.
     expect(result.features).toHaveLength(TFL_CAMERAS + FINTRAFFIC_CAMERAS);
 
     for (const feature of result.features) {
@@ -71,11 +64,7 @@ describe("traffic-cameras", () => {
     if (!all.ok || !capped.ok) throw new Error("both polls should succeed");
 
     expect(capped.features).toHaveLength(12);
-    /*
-     * The caller asked for twelve; nothing between here and the map chose a smaller number.
-     * Unasked, every camera in both catalogues comes back — which for the full 2026-09-01
-     * catalogues is 890 + 2,279 and here is the whole of both fixtures.
-     */
+    // Without a limit, every camera in both fixtures comes back.
     expect(all.features).toHaveLength(TFL_CAMERAS + FINTRAFFIC_CAMERAS);
   });
 
@@ -89,8 +78,7 @@ describe("traffic-cameras", () => {
         expect(feature.properties.attribution).toBeTruthy();
       }
     }
-    // TfL's terms require their exact wording including the Ordnance Survey notice; CC BY
-    // requires Fintraffic's. A blended layer-level string would satisfy neither licence.
+    // TfL and Fintraffic (CC BY) each require their own exact attribution wording.
     const strings = new Set(result.features.map((f) => f.properties.attribution));
     expect(strings.size).toBeGreaterThan(1);
   });
@@ -129,11 +117,7 @@ describe("traffic-cameras", () => {
     const result = await trafficCameras.fetch({}, testContext());
     if (!result.ok) throw new Error("both catalogues should parse");
 
-    /*
-     * PRODUCT-BRIEF §2b, AS A TEST RATHER THAN A COMMENT. Two requests left the building:
-     * one catalogue per operator. Not one frame, not one clip. Relaying video through this
-     * deployment is roughly 1000x its whole bandwidth budget.
-     */
+    // Only the two catalogues are fetched; images and video are never proxied (bandwidth).
     expect(seen).toEqual([TFL_URL, FINTRAFFIC_URL].sort((a, b) => seen.indexOf(a) - seen.indexOf(b)));
     expect(seen).toHaveLength(2);
     for (const feature of result.features) {
@@ -158,11 +142,7 @@ describe("traffic-cameras", () => {
   });
 
   it("keeps one operator's refusal from silencing the others", async () => {
-    /*
-     * `fetchUpstream` opens a cooldown on a 429 and refuses later calls under that slug.
-     * Sharing one slug across operators would mean Fintraffic refusing us takes London off
-     * the map — the "one bad upstream must never break the layer" failure, from the inside.
-     */
+    // `fetchUpstream` cools down per slug after a 429, so each operator needs its own slug.
     stubCatalogues({
       [FINTRAFFIC_URL]: () => new Response("", { status: 429, headers: { "retry-after": "60" } }),
     });
@@ -189,8 +169,7 @@ describe("traffic-cameras", () => {
     if (result.ok) return;
     expect(result.failure.kind).toBe("upstreamError");
     if (result.failure.kind !== "upstreamError") return;
-    // Both are named, because a layer renders one state and reporting only the first would
-    // send an operator to fix half the problem.
+    // Both failing providers are named.
     expect(result.failure.message).toContain("tfl-jamcams");
     expect(result.failure.message).toContain("fintraffic-weathercams");
   });
@@ -203,7 +182,7 @@ describe("traffic-cameras", () => {
     const result = await trafficCameras.fetch({}, testContext());
     expect(result.ok).toBe(false);
     if (result.ok || result.failure.kind !== "rateLimited") throw new Error("expected rateLimited");
-    // The longest wait wins: backing off for less than the longest re-enters the refusal.
+    // The longest wait wins.
     expect(result.failure.retryAfterSeconds).toBe(90);
   });
 
@@ -211,16 +190,14 @@ describe("traffic-cameras", () => {
     stubCatalogues();
     const result = await trafficCameras.fetch({}, testContext());
     if (!result.ok) throw new Error("both catalogues should parse");
-    // Fintraffic states its own `dataUpdatedTime`; TfL publishes none, so its observation is
-    // the read. A mixed payload is only as fresh as its stalest part.
+    // Fintraffic's `dataUpdatedTime` is older than TfL's read time; the stalest part wins.
     expect(result.observedAt.toISOString()).toBe(
       new Date(fintrafficFixture.dataUpdatedTime).toISOString(),
     );
   });
 
   it("excludes link-only providers, whose embed permission was never confirmed", async () => {
-    // The separate file exists precisely because an embed permission could not be confirmed.
-    // Rendering those on an embedding layer would undo that judgement.
+    // Link-only providers have no confirmed embed permission, so they never reach this layer.
     expect(normaliseCameras([LINK_ONLY_REGISTRY], {})).toEqual([]);
 
     stubCatalogues();
@@ -231,12 +208,8 @@ describe("traffic-cameras", () => {
   });
 
   it("does not double-count an operator that content/cameras also describes", async () => {
-    /*
-     * `content/cameras/transport-for-london.json` and `fintraffic-digitraffic.json` are still
-     * committed — they seed the operator registry, the admin page and the CSP — but their ten
-     * hand-copied cameras are a subset of the catalogues fetched above. Emitting both would
-     * put ten duplicate dots on the map.
-     */
+    // The content/cameras files still seed the operator registry and CSP, but their cameras
+    // are a subset of the fetched catalogues and must not be emitted twice.
     stubCatalogues();
     const result = await trafficCameras.fetch({}, testContext());
     if (!result.ok) throw new Error("both catalogues should parse");
@@ -279,8 +252,7 @@ describe("traffic-cameras", () => {
   });
 
   it("normalises a live envelope with no network at all", () => {
-    // The public `normalise` takes the same shape `fetch` builds, so a captured payload can
-    // be handed straight in — the test that actually catches an upstream shape change.
+    // A captured payload goes straight into `normalise`, catching upstream shape changes.
     const features = normaliseCameras([{ cameraProvider: "tfl-jamcams", payload: tflFixture }], {});
     expect(features).toHaveLength(TFL_CAMERAS);
   });
@@ -308,8 +280,7 @@ describe("traffic-cameras", () => {
   it("reports per provider, so a half-dead layer is visible to an operator", async () => {
     stubCatalogues({ [TFL_URL]: () => new Response("", { status: 503 }) });
     const health = await trafficCameras.healthcheck(testContext());
-    // Healthy overall — Finland still renders — but the detail names what is missing, which
-    // is the case a layer-level "3,169 cameras" would hide completely.
+    // Healthy overall (Finland still renders), but the detail names the failing provider.
     expect(health.ok).toBe(true);
     expect(health.detail).toContain("tfl-jamcams");
     expect(health.detail).toContain("HTTP 503");
@@ -317,8 +288,7 @@ describe("traffic-cameras", () => {
   });
 
   it("declares a TTL that respects the slowest-changing thing it fetches", () => {
-    // A catalogue of which cameras exist, not their imagery. Digitraffic's instructions say
-    // there is no gain calling too often; TfL allows 500 calls a minute and we make four a day.
+    // The catalogue (which cameras exist) changes rarely; imagery isn't fetched here.
     expect(trafficCameras.ttlSeconds).toBeGreaterThanOrEqual(3600);
     expect(trafficCameras.staleWhileRevalidateSeconds).toBeGreaterThan(trafficCameras.ttlSeconds);
   });

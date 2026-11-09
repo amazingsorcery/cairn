@@ -4,18 +4,9 @@ import { brand } from "@/config/brand";
 import { pageMetadata } from "@/lib/metadata";
 
 /**
- * `/about` — what this is, who it is for, where the scope boundary sits, and what the
- * product deliberately does not do.
- *
- * Sources: `docs/brand/positioning.md` §4–§7, `docs/product-brief.md` §3–§4,
- * `docs/brand/voice.md`. Static at build (`docs/architecture/sitemap.md` §5).
- *
- * Two rules bind this page harder than any other:
- *
- *   - No hero banner making a claim about the reader's abilities (positioning §8.1). The
- *     page opens with what the thing *is*, not with what it will do for you.
- *   - No security or anonymity promise, in any form (voice.md rule 4). The "what we do not
- *     do" section says what is true and then says what is still visible, in the same breath.
+ * `/about`: what this is, who it's for, the scope boundary, and what it doesn't do.
+ * Static. Copy rules: no claims about the reader's abilities, and no security or
+ * anonymity promises.
  */
 
 export const metadata = pageMetadata({

@@ -3,16 +3,10 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 
 /**
- * Zero results after filtering — `docs/design/states.md` §2.1.
+ * Zero results after filtering: names what is excluding results and offers a way back.
  *
- * "This is the state that decides whether the filter bar is usable. It must name what is
- * excluding results and give a one-click way back."
- *
- * `widest` is COMPUTED, never guessed: the page runs the same cached list query once per
- * active filter with that one filter dropped, and passes whichever removal yields the most
- * rows. `voice.md` rule 1 forbids stating a claim without the number that supports it, so if
- * no removal was measured the sentence naming one is not rendered at all — the reader gets
- * the count of active filters and the two controls, and nothing invented.
+ * `widest` is computed by the page (one query per active filter with that filter dropped).
+ * If it's null the suggestion sentence is omitted.
  */
 export function EmptyResults({
   activeCount,
@@ -57,11 +51,7 @@ export function EmptyResults({
 }
 
 /**
- * A category or tag route with nothing published — `states.md` §2.2.
- *
- * Not a 404. `generateStaticParams` covers every slug, so the route legitimately exists and
- * legitimately has nothing in it; a 404 here would tell the reader the category does not
- * exist, which is a different and untrue claim.
+ * A category or tag with nothing published. Not a 404: the category exists, it's just empty.
  */
 export function EmptyCollection({ name, kind }: { name: string; kind: "category" | "tag" }) {
   return (

@@ -4,11 +4,8 @@ import type { LayerPayloadDto, MapLayerDefinition } from "@/components/map/regis
 import { loadSource, resolveAdapter } from "./sources";
 
 /**
- * One layer's data, as the DTO the client understands.
- *
- * Used by both the page (server render) and `data/[slug]/route.ts` (the refresh tick), so the
- * two cannot produce different shapes for the same layer — which is the bug that makes a
- * refresh silently blank a table.
+ * One layer's data as a client DTO. Shared by the page and `data/[slug]/route.ts` so both
+ * produce the same shape.
  */
 export async function buildLayerPayload(
   layer: MapLayerDefinition,
@@ -16,12 +13,7 @@ export async function buildLayerPayload(
 ): Promise<LayerPayloadDto> {
   const adapter = resolveAdapter(layer.sourceSlug);
 
-  /*
-   * A registry entry whose adapter has not landed yet, or whose source is not configured in
-   * this deployment. `notConfigured` is the honest kind: nothing is broken and no request was
-   * made. It names the missing piece rather than saying "unavailable", because "unavailable"
-   * would blame an upstream that was never called.
-   */
+  // No adapter, or not configured here. No request was made, so this isn't an upstream error.
   if (!adapter) {
     return {
       layerId: layer.id,
@@ -32,30 +24,19 @@ export async function buildLayerPayload(
     };
   }
 
-  /*
-   * `loadSource` returns a typed failure rather than throwing, but an adapter is code this
-   * component does not own and a bug in one must not take the page down with it. One layer,
-   * one boundary.
-   */
+  // `loadSource` shouldn't throw, but guard against adapter bugs anyway.
   try {
     /*
-     * THE LAYER'S PRECISION FALLBACK GOES IN WITH THE QUERY, so the cached feature carries
-     * the caveat the panel would have rendered. Several adapters have not adopted
-     * `SourceFeature.precision` yet, and everything outside the map — a workspace snapshot,
-     * an export — reads the feature rather than calling `featurePrecision`. See `loadSource`.
+     * Pass the layer's precision fallback so cached features carry it; some adapters don't set
+     * `SourceFeature.precision`, and snapshots/exports read the feature directly.
      */
     const { result, stale, ttlSeconds, attribution } = await loadSource(adapter, query, (feature) =>
       featurePrecision(layer, feature),
     );
 
     /*
-     * ATTRIBUTION AND TTL COME FROM THE GOVERNED POLL, not from the adapter constants.
-     *
-     * `pollSource` returns the credit precisely so a caller cannot render a layer without it,
-     * and it returns the registry row's `cache_ttl_seconds` because that is the number an
-     * operator can change under load without a deploy (ADR 0024). For adsb.lol the row says
-     * 60s where the adapter says 30s; reading the adapter here would poll twice as fast as
-     * the operator asked, which is the whole reason the row is authoritative.
+     * Attribution and TTL come from the governed poll, not adapter constants: the registry
+     * row's `cache_ttl_seconds` can be changed without a deploy and is authoritative.
      */
     const source = {
       slug: adapter.slug,
@@ -88,11 +69,7 @@ export async function buildLayerPayload(
       lastGoodAt: result.lastGoodAt?.toISOString() ?? null,
     };
   } catch (error) {
-    /*
-     * The governed poll itself threw, so there is no authorised credit or TTL to report. The
-     * adapter's own constants are the honest fallback: they are what the source declares
-     * about itself, and the alternative is a layer with no source line at all.
-     */
+    // The poll threw, so fall back to the adapter's own attribution and TTL.
     return {
       layerId: layer.id,
       source: {

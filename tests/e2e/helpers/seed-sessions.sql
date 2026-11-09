@@ -1,16 +1,14 @@
 -- Test accounts and sessions for the Playwright suite.
 --
--- Verbatim from `docs/frontend/HANDOFF-workspaces.md` §10, extended with the `editor` and
--- `admin` rows `docs/frontend/HANDOFF-live.md` §6 used for the role gate. It writes only to
--- `users` and `sessions` and touches nothing seeded.
+-- Owner, other, editor and admin users with fixed sessions. Writes only to `users` and
+-- `sessions`.
 --
 -- Apply before running the suite:
 --
 --   export PATH="$PATH:/c/Program Files/PostgreSQL/17/bin"
 --   psql "$DATABASE_URL" -f tests/e2e/helpers/seed-sessions.sql
 --
--- The suite itself never writes these rows. A test suite that repairs its own fixtures
--- cannot tell you that the fixtures are wrong.
+-- The suite never writes these rows itself.
 
 insert into users (id, name, email, email_verified, role) values
   ('11111111-1111-4111-8111-111111111111', 'Owner Tester',  'owner@example.test',  now(), 'user'),

@@ -20,10 +20,8 @@ import zoneFixture from "./__fixtures__/nws-zone.json";
 import { jsonResponse, testContext } from "./__fixtures__/context";
 
 /**
- * The captured zone is `AZZ004`, Kaibab Plateau, Arizona — chosen because it is the first
- * zone the alerts fixture needs and cannot place on its own. (Pima County, the other obvious
- * candidate, turned out to belong to an alert that already carries a polygon, so priming it
- * proved nothing. Worth recording: the first version of this test passed for the wrong reason.)
+ * Captured zone `AZZ004` (Kaibab Plateau, AZ): a zone the alerts fixture can't place without
+ * it. Pima County wouldn't work: its alert already has a polygon.
  */
 function zonePoint(): { longitude: number; latitude: number; name: string | null } {
   const parsed = nwsZoneResponseSchema.parse(zoneFixture);
@@ -56,8 +54,7 @@ describe("nws-alerts normalise", () => {
   });
 
   it("places a zone-only alert once its zone is resolved, and says the point is a zone centroid", () => {
-    // The reason this adapter is more than a GeoJSON pass-through: on 2026-08-31 only 2 of
-    // the 15 alerts in this fixture carried a polygon.
+    // Only 2 of the 15 alerts in this fixture carry a polygon.
     const before = normaliseNwsAlerts(alertsFixture, {});
 
     primeZoneCache("AZZ004", zonePoint());
@@ -68,8 +65,7 @@ describe("nws-alerts normalise", () => {
     const placed = after.find((f) => f.properties.locationBasis === "zone");
     expect(placed).toBeDefined();
     expect(placed?.properties.zoneCode).toBe("AZZ004");
-    // Kaibab Plateau, northern Arizona. If the centroid ever lands outside the American
-    // southwest, something has gone wrong in the ring averaging.
+    // Kaibab Plateau, northern Arizona.
     expect(placed?.latitude).toBeGreaterThan(35);
     expect(placed?.latitude).toBeLessThan(38);
     expect(placed?.longitude).toBeGreaterThan(-114);
@@ -106,8 +102,7 @@ describe("nws-alerts schema", () => {
   });
 
   it("rejects a document that would otherwise read as 'no weather warnings anywhere'", () => {
-    // The decision is made by the SCHEMA in `fetch`. `updated` and `features` are required
-    // for exactly this reason.
+    // `updated` and `features` are required for this reason.
     expect(nwsAlertsResponseSchema.safeParse({ status: 503, detail: "unavailable" }).success).toBe(
       false,
     );
@@ -119,8 +114,7 @@ describe("nws-alerts schema", () => {
 
 describe("nws-alerts zone warm-up", () => {
   it("is bounded per poll, so a cold start is not a 700-request burst", () => {
-    // The lesson from QA finding Q-02: our own limiter must never allow a burst just
-    // because the upstream has not published a number.
+    // No published limit doesn't mean no limit.
     expect(unresolvedZones(alertsFixture, 3).length).toBeLessThanOrEqual(3);
   });
 
@@ -168,14 +162,12 @@ describe("nws-alerts shared zone cache", () => {
 
     await nwsAlerts.fetch({}, testContext({ cache }));
     const firstPollCalls = zoneCalls();
-    // The per-poll cap, doing its job on a cold start.
+    // Per-poll cap on a cold start.
     expect(firstPollCalls).toBe(12);
 
     /*
-     * The adapter's own per-call view is dropped while the passed-in cache is kept — which
-     * is what happens between polls, not what happens across a restart. `SourceContext.cache`
-     * is a per-process map (ADR 0031 removed the shared store), so a real restart empties
-     * both and the layer re-warms over several polls. See docs/sources/HANDOFF.md §4.
+     * Drop the adapter's own view but keep the passed-in cache, as between polls. (A real
+     * restart empties both, since `SourceContext.cache` is per-process.)
      */
     clearZoneCache();
     expect(zoneCacheSize()).toBe(0);
@@ -183,9 +175,7 @@ describe("nws-alerts shared zone cache", () => {
     await nwsAlerts.fetch({}, testContext({ cache }));
     const restartCalls = zoneCalls() - firstPollCalls;
 
-    // THE POINT OF THE SHARED CACHE. A poll must not re-resolve what was already
-    // resolved. The one remaining call is the warm-up continuing to the 13th zone the
-    // fixture names — progress, not repetition.
+    // Nothing re-resolved; the one call is warm-up reaching the 13th zone.
     expect(restartCalls).toBeLessThanOrEqual(1);
     expect(zoneCacheSize()).toBeGreaterThanOrEqual(12);
   });
@@ -198,14 +188,12 @@ describe("nws-alerts shared zone cache", () => {
     );
     const zoneCalls = () => spy.mock.calls.filter((c) => String(c[0]).includes("/zones/")).length;
 
-    // A fresh cache each poll is what a deploy gives us, and what an adapter-owned map gave
-    // us every poll before the cache was passed in.
+    // A fresh cache each poll, as after a deploy.
     await nwsAlerts.fetch({}, testContext({ cache: createMemoryCache() }));
     const firstPollCalls = zoneCalls();
     clearZoneCache();
 
     await nwsAlerts.fetch({}, testContext({ cache: createMemoryCache() }));
-    // Twelve calls spent re-learning what it already knew, every restart, for half an hour.
     expect(zoneCalls() - firstPollCalls).toBe(firstPollCalls);
   });
 

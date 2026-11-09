@@ -8,21 +8,10 @@ import { pageMetadata } from "@/lib/metadata";
 import { formatDate } from "@/lib/utils";
 
 /**
- * `/methodology` — a required v1 route with real content (architecture HANDOFF §9.4,
- * ADR 0007 §4). It is the page that makes the confidence value mean something: every
- * confidence chip in the product links to an anchor on it.
+ * `/methodology`: every confidence chip links to an anchor here. Static, no data reads.
  *
- * SINGLE-SOURCED DEFINITIONS. The four confidence definitions are read from
- * `confidenceMeaning()` in `components/confidence-chip.tsx` rather than retyped. If the
- * chip and this page could disagree, the product would be lying about its own standard on
- * whichever of the two the reader happened to read second.
- *
- * The anchors are read from `CONFIDENCE_ANCHOR`, the same map the chips link through, so a
- * fifth level added to the schema breaks the build here rather than producing a chip that
- * points at nothing.
- *
- * Static at build (`docs/architecture/sitemap.md` §5). It reads no data, so it has no
- * loading, empty or error state (`docs/design/states.md` §10).
+ * Definitions come from `confidenceMeaning()` and anchors from `CONFIDENCE_ANCHOR` (the
+ * same sources the chips use), so the two can't drift and a new level fails the build.
  */
 
 export const metadata = pageMetadata({
@@ -32,9 +21,9 @@ export const metadata = pageMetadata({
   path: "/methodology",
 });
 
-/** The seed build. A dated historical fact, so it stays true as the catalogue is edited. */
+/** Date of the seed build. */
 const SEED_BUILD_DATE = "2026-08-31";
-/** The model knowledge horizon that unchecked seed entries are honestly dated to. */
+/** Knowledge horizon that unchecked seed entries are dated to. */
 const KNOWLEDGE_HORIZON = "2026-05-01";
 
 const RELIABILITY_SCALE: readonly { score: number; meaning: string }[] = [
@@ -115,11 +104,7 @@ export default function MethodologyPage() {
                 id={CONFIDENCE_ANCHOR[level]}
                 className="rounded-lg border border-border bg-card p-4"
               >
-                {/*
-                  The chip is the term. It already renders the word, so no separate label
-                  sits beside it — a definition list whose term is printed twice reads as a
-                  mistake, and the chip is the exact object the reader will meet on an entry.
-                */}
+                {/* The chip already renders the term, so no separate label. */}
                 <dt className="flex flex-wrap items-center gap-3">
                   <ConfidenceChip level={level} />
                 </dt>

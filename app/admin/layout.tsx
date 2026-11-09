@@ -2,15 +2,10 @@ import { AdminNav, type AdminNavLink } from "@/components/admin/admin-nav";
 import { requireEditorPage } from "@/components/admin/guard";
 
 /**
- * The editorial shell. sitemap.md §8, caching.md §7.
+ * Editorial shell. `force-dynamic` because `/admin` renders drafts, which must never be
+ * cached; no-store/noindex headers come from `middleware.ts`.
  *
- * `force-dynamic` for everything beneath it: `/admin` sees drafts, and a draft in a cache is
- * a draft one revalidation away from being public. `middleware.ts` sets
- * `Cache-Control: private, no-store` and `X-Robots-Tag: noindex` on the whole `/admin` prefix,
- * so neither is repeated here; `app/robots.ts` disallows it as well.
- *
- * The role check here is a convenience for the nav. It is NOT the authorisation — every page
- * calls its own guard and every Server Action re-checks the role against the database.
+ * The role check only picks nav links. Each page and Server Action does its own auth.
  */
 
 export const dynamic = "force-dynamic";

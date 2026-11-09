@@ -4,16 +4,10 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 /**
- * The autosave indicator: three states, TEXT ONLY, never a spinner
- * (`docs/design/states.md` §7.4, wireframe 07).
+ * Text-only autosave indicator (no spinner: there is nothing to wait for).
  *
- * A spinner claims that something is happening that the reader must wait for. Nothing here
- * is worth waiting for — the text is already in the field and it is going to be saved — so
- * the indicator reports and does not perform.
- *
- * On failure the message is `--destructive`, carries `role="status"` so a screen reader
- * hears it without being dragged away from the textarea, and the retry is a REAL BUTTON.
- * An error with no next action is a dead end (`states.md` §0).
+ * Failures use `role="status"` so screen readers announce them without moving focus, and
+ * come with a retry button.
  */
 
 export type SaveState =

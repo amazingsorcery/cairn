@@ -22,24 +22,13 @@ import { isoDate } from "./dates";
 import type { ToolFacts } from "./tool-facts-types";
 
 /**
- * The tools saved into a case.
+ * Tools saved into a case.
  *
- * TWO ROW SHAPES, AND THE SECOND IS NOT AN ERROR.
+ * Live entries show a link, confidence chip and last-verified date. If the tool was deleted
+ * or unpublished, `toolSlug` is null and the saved `title` snapshot renders as plain text,
+ * without warning styling (expected in long-running cases).
  *
- * A live entry renders its name as a link, its confidence chip and its last-verified line.
- * Those two travel into the case because architecture HANDOFF 9.1 admits no view of an
- * entry that omits them — least of all the one the reader will still be looking at in three
- * months.
- *
- * An entry whose tool was deleted or unpublished by an editor has `tool_id`/`tool_slug`
- * null and keeps the `title` snapshotted at save (ADR 0008). THIS IS THE EXPECTED STATE FOR
- * A LONG-RUNNING CASE, NOT AN EDGE CASE, and the copy treats it that way: no warning colour,
- * no alert, no icon that says something is wrong, one control. A researcher opening a case
- * after three months must read it as bookkeeping, not as damage (`docs/design/states.md`
- * 7.5).
- *
- * Removing is a one-way door — there is no soft delete in `db/schema.ts` — so it goes
- * through a confirmation naming the item (`flows.md`, "the one-way doors").
+ * Removal is a hard delete, so it asks for confirmation.
  */
 
 export interface SavedToolsProps {
@@ -139,7 +128,7 @@ export function SavedTools({ items, facts }: SavedToolsProps) {
                 </div>
               </>
             ) : (
-              // The bookkeeping state. Plain text, secondary colour, no alarm.
+              // Removed from the catalogue: plain text, no alarm.
               <div className="text-foreground-secondary">
                 <p className="text-sm">
                   {item.title} — no longer in the catalogue

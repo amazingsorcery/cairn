@@ -1,13 +1,8 @@
 import { unstable_cache } from "next/cache";
 
 /**
- * Cache tags and the `unstable_cache` discipline. `docs/architecture/caching.md` §4 and §6
- * are the contract; this file is the only place a tag string is constructed, so a typo is a
- * compile error rather than a purge that silently does nothing.
- *
- * The failure mode this file exists to prevent: `revalidateTag("tool:" + slug)` in one file
- * and `tags: ["tools:" + slug]` in another. Both run without error. The cache is never
- * purged. Nobody notices until a reader reports stale content a week later.
+ * Cache tags and `unstable_cache` helpers. Tag strings are only built here, so a mismatched
+ * tag between `revalidateTag` and `tags` can't silently skip a purge.
  */
 
 export const TAG = {
@@ -26,27 +21,19 @@ export const TAG = {
   camera: (slug: string) => `camera:${slug}`,
 } as const;
 
-/** ISR/Data Cache intervals, from caching.md §3. Not invented per call site. */
+/** ISR/Data Cache intervals, in seconds. */
 export const TTL = {
   hour: 3600,
   halfHour: 1800,
-  /** `/search` results: an hour of staleness is noticeable here, a minute is not. */
+  /** `/search` results. */
   minute: 60,
 } as const;
 
 /**
- * `unstable_cache` with the discipline caching.md §6 requires, in a shape that makes the
- * rules hard to break:
+ * `unstable_cache` wrapper. `keyParts` must be a constant (arguments are hashed in
+ * automatically); for per-entity tags use `cachedByKey`.
  *
- *   - `keyParts` is a hand-written constant. Arguments are hashed into the key
- *     automatically; interpolating a runtime value into `keyParts` creates an unbounded
- *     number of cache entries and is the standard way to fill a disk.
- *   - Per-entity tags depend on the argument, so they are supplied at call time by a thin
- *     wrapper that closes over the argument (see `cachedByKey`).
- *
- * NEVER wrap a query that takes a `userId`. A workspace row in a shared cache is the worst
- * bug this product can ship, and no type can prevent it — only review. Every function in
- * `lib/queries/workspaces.ts` is deliberately uncached for this reason.
+ * Never wrap a query that takes a `userId`; that would put private rows in a shared cache.
  */
 export function cached<Args extends unknown[], Result>(
   fn: (...args: Args) => Promise<Result>,
@@ -59,22 +46,15 @@ export function cached<Args extends unknown[], Result>(
       return await memoised(...args);
     } catch (error) {
       if (!isMissingCacheContext(error)) throw error;
-      // No Next.js incremental cache in scope. Read straight through rather than failing:
-      // see `isMissingCacheContext`.
+      // No Next.js cache context (e.g. a script): read through uncached.
       return fn(...args);
     }
   };
 }
 
 /**
- * `unstable_cache` requires Next.js's incremental-cache context, which exists during a
- * request or a build and NOT in a plain Node process. Without this fallback, every script
- * that reads through the query layer — `db/seed.ts`, `scripts/verify-backend.ts`, any future
- * maintenance CLI — would throw `Invariant: incrementalCache missing in unstable_cache`.
- *
- * Falling back to an uncached read is correct rather than convenient: outside a request there
- * is no cache to populate and no route to revalidate, so the memoisation has nothing to do.
- * The error is matched narrowly, so a genuine failure inside `fn` still propagates.
+ * Matches `Invariant: incrementalCache missing in unstable_cache`, thrown outside a request
+ * or build (e.g. `db/seed.ts`). Matched narrowly so real errors from `fn` still propagate.
  */
 function isMissingCacheContext(error: unknown): boolean {
   return (
@@ -84,11 +64,7 @@ function isMissingCacheContext(error: unknown): boolean {
   );
 }
 
-/**
- * A cached read whose tags depend on its argument — the `/tools/[slug]` case. The wrapper
- * closes over the key so the tag list can name the entity, while `keyParts` stays constant
- * and the argument is hashed into the entry key as usual.
- */
+/** A cached read whose tags depend on its argument (e.g. `/tools/[slug]`). */
 export function cachedByKey<Result>(
   fn: (key: string) => Promise<Result>,
   keyParts: string[],

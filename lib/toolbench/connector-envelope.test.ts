@@ -145,15 +145,13 @@ describe("the reason vocabulary mirrors the server's, and is checked rather than
     for (const reason of DEGRADED_REASONS) {
       const copy = describeDegraded(reason);
       expect(copy.title.length, reason).toBeGreaterThan(8);
-      // The detail is what a reader acts on, so it has to be a sentence rather than a label.
       expect(copy.detail.length, reason).toBeGreaterThan(80);
       expect(typeof copy.retryable, reason).toBe("boolean");
     }
   });
 
   it("does not invite a retry of a refusal the upstream already made", () => {
-    // The one distinction that changes behaviour rather than wording: retrying a rate limit
-    // is asking a service that has said no, which product-brief §3.2 constraint 5 forbids.
+    // Don't retry against an upstream that has already refused.
     expect(describeDegraded("rate-limited").retryable).toBe(false);
     expect(describeDegraded("disabled").retryable).toBe(false);
     // Ours to fix, so retrying is exactly right.
@@ -162,9 +160,7 @@ describe("the reason vocabulary mirrors the server's, and is checked rather than
   });
 
   it("tells the reader that an upstream failure is not an absence of data", () => {
-    // The regression this pins: crt.sh returned 404 for a domain with 4,375 logged
-    // certificates and the page said none existed. Whatever the wording becomes, a failed
-    // lookup must never read as a negative result.
+    // A failed lookup must never read as a negative result (crt.sh 404s on populated domains).
     expect(describeDegraded("upstream-down").detail).toMatch(/not a result/i);
   });
 

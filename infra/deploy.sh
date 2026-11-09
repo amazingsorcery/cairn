@@ -6,27 +6,14 @@
 #   ./infra/deploy.sh --no-pull    deploy the working tree as-is (use after a manual fix)
 #   ./infra/deploy.sh --skip-backup   skip the pre-migration dump (NOT recommended)
 #
-# THREE CONTAINERS: web, db, caddy - plus the profile-gated one-shot `migrate`. There used
-# to be a `--allow-degraded-worker` flag whose only purpose was to finish a deploy past a
-# `worker` container that could never start. ADR 0031 removed the container, so the flag is
-# gone too; passing it now is a named error rather than a silent no-op.
+# Containers: web, db, caddy, plus the profile-gated one-shot `migrate`.
 #
-# Design contract:
-#   * IDEMPOTENT. Running it twice in a row is a no-op deploy that ends healthy. Every
-#     step is either naturally repeatable (git pull --ff-only, docker build, compose up)
-#     or explicitly guarded (image retagging, migrations).
-#   * SAFE AFTER A PARTIAL FAILURE. A run that died between "build" and "migrate" leaves
-#     images and containers in a state the next run can reason about: nothing is deleted,
-#     the previous image tag is only moved when there is a genuinely new image to replace
-#     it, and a lock stops two runs from interleaving.
-#   * LOUD. Every step prints a UTC timestamp and what it did, so `deploy.log` is a
-#     usable post-mortem.
+# Idempotent and safe to re-run after a partial failure; a lock prevents concurrent runs.
+# Every step logs a UTC timestamp.
 #
-# What it CANNOT do: undo a database migration. Drizzle migrations are forward-only.
-# Rollback here restores the previous *image*; if the failed deploy's migration already
-# changed the schema in a way the old image cannot read, you must also restore the dump
-# this script took immediately before migrating. The script prints that dump's path on
-# every failure path for exactly this reason.
+# Rollback restores the previous image only. Migrations are forward-only, so if a failed
+# deploy already changed the schema, also restore the pre-deploy dump (its path is printed
+# on failure).
 
 set -euo pipefail
 
@@ -46,13 +33,12 @@ for arg in "$@"; do
 	--no-pull) DO_PULL=0 ;;
 	--skip-backup) DO_BACKUP=0 ;;
 	--allow-degraded-worker)
-		# Named explicitly rather than falling through to "Unknown option", because it was a
-		# documented flag and somebody's shell history still has it. ADR 0031.
-		echo "--allow-degraded-worker was removed with the worker container (ADR 0031). There is no worker to degrade; drop the flag and re-run." >&2
+		# Removed flag; give a specific error instead of "Unknown option".
+		echo "--allow-degraded-worker was removed with the worker container. There is no worker to degrade; drop the flag and re-run." >&2
 		exit 2
 		;;
 	-h | --help)
-		sed -n '2,30p' "${BASH_SOURCE[0]}"
+		sed -n '2,16p' "${BASH_SOURCE[0]}"
 		exit 0
 		;;
 	*)
@@ -72,9 +58,7 @@ die() {
 }
 
 # --- Single-instance lock ---------------------------------------------------------------
-# Two concurrent deploys would race on the :previous image tag and could leave the rollback
-# pointing at the image that is already broken. flock -n fails immediately rather than
-# queueing, because a queued deploy of an older commit is worse than no deploy.
+# Concurrent deploys would race on the :previous tag. Fail fast rather than queue.
 LOCK_FILE="/tmp/deploy.$(basename "${REPO_DIR}").lock"
 exec 9>"${LOCK_FILE}"
 if ! flock -n 9; then
@@ -88,7 +72,7 @@ step "Preflight"
 
 command -v docker >/dev/null 2>&1 || die "docker is not installed or not on PATH."
 docker compose version >/dev/null 2>&1 ||
-	die "The docker compose plugin is missing. Install docker-compose-plugin (see RUNBOOK 'Install Docker')."
+	die "The docker compose plugin is missing. Install it: sudo apt-get install -y docker-compose-plugin"
 docker info >/dev/null 2>&1 ||
 	die "Cannot talk to the Docker daemon. Either it is not running (sudo systemctl start docker) or this user is not in the docker group (newgrp docker)."
 log "docker: $(docker --version)"
@@ -97,18 +81,13 @@ log "compose: $(docker compose version --short)"
 [ -f "${COMPOSE_FILE}" ] || die "Missing ${COMPOSE_FILE}"
 [ -f "${ENV_FILE}" ] || die "Missing ${ENV_FILE}. Copy .env.example to .env and fill it in."
 
-# .env must be shell-sourceable, because we source it below. Command substitution in a
-# VALUE would execute as this user during deploy, so refuse it outright rather than
-# discover it the interesting way.
-#
-# Comment lines are stripped first. .env.example documents several commands in prose and
-# uses backticks for inline code, so scanning the raw file would reject a perfectly good
-# .env for its own documentation.
+# .env is sourced below, so refuse command substitution in values. Comment lines are
+# skipped (the example's docs use backticks).
 if grep -vE '^[[:space:]]*(#|$)' "${ENV_FILE}" | grep -Eq '(\$\(|`)'; then
 	die ".env has command substitution (\$( or a backtick) in a value. Remove it — .env must be literal values only."
 fi
 
-# Permissions. .env holds AUTH_SECRET, the database password and SMTP credentials.
+# .env holds secrets.
 ENV_PERMS="$(stat -c '%a' "${ENV_FILE}")"
 if [ "${ENV_PERMS}" != "600" ] && [ "${ENV_PERMS}" != "400" ]; then
 	warn ".env is mode ${ENV_PERMS}; it holds secrets. Fixing to 600."
@@ -121,8 +100,7 @@ set -a
 . "${ENV_FILE}"
 set +a
 
-# Required variables. Checked by name so the error says which one, rather than compose
-# failing later with a substitution error.
+# Check required variables by name for a clearer error than compose would give.
 for var in DOMAIN ACME_EMAIL POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB DATABASE_URL AUTH_SECRET APP_URL; do
 	if [ -z "${!var:-}" ]; then
 		die "Required variable ${var} is empty in .env"
@@ -135,13 +113,10 @@ for var in DOMAIN ACME_EMAIL POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB DATABAS
 done
 log "Environment: DOMAIN=${DOMAIN}  APP_URL=${APP_URL}"
 
-# A .env carried over from a v2 deploy will still carry REDIS_URL and WORKER_HEALTH_PORT.
-# They are harmless - nothing reads them - but saying so here is cheaper than an operator
-# wondering whether their cache is silently broken. A warning, not a refusal: declining to
-# deploy over a stale line in a .env would be the wrong severity.
+# Older .env files may still have these; warn only.
 for stale_var in REDIS_URL REDIS_PASSWORD REDIS_MAXMEMORY WORKER_HEALTH_PORT; do
 	if [ -n "${!stale_var:-}" ]; then
-		warn "${stale_var} is set in .env and nothing reads it. The redis and worker containers were removed (ADR 0031). The line is safe to delete."
+		warn "${stale_var} is set in .env and nothing reads it. The redis and worker containers were removed. The line is safe to delete."
 	fi
 done
 
@@ -150,9 +125,7 @@ IMAGE_TAG="${IMAGE_TAG:-current}"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-180}" # seconds to wait for /api/health after start
 COMPOSE=(docker compose -f "${COMPOSE_FILE}")
 
-# Disk. A build needs room for the pnpm store, node_modules, the .next output and two
-# copies of the image. Running out mid-build leaves dangling layers and a confusing error,
-# and running out later stops Postgres accepting writes.
+# The build needs room for the pnpm store, node_modules, .next and two image copies.
 AVAIL_KB="$(df -Pk "${REPO_DIR}" | awk 'NR==2 {print $4}')"
 AVAIL_GB=$((AVAIL_KB / 1024 / 1024))
 log "Free disk on $(df -Ph "${REPO_DIR}" | awk 'NR==2 {print $6}'): ${AVAIL_GB} GB"
@@ -160,14 +133,13 @@ if [ "${AVAIL_GB}" -lt 3 ]; then
 	die "Only ${AVAIL_GB} GB free. A build needs ~3 GB of headroom. Reclaim space first: docker system prune -af --filter 'until=168h'"
 fi
 
-# Memory. `next build` is the single biggest consumer on this box and is the usual cause
-# of a deploy that dies with an unhelpful exit 137 (OOM-killed).
+# `next build` is the usual cause of an OOM kill (exit 137).
 TOTAL_MB="$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)"
 SWAP_MB="$(awk '/SwapTotal/ {print int($2/1024)}' /proc/meminfo)"
 log "Memory: ${TOTAL_MB} MB RAM, ${SWAP_MB} MB swap"
 if [ "${TOTAL_MB}" -lt 2400 ] && [ "${SWAP_MB}" -lt 1024 ]; then
 	warn "Under 2.4 GB RAM and less than 1 GB of swap. 'next build' is likely to be OOM-killed (exit 137)."
-	warn "Create swap before continuing — see RUNBOOK 'Swap file'."
+	warn "Create swap before continuing: fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile"
 fi
 
 # Validate the compose file against the loaded environment before anything mutates state.
@@ -178,9 +150,7 @@ log "Compose configuration validates."
 # =======================================================================================
 # 2. Record the rollback point
 # =======================================================================================
-# Done BEFORE the pull and the build, so the recorded image is genuinely the one that was
-# serving traffic. Retagging is idempotent: re-running on an unchanged deployment simply
-# points :previous at the same image again.
+# Before pull and build, so :previous is the image that was actually serving. Idempotent.
 step "Recording rollback point"
 
 ROLLBACK_AVAILABLE=0
@@ -191,18 +161,12 @@ if [ -n "${WEB_CID}" ]; then
 	ROLLBACK_AVAILABLE=1
 	log "Running image ${PREV_IMAGE_ID} tagged as ${IMAGE_NAME}:previous"
 elif docker image inspect "${IMAGE_NAME}:previous" >/dev/null 2>&1; then
-	# The web container is not running (first deploy, or a previous deploy left it down)
-	# but a rollback tag survives from an earlier run. Keep it.
+	# web isn't running, but an earlier rollback tag exists; keep it.
 	ROLLBACK_AVAILABLE=1
 	log "web is not running; keeping the existing ${IMAGE_NAME}:previous as the rollback point."
 else
 	log "No previously running image. This looks like a first deploy — rollback will not be available."
 fi
-
-# ONE rollback tag, because one long-running image ships. v2 kept a second for the worker
-# and rolled both together; ADR 0031 removed the worker, and with it the dual-image rollback
-# - which HANDOFF register 37 correctly called the least-exercised new code in this script,
-# running only when everything else had already gone wrong.
 
 GIT_BEFORE="$(git -C "${REPO_DIR}" rev-parse --short HEAD 2>/dev/null || echo 'unknown')"
 log "Current commit: ${GIT_BEFORE}"
@@ -217,8 +181,7 @@ if [ "${DO_PULL}" -eq 1 ]; then
 		die "The working tree has uncommitted changes (above). Commit, stash, or run with --no-pull."
 	fi
 	BRANCH="$(git -C "${REPO_DIR}" rev-parse --abbrev-ref HEAD)"
-	# --ff-only: refuse to create a merge commit on the server. If this fails, the server
-	# has diverged from origin and a human needs to look, not a script.
+	# --ff-only: never merge on the server; divergence needs a human.
 	git -C "${REPO_DIR}" pull --ff-only origin "${BRANCH}"
 	GIT_AFTER="$(git -C "${REPO_DIR}" rev-parse --short HEAD)"
 	if [ "${GIT_BEFORE}" = "${GIT_AFTER}" ]; then
@@ -233,9 +196,7 @@ fi
 # =======================================================================================
 # 4. Back up the database BEFORE migrating
 # =======================================================================================
-# This is the only thing standing between a bad migration and permanent data loss, because
-# migrations cannot be rolled back. It runs before the build so that a build failure does
-# not leave you without a fresh dump.
+# Migrations can't be rolled back, so dump first (before the build, too).
 BACKUP_PATH=""
 if [ "${DO_BACKUP}" -eq 1 ]; then
 	step "Backing up the database"
@@ -256,8 +217,7 @@ fi
 # 5. Build
 # =======================================================================================
 step "Building images"
-# Two targets. `migrate` is behind the `tools` profile, so it must be named explicitly or
-# compose will not build it, and the migration step below would then use a stale image.
+# `migrate` is profile-gated, so build it explicitly or migrations use a stale image.
 "${COMPOSE[@]}" build web
 "${COMPOSE[@]}" --profile tools build migrate
 log "Build complete: ${IMAGE_NAME}:${IMAGE_TAG}"
@@ -272,11 +232,8 @@ rollback() {
 	if [ "${ROLLBACK_AVAILABLE}" -eq 1 ]; then
 		warn "Rolling back to ${IMAGE_NAME}:previous"
 		docker image tag "${IMAGE_NAME}:previous" "${IMAGE_NAME}:${IMAGE_TAG}"
-		# --no-build so compose uses the retagged image instead of rebuilding the broken
-		# source. --force-recreate so it does not decide the container is already correct.
-		# `caddy` is recreated alongside `web` because it holds connections to the container
-		# it dialled; leaving it pointed at one that is being replaced is a minute of 502s
-		# for no reason.
+		# --no-build to use the retagged image. Recreate caddy too so it drops connections to
+		# the replaced container.
 		if "${COMPOSE[@]}" up -d --no-build --force-recreate web caddy; then
 			warn "Previous image restarted. Verify manually:"
 			warn "  docker compose -f ${COMPOSE_FILE} ps"
@@ -298,7 +255,7 @@ rollback() {
 		warn "  ./infra/restore.sh ${BACKUP_PATH} --yes-i-am-sure"
 	fi
 	warn ""
-	warn "See docs/deploy/RUNBOOK.md -> 'Triage'."
+	warn "To triage: docker compose -f ${COMPOSE_FILE} ps, then check logs for web, db and caddy."
 	exit 1
 }
 
@@ -306,18 +263,13 @@ rollback() {
 # 6. Start the database and wait for it to be genuinely ready
 # =======================================================================================
 step "Starting the database"
-# Before anything that depends on it. `web` declares `condition: service_healthy` on `db`,
-# so compose would do this anyway - doing it explicitly means a failure here is reported as
-# "the database would not start" rather than as "the stack would not start", which are
-# different problems with different fixes.
+# Explicitly first, so a db failure is reported as such.
 "${COMPOSE[@]}" up -d db || rollback "starting db"
 
 log "Waiting for Postgres to report healthy (pg_isready)..."
 DB_CID="$("${COMPOSE[@]}" ps -q db)"
 [ -n "${DB_CID}" ] || rollback "starting db (no container id)"
-# docker inspect rather than `compose ps --format`: the Go-template form of compose's
-# --format is not portable across compose plugin versions, and this must not break on a
-# minor version bump six months from now.
+# docker inspect: compose ps --format templates vary across plugin versions.
 DB_DEADLINE=$(($(date +%s) + 120))
 until [ "$(docker inspect -f '{{.State.Health.Status}}' "${DB_CID}" 2>/dev/null || echo unknown)" = "healthy" ]; do
 	if [ "$(date +%s)" -ge "${DB_DEADLINE}" ]; then
@@ -332,9 +284,7 @@ log "Postgres is healthy."
 # =======================================================================================
 # 7. Migrate
 # =======================================================================================
-# One-shot container, removed afterwards. Drizzle records applied migrations in its own
-# table, so re-running this is a no-op — which is what makes the whole script safe to
-# re-run after a partial failure.
+# One-shot container. Re-running is a no-op (Drizzle's journal).
 step "Running migrations"
 if ! "${COMPOSE[@]}" --profile tools run --rm --no-deps migrate; then
 	rollback "database migration"
@@ -352,9 +302,7 @@ step "Starting web and caddy"
 # =======================================================================================
 step "Verifying /api/health"
 
-# Probed from INSIDE the container. This isolates "is the app up" from "is DNS correct"
-# and "is the certificate issued", which are different problems with different fixes, and
-# it works before DNS has propagated. `node -e` needs no tooling in the image.
+# From inside the container, so DNS and TLS don't affect the result.
 HEALTH_DEADLINE=$(($(date +%s) + HEALTH_TIMEOUT))
 HEALTH_OK=0
 ATTEMPT=0
@@ -379,20 +327,8 @@ log "Internal health check passed."
 # =======================================================================================
 # 9b. Print the connector board
 # =======================================================================================
-# This replaced a worker health gate that could never pass (ADR 0031, QV-08). The question
-# the gate was trying to answer - "is anything actually going to fetch data?" - still needs
-# an answer, and with the poller gone the answer lives in one table.
-#
-# READ THIS OUTPUT ON EVERY DEPLOY, AND ESPECIALLY ON THE FIRST ONE. Every connector ships
-# `enabled = false`, and eleven of the thirteen also ship `status = 'draft'` (ADR 0012 §1,
-# fail closed). Both must be true for a source to call anything, so A FRESH DEPLOY HAS EVERY
-# LIVE SURFACE SWITCHED OFF BY DESIGN: the map renders its layers as "an operator switched
-# this source off", the Toolbench tools render the same, and nothing leaves the building.
-# That is correct, not broken. RUNBOOK section 18.5 is the procedure for turning one on
-# after reading its recorded legal basis.
-#
-# This is a report, never a gate. It cannot fail the deploy: an all-off board is the shipped
-# state, and a board that refused to deploy would refuse the first deploy.
+# Shows which sources will actually fetch data. Connectors ship disabled (most also draft),
+# so a fresh deploy has every live surface off by design. Report only; never fails the deploy.
 step "Connector board"
 
 CONNECTOR_BOARD_SQL="
@@ -410,30 +346,21 @@ CONNECTOR_BOARD_SQL="
   order by (enabled and status = 'published') desc, slug;
 "
 
-# SQL on stdin rather than inside `-c`, so there is one level of shell quoting to get right
-# instead of three. The sh script is SINGLE-quoted: $POSTGRES_USER and $POSTGRES_PASSWORD
-# are expanded by the shell inside the db container, from that container's own environment,
-# and never appear in this host's process list or in deploy.log.
-# stderr is NOT suppressed — if psql refuses, its own message is the diagnosis.
+# SQL on stdin to avoid nested quoting. Single-quoted so credentials expand inside the db
+# container and never reach this host's process list or log. stderr is kept.
 if printf '%s\n' "${CONNECTOR_BOARD_SQL}" | "${COMPOSE[@]}" exec -T db sh -c \
 	'PGPASSWORD="$POSTGRES_PASSWORD" psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -q -P pager=off -v ON_ERROR_STOP=1 -f -'; then
-	# `changed_utc` is trustworthy however the row was written: migration 0007 puts a
-	# BEFORE UPDATE trigger on `connectors`, so a kill-switch flipped with psql moves the
-	# timestamp exactly as one flipped through the app does. That is the whole reason the
-	# column is worth printing here.
+	# `changed_utc` is maintained by a trigger, so psql edits count too.
 	log "LIVE = enabled AND published AND has both terms_url and legal_basis (lib/connectors/liveness.ts)."
-	log "No LIVE rows on a fresh deploy is the SHIPPED STATE, not a fault. See RUNBOOK section 18.5."
+	log "No LIVE rows on a fresh deploy is the SHIPPED STATE, not a fault. Enable a source with: update connectors set enabled = true where slug = '<slug>'"
 else
 	warn "Could not read the connector board from the database. The deploy is NOT rolled back:"
 	warn "the app is provably healthy, and this is a report rather than a control. Check:"
 	warn "  docker compose -f ${COMPOSE_FILE} exec -T db sh -c 'psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -c \"select count(*) from connectors\"'"
-	warn "If the table is empty, the seed has not been run: see RUNBOOK section 6."
+	warn "If the table is empty, the seed has not been run: docker compose -f ${COMPOSE_FILE} --profile tools run --rm migrate pnpm db:seed"
 fi
 
-# Public path: through Caddy, over TLS, from the outside. A failure here is NOT a reason
-# to roll back — the application is provably healthy, so the problem is DNS, the firewall,
-# or certificate issuance, and rolling the image back would fix none of them and would
-# only lose the deploy.
+# Public path through Caddy. Failure here is DNS/firewall/TLS, not the app: no rollback.
 if command -v curl >/dev/null 2>&1; then
 	if curl -fsS --max-time 20 -o /dev/null "https://${DOMAIN}/api/health"; then
 		log "Public health check passed: https://${DOMAIN}/api/health"
@@ -443,7 +370,6 @@ if command -v curl >/dev/null 2>&1; then
 		warn "  dig +short ${DOMAIN}            # does it point here?"
 		warn "  sudo ufw status                 # are 80 and 443 open?"
 		warn "  docker compose -f ${COMPOSE_FILE} logs --tail=100 caddy   # certificate issuance"
-		warn "  See RUNBOOK -> 'Certificate troubleshooting'."
 	fi
 else
 	warn "curl is not installed; skipping the public check. Install it: sudo apt-get install -y curl"
@@ -452,28 +378,12 @@ fi
 # =======================================================================================
 # 10. Warm the ISR cache
 # =======================================================================================
-# The image is built with NO database, by design (ADR 0018) — a build that needs a live
-# production database is not reproducible and cannot run on a clean CI runner. The
-# consequence is that ISR pages are prerendered EMPTY at build time.
-#
-# Next serves the stale prerendered page on the first request and regenerates in the
-# background, so without this step the first real visitor after every deploy sees an empty
-# directory or an empty Live section, and only the second visitor sees the site. Requesting
-# each page twice here means that visitor is us, not them.
-#
-# Deliberately non-fatal: a page that fails to warm is a cosmetic problem for one request,
-# and failing a deploy that already passed its health check would be a worse trade.
+# The image is built without a database, so ISR pages are prerendered empty. Request each
+# page so it regenerates before real visitors arrive. Non-fatal.
 step "Warming the ISR cache"
 WARM_PATHS="/ /directory /playbooks /live /methodology /about"
 for path in ${WARM_PATHS}; do
-	# Requested from INSIDE the web container, the same way the health check is, because
-	# `web` publishes no host port — only Caddy is exposed. Going through Caddy would work
-	# too but would depend on DNS and a valid certificate, neither of which has anything to
-	# do with warming a cache.
-	#
-	# Twice: the first request returns the stale empty page and triggers regeneration, the
-	# second returns the regenerated one. The body is not parsed — the point is to make the
-	# regeneration happen before a user arrives, not to assert on content.
+	# From inside web (no host port). Twice: the first triggers regeneration.
 	for _ in 1 2; do
 		"${COMPOSE[@]}" exec -T web node -e 			"fetch('http://127.0.0.1:3000${path}').then(()=>process.exit(0)).catch(()=>process.exit(0))" 			>/dev/null 2>&1 || true
 	done
@@ -485,8 +395,7 @@ done
 # 11. Tidy up
 # =======================================================================================
 step "Cleaning up"
-# Only dangling (untagged, unreferenced) layers from this build. NOT `prune -a`, which
-# would delete ${IMAGE_NAME}:previous and destroy the rollback path.
+# Dangling layers only; `prune -a` would delete :previous.
 docker image prune -f >/dev/null
 log "Dangling build layers removed. ${IMAGE_NAME}:previous is preserved."
 
@@ -496,13 +405,11 @@ step "Deploy complete"
 log "Commit:  $(git -C "${REPO_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 log "Image:   ${IMAGE_NAME}:${IMAGE_TAG}"
 if [ "${ROLLBACK_AVAILABLE}" -eq 1 ]; then
-	log "Rollback available: yes  ->  ./infra/deploy.sh is not the way back; see RUNBOOK 'Rolling back'"
+	log "Rollback available: yes  ->  docker image tag ${IMAGE_NAME}:previous ${IMAGE_NAME}:${IMAGE_TAG} && docker compose -f ${COMPOSE_FILE} up -d --no-build --force-recreate web caddy"
 else
 	log "Rollback available: no (first deploy)"
 fi
-# `if`, not `[ ... ] && log ...`: under `set -e` a false test as the final command of an
-# && list makes the script exit non-zero, turning a successful deploy into a reported
-# failure. This exact line has bitten enough deploy scripts to be worth the comment.
+# `if`, not `[ ... ] && log`: a false test there would make the script exit non-zero.
 if [ -n "${BACKUP_PATH}" ]; then
 	log "Pre-deploy backup: ${BACKUP_PATH}"
 fi

@@ -11,11 +11,7 @@ import {
   toolsInGroup,
 } from "./registry";
 
-/**
- * Product-brief section 8: "every route in the nav is complete (if it isn't built, it isn't
- * linked)". These tests hold that line mechanically, because the failure mode — an index
- * card pointing at a 404 — is invisible in review and immediate for a reader.
- */
+/** Every index entry must have a route, and every route an entry. */
 describe("the index only lists routes that exist", () => {
   const routeDirectory = join(process.cwd(), "app", "(public)", "toolbench");
 
@@ -44,7 +40,6 @@ describe("every entry carries what the brief requires of a tool", () => {
       .map((name) => name.replace(/\.md$/, ""));
 
     for (const entry of TOOLBENCH_ENTRIES) {
-      // A link to a playbook that does not exist is worse than no link at all.
       expect(playbooks, entry.slug).toContain(entry.playbook.slug);
       expect(entry.playbook.step.length, entry.slug).toBeGreaterThan(60);
     }
@@ -57,18 +52,12 @@ describe("every entry carries what the brief requires of a tool", () => {
         entry.slug,
       ).toContain(entry.dataHandling);
     }
-    // Only the reverse image launcher may claim to send anything anywhere. If a second tool
-    // ever does, that is a decision someone should have to make deliberately.
+    // Pinned lists: adding a tool to any of these should require editing the test.
     const thirdParty = TOOLBENCH_ENTRIES.filter((entry) => entry.dataHandling === "opensThirdParty");
     expect(thirdParty.map((entry) => entry.slug)).toEqual(["reverse-image-search"]);
 
-    /**
-     * The same lock on the server-side tools, and for a stronger reason: `onOurServer` means
-     * the reader's query leaves their machine and reaches a third party. Four tools do that
-     * today, every one of them because the source cannot be called from a browser at all.
-     * Adding a fifth must be a deliberate act with this list edited to say so, not something
-     * that happens because a client-side tool grew a fetch.
-     */
+    // `onOurServer`: the query reaches a third party via us because the source can't be
+    // called from a browser.
     const serverSide = TOOLBENCH_ENTRIES.filter((entry) => entry.dataHandling === "onOurServer");
     expect(serverSide.map((entry) => entry.slug).sort()).toEqual([
       "certificate-transparency",
@@ -77,13 +66,7 @@ describe("every entry carries what the brief requires of a tool", () => {
       "wayback-explorer",
     ]);
 
-    /**
-     * `viaOurServer` is the same lock again, and the distinction from `onOurServer` is the
-     * reason it is a separate value: these two sources CAN be called from a browser, and we
-     * route them through the server anyway so the upstream never learns which place or
-     * language a reader was searching for. Describing a choice as an inability would
-     * misdescribe the trade the reader is being asked to accept.
-     */
+    // `viaOurServer`: callable from a browser, but proxied so the upstream doesn't see the reader.
     const routedByChoice = TOOLBENCH_ENTRIES.filter(
       (entry) => entry.dataHandling === "viaOurServer",
     );
@@ -92,12 +75,8 @@ describe("every entry carries what the brief requires of a tool", () => {
       "overpass-builder",
     ]);
 
-    /**
-     * `clientToSource` is the ONLY value that means the reader's own browser reaches a third
-     * party, so it is the one that most needs to stay deliberate. It exists for media, which
-     * product-brief §2b forbids us to relay — and the corollary, which the copy states, is
-     * that the source sees the reader's address.
-     */
+    // `clientToSource`: the browser fetches media directly (we don't relay media), so the
+    // source sees the reader's IP.
     const directMedia = TOOLBENCH_ENTRIES.filter((entry) => entry.dataHandling === "clientToSource");
     expect(directMedia.map((entry) => entry.slug)).toEqual(["imagery-comparator"]);
   });
@@ -105,8 +84,7 @@ describe("every entry carries what the brief requires of a tool", () => {
   it("gives every data-handling value a label and a detailed explanation", () => {
     for (const entry of TOOLBENCH_ENTRIES) {
       expect(DATA_HANDLING_LABEL[entry.dataHandling], entry.slug).toBeTruthy();
-      // The detail is what a reader actually decides on, so it has to be a paragraph rather
-      // than a badge caption.
+      // A full explanation, not a caption.
       expect(DATA_HANDLING_DETAIL[entry.dataHandling].length, entry.slug).toBeGreaterThan(120);
     }
   });

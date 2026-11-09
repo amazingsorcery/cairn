@@ -3,11 +3,8 @@ import { describe, expect, it } from "vitest";
 import { readCappedText } from "./capped-body";
 
 /**
- * QV-03. The cap has to bite while the body is arriving, not after it has arrived.
- *
- * Every case below is driven through a `ReadableStream` that counts what it was asked to
- * produce, so the assertion is about how many bytes actually reached this process — which is
- * the only thing that matters for a memory-exhaustion control.
+ * The cap must apply while the body streams. Cases use a counting `ReadableStream` so
+ * assertions check how many bytes were actually pulled.
  */
 
 /** A stream of `chunkBytes`-sized chunks, up to `totalBytes`, that records what it emitted. */
@@ -46,10 +43,7 @@ describe("readCappedText", () => {
     expect(state.produced).toBe(0);
   });
 
-  /**
-   * The QV-03 case. No `Content-Length` — which is every chunked response, and what
-   * `web.archive.org` sends for an `id_` capture — and a body far over the cap.
-   */
+  /** Chunked response with no `Content-Length` and a body far over the cap. */
   it("stops pulling a chunked oversize body within one chunk of the cap", async () => {
     const CAP = 64 * 1024;
     const CHUNK = 8 * 1024;
@@ -61,16 +55,12 @@ describe("readCappedText", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("unreachable");
     expect(result.reason).toBe("streamed");
-    // Never the whole payload. The slack over the cap is bounded by the chunk size plus
-    // whatever the stream had already queued ahead of us, not by the payload's size.
+    // Slack is bounded by chunk size plus whatever the stream queued ahead.
     expect(state.produced).toBeLessThan(CAP * 8);
     expect(state.produced).toBeLessThanOrEqual(CAP + CHUNK * 4);
   });
 
-  /**
-   * `fetch` transparently decodes `Content-Encoding: gzip`, so a declared length describes
-   * the COMPRESSED size. A small honest-looking header must not license an unbounded read.
-   */
+  /** With gzip, Content-Length is the compressed size, so a small value proves nothing. */
   it("stops pulling when a small declared length is followed by an oversize body", async () => {
     const CAP = 64 * 1024;
     const CHUNK = 8 * 1024;

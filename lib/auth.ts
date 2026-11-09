@@ -16,14 +16,8 @@ import { logger, maskEmail } from "./logger";
 import { consumeSafely } from "./rate-limit";
 
 /**
- * Auth.js v5 configuration. product-brief §5: email magic link + GitHub OAuth, Postgres
- * sessions, no WebAuthn.
- *
- * DATABASE SESSIONS, not JWT. A session row can be revoked — deleting it signs the user out
- * everywhere, immediately. A JWT cannot be revoked before it expires, and for an audience
- * whose threat model includes device seizure that difference is the whole point. It also
- * means `role` is read from the database on every request rather than carried in a token
- * that was minted before the role changed.
+ * Auth.js v5: email magic link + GitHub OAuth, with database sessions (not JWT) so sessions
+ * are revocable and `role` is read fresh on every request.
  */
 
 /* ------------------------------------------------------------------ *
@@ -47,15 +41,7 @@ declare module "next-auth" {
  * Providers
  * ------------------------------------------------------------------ */
 
-/**
- * Providers are built from `authProviders`, which reports what the *environment* actually
- * configures. A half-configured provider must not render a button that fails on click —
- * the env schema already refuses to boot on a half-set provider, and this is the second
- * half of the same rule: what is not configured is not offered.
- *
- * `lib/env.ts` exports `authProviders`, so the sign-in page imports that rather than
- * inspecting this array.
- */
+/** Only configured providers are offered (see `authProviders` in `lib/env.ts`). */
 function buildProviders(): Provider[] {
   const providers: Provider[] = [];
 
@@ -64,8 +50,7 @@ function buildProviders(): Provider[] {
       GitHub({
         clientId: env.AUTH_GITHUB_ID,
         clientSecret: env.AUTH_GITHUB_SECRET,
-        // Default scope only (`read:user user:email`). We need an identity and an address;
-        // anything more is access we would have to justify to this audience.
+        // Default scope only (`read:user user:email`).
         allowDangerousEmailAccountLinking: false,
       }),
     );
@@ -82,12 +67,7 @@ function buildProviders(): Provider[] {
           auth: { user: env.SMTP_USER, pass: env.SMTP_PASSWORD },
         },
         from: env.SMTP_FROM,
-        /** 24 hours. Long enough to survive a delayed mail queue, short enough to expire. */
-        // 15 minutes. Auth.js defaults to 24 hours, which is a long time for a bearer
-        // credential sitting in an inbox — and this product's audience is specifically
-        // people whose email is worth compromising (product-brief §4). `states.md`
-        // §6.4/§6.5 was drafted against 15 minutes; the sign-in copy reads this value at
-        // runtime rather than restating it, so the page follows automatically.
+        // 15 minutes (Auth.js default is 24 h). The sign-in copy reads this value at runtime.
         maxAge: 15 * 60,
         async sendVerificationRequest({ identifier, url, provider }) {
           const { host } = new URL(url);
@@ -102,24 +82,14 @@ function buildProviders(): Provider[] {
             html,
           });
 
-          // `result.rejected` only. nodemailer 9's SMTP transport builds its response as
-          // `{ accepted, rejected }` (plus `ehlo` / `rejectedErrors`) and has no `pending`
-          // field at all — that is a sendmail/stream-transport concept and was always a
-          // no-op here. The old line read `result.rejected.concat(result.pending)`, which
-          // survived only because `[].concat(undefined)` yields `[undefined]` and
-          // `.filter(Boolean)` stripped it: a check that looked like it did something and
-          // did not. The compiler could not see it because `@types/nodemailer@8` still
-          // declares `pending` against a `nodemailer@9` runtime.
+          // nodemailer 9's SMTP transport has no `pending` field (despite @types/nodemailer@8).
           const rejected = result.rejected.filter(Boolean);
           if (rejected.length > 0) {
-            // The address is masked even in the throw: this message reaches the Auth.js
-            // error page and the logs.
+            // Masked: this reaches the Auth.js error page and logs.
             throw new Error(`Magic-link email was not accepted for ${maskEmail(identifier)}`);
           }
 
-          // NEVER log `url` or `token`: either is a bearer credential for this account.
-          // `maskEmail` keeps the line correlatable without identifying the recipient
-          // (docs/product-brief.md §3.2 constraint 4).
+          // Never log `url` or `token`: both are bearer credentials.
           logger.info(
             { scope: "auth.magic-link", to: maskEmail(identifier), messageId: result.messageId },
             "Magic-link email sent",
@@ -144,11 +114,11 @@ export const authConfig: NextAuthConfig = {
     verificationTokensTable: verificationTokens,
   }),
 
-  /** Postgres sessions (product-brief §5). Revocable, and `role` is always current. */
+  /** Database sessions: revocable, and `role` is always current. */
   session: {
     strategy: "database",
     maxAge: 30 * 24 * 60 * 60,
-    /** Refresh the row at most daily so an active session is not a write per request. */
+    /** Refresh the row at most daily. */
     updateAge: 24 * 60 * 60,
   },
 
@@ -161,24 +131,16 @@ export const authConfig: NextAuthConfig = {
   },
 
   /**
-   * `trustHost` comes from the environment because the app never sees TLS: Caddy terminates
-   * it and forwards plain HTTP with `X-Forwarded-Proto: https`
-   * (docs/deploy/HANDOFF.md A#3). Without it Auth.js builds callback and magic-link URLs
-   * from `http://localhost:3000` and every sign-in fails.
-   *
-   * It is read from the environment rather than hardcoded to `true` because trusting
-   * forwarded host headers is only safe behind a proxy that overwrites them, which is a
-   * property of the deployment and not of the code.
+   * Needed behind Caddy (which terminates TLS) or callback URLs use `http://localhost:3000`.
+   * Configurable because trusting forwarded headers is only safe behind an overwriting proxy.
    */
   trustHost: env.AUTH_TRUST_HOST,
   secret: env.AUTH_SECRET,
 
   callbacks: {
     /**
-     * Runs before the magic-link email is sent (`email.verificationRequest` is true on that
-     * pass), so a `false` here stops the send rather than merely refusing the session.
-     * Rate limiting here rather than inside `sendVerificationRequest` means the transport is
-     * never even opened for a request over the limit.
+     * Runs before the magic-link email is sent, so returning `false` stops the send and the
+     * transport is never opened.
      */
     async signIn({ user, email }) {
       if (!email?.verificationRequest) return true;
@@ -192,9 +154,7 @@ export const authConfig: NextAuthConfig = {
           { scope: "auth.signin", to: maskEmail(address), count: decision.count },
           "Magic-link request rate limited",
         );
-        // Auth.js turns `false` into a redirect to the error page. The user is not told
-        // whether the address exists — an enumerable "too many requests for this account"
-        // is an account-existence oracle.
+        // Generic error page; don't reveal whether the account exists.
         return false;
       }
 
@@ -206,11 +166,7 @@ export const authConfig: NextAuthConfig = {
       return safeRedirect(url, baseUrl);
     },
 
-    /**
-     * With `strategy: "database"` the adapter hands us the user row, so `id` and `role` are
-     * read from the database on every request rather than from a token minted earlier.
-     * A role revoked at 10:00 takes effect at 10:00.
-     */
+    /** The adapter passes the user row, so `id` and `role` are always current. */
     session({ session, user }) {
       session.user.id = user.id;
       session.user.role = (user as { role?: UserRole }).role ?? "user";
@@ -220,18 +176,12 @@ export const authConfig: NextAuthConfig = {
 
   events: {
     /**
-     * Role assignment happens HERE and nowhere else, because `createUser` fires exactly
-     * once per account: on creation. Assigning on every sign-in would let a role removed by
-     * an admin be silently restored by the next login, and would make `ADMIN_EMAILS` a
-     * permanent override rather than a bootstrap.
-     *
-     * Consequence, documented in `.env.example`: `ADMIN_EMAILS` must be set *before* the
-     * first sign-in of the account it names. Afterwards the role is changed in the database.
+     * `ADMIN_EMAILS` is applied once, on account creation, so a later role change in the
+     * database isn't undone on next login. Set it before that account first signs in.
      */
     async createUser({ user }) {
       const address = user.email?.trim().toLowerCase();
-      // `id` is optional on the base `User` type even though the adapter always supplies
-      // it; without the guard we would silently update every row on a `where undefined`.
+      // `id` is optional on `User`; guard so we never run `where undefined`.
       if (!address || !user.id || !adminEmails.includes(address)) return;
 
       await db.update(users).set({ role: "admin" }).where(eq(users.id, user.id));
@@ -254,8 +204,7 @@ export const authConfig: NextAuthConfig = {
     warn(code) {
       logger.warn({ scope: "authjs", code }, "Auth.js warning");
     },
-    // `debug` is deliberately a no-op: Auth.js's debug channel includes tokens and
-    // verification URLs, and this codebase must never write either to a log.
+    // No-op: Auth.js debug output includes tokens and verification URLs.
     debug() {},
   },
 };
@@ -283,11 +232,8 @@ export async function currentUser(): Promise<SessionUser | null> {
 }
 
 /**
- * The signed-in user, or throw. Server Actions call this first, before validating input:
- * an unauthenticated caller must not learn whether their payload was well-formed.
- *
- * Callers convert this into a redirect to `/signin`; it throws rather than redirecting so
- * that it is usable from a route handler and a server action alike.
+ * Thrown by `requireUser`. Server Actions call it before validating input. Throws rather than
+ * redirecting so it works in route handlers too.
  */
 export class UnauthenticatedError extends Error {
   constructor() {

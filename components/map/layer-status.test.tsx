@@ -8,42 +8,21 @@ import { LayerStatus, failureSentence } from "./layer-status";
 import type { LayerPayloadDto } from "./registry";
 
 /**
- * The degraded states. Carried over from `/live/flights` (ADR 0011 rule 5, ADR 0014) and
- * extended to every failure kind `SourceAdapter` actually has.
+ * Degraded states for every `SourceFailure` kind.
  *
- * These are tested rather than trusted because they are the states nobody sees during
- * development. QA should be able to break one upstream and find a designed screen, not a
- * blank region — and the specific rules below (no retry after a rate limit, distinct copy per
- * kind) are the ones a later refactor collapses into one generic error box.
- *
- * ## THE CASES ARE DERIVED FROM THE UNION. QA finding QV-30.
- *
- * This file used to open with a hand-written array of six failures and a docstring calling it
- * "the six failure kinds SourceAdapter actually has". The union had eight. `quotaExhausted`
- * and `redirected` were both added by earlier fix rounds — which is precisely when a
- * hand-maintained list stops matching — and neither appeared in any case here, so two real
- * operational states were rendered by no test. QA has now found this shape twice; the second
- * time it is a pattern, not an oversight, and the answer is to stop writing the list.
- *
- * Two mechanisms, in opposite directions, so neither can be satisfied on its own:
- *
- *  1. `Readonly<Record<SourceFailure["kind"], Case>>` — the CONTRACT forces a case. A ninth
- *     kind in `lib/sources/types.ts` is a compile error in this file, next to the compile
- *     errors it already causes in `layer-status.tsx`.
- *  2. `expect(Object.keys(CASES)).toEqual(FAILURE_KINDS)` — the WIRE SCHEMA and the cases must
- *     agree. `FAILURE_KINDS` is read off the `z.discriminatedUnion` in `payload.ts`, so a kind
- *     the contract has and the schema does not — which reaches a reader as "our parser is
- *     broken" rather than as itself — fails here too.
+ * Cases are keyed by the union so they can't drift:
+ *  1. `Record<SourceFailure["kind"], …>`: a new kind is a compile error here.
+ *  2. `Object.keys(CASES)` must equal `FAILURE_KINDS` (from the zod schema in `payload.ts`),
+ *     so the schema and the contract must agree too.
  */
 
 /**
- * One case per failure kind: the value, whether a retry is offered, and one phrase the
- * sentence must contain. The phrase is written out rather than derived from the component,
- * because a test that asks the component what it says asserts nothing.
+ * One case per failure kind: the value, whether a retry is offered, and a phrase the
+ * sentence must contain (written out, not derived from the component).
  */
 interface FailureCase {
   readonly failure: SourceFailure;
-  /** Whether a control is offered. Independent of `FAILURE_RETRYABLE`, on purpose. */
+  /** Whether a control is offered. Kept independent of `FAILURE_RETRYABLE`. */
   readonly offersRetry: boolean;
   /** A phrase the reader must actually see, distinctive to this kind. */
   readonly says: RegExp;
@@ -56,28 +35,19 @@ const CASES: Readonly<Record<SourceFailure["kind"], FailureCase>> = {
     says: /answered with HTTP 503/,
   },
   rateLimited: {
-    // Not an honesty question but a conduct one: a retry control is an invitation to keep
-    // calling a service that has just asked us to stop (product-brief §3.2 constraint 5).
+    // No retry: don't invite calls to a service that asked us to stop.
     failure: { kind: "rateLimited", retryAfterSeconds: 30 },
     offersRetry: false,
     says: /asked us to slow down/,
   },
   quotaExhausted: {
-    /*
-     * ADDED BY A FIX ROUND AND TESTED BY NOTHING UNTIL NOW (QV-05, then QV-30). It is OUR
-     * budget, not theirs, and the sentence has to say so: a reader who cannot tell the two
-     * apart concludes the source is unreliable when we are the ones who stopped.
-     */
+    // Our budget, not the source's, and the sentence must say so.
     failure: { kind: "quotaExhausted", resetsAt: new Date("2026-09-01T09:00:00.000Z") },
     offersRetry: false,
     says: /the limit is ours/i,
   },
   redirected: {
-    /*
-     * ALSO ADDED BY A FIX ROUND AND TESTED BY NOTHING (QV-18, then QV-30). Retryable — a
-     * redirect can be a maintenance window as easily as a permanent move — and it must never
-     * name the destination host, which is upstream-controlled text.
-     */
+    // Retryable (may be maintenance). Never names the destination host (upstream-controlled).
     failure: { kind: "redirected" },
     offersRetry: true,
     says: /redirecting us to another host/,
@@ -140,17 +110,12 @@ function renderStatus(payload: LayerPayloadDto, cadence: "live" | "registry" = "
 
 describe("the case table covers the union", () => {
   it("has a case for every kind the wire schema accepts, and invents none", () => {
-    /*
-     * The runtime half of QV-30. The `Record` above already fails to compile if the CONTRACT
-     * grows a kind; this fails if the SCHEMA and the cases drift apart in either direction —
-     * which is the state that reaches a reader as `schemaChanged`, a sentence blaming our
-     * parser for an operational condition that is not a bug at all.
-     */
+    // Runtime check that the wire schema and the cases agree in both directions.
     expect([...Object.keys(CASES)].sort()).toEqual([...FAILURE_KINDS].sort());
   });
 
   it("exercises the two kinds that fix rounds added and the old list never mentioned", () => {
-    // Named explicitly so the regression cannot pass by an empty table.
+    // Guards against passing with an empty table.
     expect(FAILURE_KINDS).toContain("quotaExhausted");
     expect(FAILURE_KINDS).toContain("redirected");
     expect(FAILURES.length).toBeGreaterThanOrEqual(8);
@@ -159,8 +124,7 @@ describe("the case table covers the union", () => {
 
 describe("failureSentence", () => {
   it("gives every failure kind its own sentence", () => {
-    // "It broke" is not a state. Eight different things going wrong need eight different
-    // sentences, and every one of them is on the list because the list is derived.
+    // Each kind needs a distinct sentence.
     const sentences = FAILURES.map((failure) => failureSentence(failure, "USGS"));
     expect(new Set(sentences).size).toBe(FAILURES.length);
     for (const sentence of sentences) {
@@ -178,8 +142,7 @@ describe("failureSentence", () => {
   });
 
   it("never names the host of a refused redirect", () => {
-    // The destination is upstream-controlled text and this string is rendered. An operator
-    // reads the host in the structured log; a reader never does (QV-18).
+    // The destination is upstream-controlled; it goes to the structured log only.
     const sentence = failureSentence({ kind: "redirected" }, "USGS");
     expect(sentence).not.toMatch(/https?:\/\//);
   });
@@ -214,7 +177,7 @@ describe("LayerStatus", () => {
     });
     expect(screen.getByText("Live")).toBeInTheDocument();
     expect(screen.getByText(/12s ago/)).toBeInTheDocument();
-    // Attribution at the point of display, from the adapter, never typed into a component.
+    // Attribution comes from the adapter.
     expect(screen.getByText("U.S. Geological Survey")).toBeInTheDocument();
     expect(screen.getByText(/public domain/)).toBeInTheDocument();
   });
@@ -237,19 +200,15 @@ describe("LayerStatus", () => {
   });
 
   it("offers NO retry after the upstream asked us to slow down", () => {
-    // Not an honesty question but a conduct one: a retry control is an invitation to keep
-    // calling a service that has just asked us to stop (product-brief §3.2 constraint 5).
+    // Don't invite calls to a service that asked us to stop.
     renderStatus(failed({ kind: "rateLimited", retryAfterSeconds: 30 }));
     expect(screen.queryByRole("button", { name: /retry/i })).not.toBeInTheDocument();
   });
 
   it("offers a retry exactly where one can help, for every kind in the union", () => {
     /*
-     * Driven by the derived list, so a new kind arrives here with an explicit answer rather
-     * than an accidental one. The three `false` answers are three different arguments: a
-     * rate limit is a conduct question (never invite a reader to keep calling a service that
-     * said stop), a spent quota and a switched-off layer cannot be helped by retrying, and a
-     * schema change needs a deploy the reader cannot make.
+     * No retry for: rate limit (source asked us to stop), spent quota and disabled (retry
+     * can't help), schema change (needs a deploy).
      */
     for (const kind of FAILURE_KINDS) {
       const { unmount } = render(
@@ -286,8 +245,7 @@ describe("LayerStatus", () => {
           onRetry={vi.fn()}
         />,
       );
-      // The title, a sentence, and an icon. A blank row is the failure mode this whole
-      // component exists to prevent, and it is what an unhandled kind produces.
+      // Title and icon; an unhandled kind would render a blank row.
       expect(container.textContent ?? "", `${kind} rendered nothing`).toContain(
         "Earthquakes unavailable",
       );
@@ -315,21 +273,15 @@ describe("LayerStatus", () => {
         onRetry={vi.fn()}
       />,
     );
-    // ADR 0014 §8: the word, never an indeterminate animation that keeps asserting fresh
-    // data is arriving after the request has already failed.
+    // A word, not a spinner.
     expect(screen.getByText("refreshing")).toBeInTheDocument();
     expect(document.querySelector(".animate-spin")).toBeNull();
   });
 });
 
 /**
- * Punctuation, because the run-on it prevents is not cosmetic on this surface.
- *
- * `disabledReason` in `lib/sources/governed.ts` returns a CLAUSE — "an operator switched this
- * source off" — with no full stop, and the first version of the disabled sentence concatenated
- * it straight into the next one: "…switched this source off It stays off until…". A component
- * whose entire job is one distinct, readable sentence per failure cannot ship a run-on, and
- * whoever writes the reason should not have to know how we punctuate it.
+ * `disabledReason` (`lib/sources/governed.ts`) returns a clause without a full stop; the
+ * sentence must terminate it without doubling one.
  */
 describe("the disabled sentence reads as a sentence", () => {
   it("terminates a reason that arrives without a full stop", () => {
@@ -349,11 +301,7 @@ describe("the disabled sentence reads as a sentence", () => {
   });
 
   it("does not claim an operator acted when no row ever existed", () => {
-    /*
-     * `disabledReason` covers four conditions and only one of them is somebody flipping a
-     * switch. Opening every one with "we have switched this layer off" was false for the
-     * other three — nobody switched off a source that was never registered.
-     */
+    // Only one of `disabledReason`'s four conditions is someone flipping a switch.
     const sentence = failureSentence(
       { kind: "disabled", reason: "nws-alerts has no registry row, so there is no recorded basis to call it" },
       "NWS active weather alerts",
@@ -364,8 +312,7 @@ describe("the disabled sentence reads as a sentence", () => {
   });
 
   it("does not build a possessive out of the source name", () => {
-    // "it is not a fault at USGS earthquakes's end" is what a template gets when the source
-    // name is a plural noun phrase rather than a company.
+    // Avoids "USGS earthquakes's end".
     const sentence = failureSentence(
       { kind: "disabled", reason: "an operator switched this source off" },
       "USGS earthquakes",
@@ -376,13 +323,8 @@ describe("the disabled sentence reads as a sentence", () => {
 });
 
 /**
- * A REGISTRY IS NOT A FEED, AND THE STATUS ROW MUST NOT SAY IT IS.
- *
- * The camera layer's row read `Live · as of 00:00:00 UTC · 26 hours ago`. Both numbers were
- * honest — `observedAt` for a hand-verified list is deliberately the day somebody checked it,
- * because claiming "just now" for a fact checked in August is the freshness lie ADR 0014 exists
- * to prevent — but "Live" was not, and a verification date rendered as an age reads as decay on
- * a surface where every other age means exactly that.
+ * A hand-verified registry isn't a feed: its `observedAt` is the check date, so it shows
+ * "Checked <date>" with no "Live" label and no age.
  */
 describe("cadence", () => {
   const checked: LayerPayloadDto = {
@@ -403,8 +345,7 @@ describe("cadence", () => {
 
   it("shows a registry no age at all", () => {
     renderStatus(checked, "registry");
-    // "26 hours ago" against a verification date is decay where there is none, and the clock
-    // time is 00:00:00 — an artefact of a date, which reads as a stopped clock.
+    // No age, and no 00:00:00 clock time from a date-only value.
     expect(screen.queryByText(/ago$/)).not.toBeInTheDocument();
     expect(screen.queryByText(/00:00:00/)).not.toBeInTheDocument();
   });
@@ -416,8 +357,7 @@ describe("cadence", () => {
 
   it("says a registry could not be re-read rather than calling it stale", () => {
     renderStatus({ ...checked, stale: true }, "registry");
-    // A checked list does not rot. What happened is that we could not re-read it, which is a
-    // different fact and the one an operator needs.
+    // A checked list doesn't go stale; we just couldn't re-read it.
     expect(screen.getByText(/could not re-read it/i)).toBeInTheDocument();
     expect(screen.queryByText("Stale")).not.toBeInTheDocument();
   });

@@ -15,7 +15,7 @@ The [Acceptable Use Policy](/legal/acceptable-use), the [Privacy Notice](/legal/
 
 **A qualified lawyer has not yet reviewed this document. Several provisions — notably governing
 law, limitation of liability and the consumer-rights carve-out — require legal review and
-jurisdiction-specific drafting before launch. See `docs/content/legal-review.md`.**
+jurisdiction-specific drafting before launch.**
 
 ## 1. What you are agreeing to use
 

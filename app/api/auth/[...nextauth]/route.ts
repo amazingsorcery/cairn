@@ -1,10 +1,7 @@
 import { handlers } from "@/lib/auth";
 
 /**
- * The Auth.js route handler. Everything under `/api/auth/*` — sign-in, callback, session,
- * CSRF, sign-out — is served from here.
- *
- * Never cached: docs/architecture/caching.md §7. Caddy additionally sets
+ * Auth.js route handler for everything under `/api/auth/*`. Never cached; Caddy also sets
  * `X-Robots-Tag: noindex` on `/api/*`.
  */
 export const dynamic = "force-dynamic";

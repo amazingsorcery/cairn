@@ -53,25 +53,19 @@ describe("adsb-lol normalise", () => {
   });
 
   /**
-   * The two shapes below are asserted against the CAPTURED payload, not a hand-written one.
-   *
-   * That distinction is the whole argument for captured fixtures. Both were flagged
-   * independently by the e2e engineer working from the same capture, and an invented fixture
-   * would have contained neither: `alt_baro` is typed as a number in every reasonable mental
-   * model of this API, and it is a bare string for a quarter of the aircraft in a real
-   * response over London. This is the same way the 1.3% NWS geometry problem surfaced.
+   * Asserted against the captured payload: a hand-written fixture would likely miss that
+   * `alt_baro` is a string for many real aircraft.
    */
   it("handles the string alt_baro that a real response is full of", () => {
     const raw = fixture.ac.filter((a) => a.alt_baro === "ground");
-    // 41 of 165 on 2026-08-31 — not a rare edge case, a quarter of the payload.
+    // 41 of 165 in the capture.
     expect(raw.length).toBeGreaterThan(0);
 
     const onGround = normaliseAdsbLol(fixture, {}).filter((f) => f.properties.onGround);
     expect(onGround.length).toBe(raw.length);
 
     for (const feature of onGround) {
-      // Never NaN, never the string, never a number: an aircraft on the tarmac has no
-      // altitude, and any of those three would render as a plane at some invented height.
+      // On the ground means no altitude at all.
       expect(feature.properties.altitudeFt).toBeNull();
       expect(feature.altitude).toBeUndefined();
       expect(feature.label.trim()).not.toBe("");
@@ -86,8 +80,7 @@ describe("adsb-lol normalise", () => {
     expect(anonymous.length).toBe(raw.length);
 
     for (const feature of anonymous) {
-      // Falls back to registration, then to the hex. A blank map pin is unclickable and
-      // tells a reader nothing, so there is no path here that produces one.
+      // Falls back to registration, then hex.
       expect(feature.label.trim()).not.toBe("");
       expect(feature.label).toBe(
         feature.properties.registration ?? feature.properties.icao24.toUpperCase(),
@@ -125,8 +118,6 @@ describe("adsb-lol normalise", () => {
   });
 
   it("does not re-clip to the bbox, because the upstream already filtered to the circle", () => {
-    // Re-clipping would discard aircraft the caller has already paid for and would make the
-    // rendered count disagree with the radius actually queried.
     const all = normaliseAdsbLol(fixture, {});
     const boxed = normaliseAdsbLol(fixture, {
       bbox: { west: -0.2, south: 51.4, east: -0.1, north: 51.6 },
@@ -151,7 +142,7 @@ describe("adsb-lol schema", () => {
 
   it("rejects an unrelated document, so a shape change cannot read as an empty sky", () => {
     expect(adsbLolResponseSchema.safeParse({ error: "service unavailable" }).success).toBe(false);
-    // `ac` and `now` are required for exactly this reason.
+    // `ac` and `now` are required.
     expect(adsbLolResponseSchema.safeParse({ ac: [] }).success).toBe(false);
   });
 });
@@ -174,8 +165,7 @@ describe("adsb-lol viewport handling", () => {
   });
 
   it("turns a bbox into a circle that CONTAINS it, not one inscribed within it", () => {
-    // An inscribed circle would silently omit aircraft near the corners — the same
-    // quiet-incompleteness failure found on the weather layer.
+    // An inscribed circle would miss aircraft near the corners.
     const view = viewportFromBbox({ west: -1, south: 51, east: 1, north: 52 });
     expect(view.latitude).toBeCloseTo(51.5, 1);
     expect(view.longitude).toBeCloseTo(0, 1);
@@ -233,7 +223,7 @@ describe("adsb-lol fetch", () => {
   });
 
   it("stops calling after the upstream refuses, and reports the wait", async () => {
-    // QA finding Q-02: their limiter is the authority, not our TTL.
+    // Their limiter wins over our TTL.
     const spy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(new Response("slow down", { status: 429 }));
@@ -255,9 +245,8 @@ describe("adsb-lol adapter contract", () => {
   });
 
   it("polls no faster than the measured refusal floor allows", () => {
-    // v1 measured refusals at 10 requests/minute. 30s per viewport is 2/minute; three
-    // viewports is 6/minute, the ceiling settled on after QA finding Q-02. Lowering this
-    // without new measurement is the mistake Q-02 already cost us once. ADR 0021.
+    // Refusals were measured at 10 req/min. 30s per viewport is 2/min; three viewports stay
+    // within the 6/min ceiling. Don't lower without new measurements.
     expect(adsbLol.ttlSeconds).toBeGreaterThanOrEqual(30);
   });
 

@@ -15,32 +15,11 @@ import { clientSubjectFromHeaders, consumeSafely } from "@/lib/rate-limit";
 import { buildLayerPayload } from "./payloads";
 
 /**
- * `/map` — the live map. Product-brief §2a pillar A.
+ * `/map`: the live map. `force-dynamic` so only payloads are cached (one clock for data age).
  *
- * `force-dynamic`, for the reason ADR 0014 §5 gives: the route HTML is never in the Full
- * Route Cache. Only the fetched payload is cached, so there is exactly one clock telling the
- * reader how old the data is. Two cache layers with independent clocks disagreeing about the
- * age would be wrong on the one number that matters most on this page.
- *
- * ## Every layer is fetched here, on the server, and the tables are in the initial HTML
- *
- * The map is opt-in and WebGL never has to start. That is only true if the data arrives
- * without it, so the page fetches every registry layer, converts each to a DTO and hands them
- * to the surface. A reader with JavaScript off gets complete, sorted tables with sources,
- * ages and links back to origin — which is the product working, not a degraded mode.
- *
- * ## One failing source does not fail the page
- *
- * `Promise.all` over `buildLayerPayload`, which returns a failure DTO rather than throwing.
- * A rejected promise here would take out every other layer, which is exactly what
- * product-brief §2b forbids.
- *
- * ## No session read
- *
- * `sitemap.md` §10.1 makes that a route-level invariant for public routes, and nothing on
- * this page differs per reader. Every viewer is served the same payload from one shared
- * cache entry, which is also what keeps us inside each upstream's fair use and means the
- * cache key cannot encode who asked (ADR 0014 §4).
+ * Every layer is fetched server-side so the tables are in the initial HTML and work without
+ * JS or WebGL. `buildLayerPayload` never throws, so one failing source can't break the page.
+ * No session read: every viewer gets the same shared cache entry.
  */
 
 export const dynamic = "force-dynamic";
@@ -53,40 +32,19 @@ export const metadata = pageMetadata({
   path: "/map",
 });
 
-/**
- * The opening view: the whole world, centred on the prime meridian at the equator.
- *
- * Deliberately not a city. A default centred on London or San Francisco tells a reader whose
- * map this is before they have looked at it, and several of these layers are global. Zoom 1.4
- * fits the populated latitudes on a 375px screen without cropping the Pacific.
- */
+/** Whole-world opening view. Zoom 1.4 fits populated latitudes on a 375px screen. */
 const INITIAL_VIEW = { longitude: 0, latitude: 20, zoom: 1.4 } as const;
 
 /**
- * The bounds the server fetches for. The whole world, matching `INITIAL_VIEW`.
- *
- * Every layer is handed this and the registry decides what to do with it: a global feed
- * ignores it, a viewport-scoped source turns it into a bounding box (`layerQuery`). The
- * server cannot know where the reader will pan to, so it answers for the view it is about to
- * render and the client's refresh sends the real one.
+ * Server-side fetch bounds, matching `INITIAL_VIEW`. Global feeds ignore it; viewport-scoped
+ * sources turn it into a bbox. Client refreshes send the real viewport.
  */
 const INITIAL_BOUNDS = { west: -180, south: -85, east: 180, north: 85 } as const;
 
 export default async function MapPage() {
   /*
-   * The per-client ceiling, once for the whole render rather than once per layer. QA finding
-   * QV-05: this route is `force-dynamic`, unauthenticated, and `middleware.ts` matches only
-   * `/workspaces/*` and `/admin/*`, so nothing counted anything and a loop against it drove
-   * six registry reads and six audit rows per request.
-   *
-   * ONE `consume` per render, deliberately. Calling it inside `buildLayerPayload` would be
-   * six `rate_limits` upserts per page view — more database traffic than the six reads it is
-   * here to prevent, which would be a limiter that costs more than the thing it limits.
-   *
-   * It is NOT a session read: `sitemap.md` §10.1's invariant for public routes is about
-   * per-reader *content*, and every reader still gets the identical payload from the same
-   * shared cache entry. The client address is used to count and is HMACed before it reaches
-   * the database (ADR 0009), exactly as on every other limited surface.
+   * Per-client limit, consumed once per render rather than per layer (per-layer would cost
+   * more DB writes than it saves). The client address is HMACed before storage.
    */
   const budget = await consumeSafely("map-layer", clientSubjectFromHeaders(await headers()));
 
@@ -95,14 +53,9 @@ export default async function MapPage() {
         MAP_LAYERS.map((layer) => buildLayerPayload(layer, layerQuery(layer, INITIAL_BOUNDS))),
       )
     : /*
-       * Over the ceiling: the page still renders, with every layer in the state that says
-       * plainly whose limit was met. A 429 for the whole document would take the explanation
-       * with it, and this reader may simply be behind a large NAT.
-       *
-       * `quotaExhausted`, not `rateLimited` — the two are kept apart everywhere in this
-       * codebase because `rateLimited` means the UPSTREAM refused us, and a reader who cannot
-       * tell them apart concludes the sources are unreliable when we are the ones who
-       * stopped. Nothing upstream was involved here at all.
+       * Over the limit: still render, with each layer explaining it, rather than a bare 429
+       * (the reader may be behind a large NAT). `quotaExhausted` because we refused, not the
+       * upstream.
        */
       MAP_LAYERS.map(
         (layer): LayerPayloadDto => ({

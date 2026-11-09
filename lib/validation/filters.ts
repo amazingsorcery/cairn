@@ -11,40 +11,18 @@ import { inputTypesFilterSchema, outputTypesFilterSchema } from "./vocabulary";
 import { toolSortSchema } from "./tools";
 
 /**
- * `searchParams` normalisation for `/directory`, `/search` and `/live/cameras`.
- *
- * TWO jobs, and the second is the one that is easy to miss.
- *
- * 1. Produce a well-typed filter set. Nothing here throws: `sitemap.md` §1 — "Anything that
- *    fails validation is dropped, not rejected — a bad filter yields the unfiltered list,
- *    never a 500." A crafted query string must not be able to render an error page.
- *
- * 2. Produce a CANONICAL filter tuple. `caching.md` §6 keys the `unstable_cache` entry on
- *    this, so `?tag=b&tag=a` and `?tag=a&tag=b&junk=1` must normalise to one key or the
- *    cache hit rate collapses and an attacker can fill the Data Cache with junk entries from
- *    crafted URLs. Hence: unknown keys dropped, arrays sorted and de-duplicated, values
- *    lowercased, `page` clamped to 1..100.
+ * `searchParams` normalisation for `/directory`, `/search` and `/live/cameras`. Never throws:
+ * invalid values are dropped, not rejected. Output is canonical (unknown keys dropped, arrays
+ * sorted and de-duplicated, `page` clamped) since it keys the cache; otherwise crafted URLs
+ * could flood it.
  */
 
 /** How Next.js hands a route its query string. */
 export type RawSearchParams = Record<string, string | string[] | undefined>;
 
 /**
- * Resolve one raw query-string value to its CANONICAL spelling in a closed vocabulary,
- * case-insensitively, or `undefined` if it is not a member.
- *
- * The case-insensitive match and the canonical result are both load-bearing, and getting
- * this wrong is how the bug this function was written to fix happened. The closed
- * vocabularies in `db/schema.ts` are camelCase — `needsReview`, `freeWithRegistration` —
- * because they are CHECK-constrained values that code branches on. An earlier version of
- * this file lowercased every incoming value before validating it, on the reasonable-sounding
- * grounds that a canonical cache key wants a canonical case. That silently destroyed exactly
- * those two values: `needsReview` became `needsreview`, failed `z.enum`, and was dropped. The
- * chip appeared selected in the URL and filtered nothing, with no error anywhere.
- *
- * So: fold case only for the COMPARISON, and return the vocabulary's own spelling. That
- * canonicalises `?confidence=NEEDSREVIEW` and `?confidence=needsreview` to the same filter
- * and the same cache key, while preserving the value the database actually stores.
+ * Match a value against a closed vocabulary case-insensitively and return the vocabulary's
+ * own spelling, or `undefined`. Don't just lowercase: values like `needsReview` are camelCase.
  */
 function canonical<T extends string>(vocabulary: readonly T[], raw: string): T | undefined {
   const needle = raw.trim().toLowerCase();
@@ -75,11 +53,7 @@ function manyOf<T extends string>(
   return [...out].sort();
 }
 
-/**
- * Coerce a single value through a Zod schema. Used only for the OPEN vocabularies whose
- * values are lowercase by definition — slugs, and the jurisdiction pattern — where
- * lowercasing the input is the correct normalisation rather than a destructive one.
- */
+/** Parse one value through a schema, lowercased. Only for always-lowercase values (slugs etc). */
 function optional<T>(schema: z.ZodType<T>, value: string | string[] | undefined): T | undefined {
   const first = Array.isArray(value) ? value[0] : value;
   if (first === undefined || first.trim() === "") return undefined;
@@ -122,22 +96,15 @@ export function parseDirectoryFilters(params: RawSearchParams): DirectoryFilters
     input: inputTypesFilterSchema.parse(toArray(params.input)),
     output: outputTypesFilterSchema.parse(toArray(params.output)),
     confidence: manyOf(CONFIDENCE_LEVELS, params.confidence),
-    /**
-     * Relevance ordering is meaningless with no query, so it degrades to `name` rather than
-     * producing an arbitrary order that differs between pages of the same result set.
-     */
+    // Relevance only defaults when there's a query.
     sort: q ? toolSortSchema.parse(params.sort ?? "relevance") : toolSortSchema.parse(params.sort),
     page: pageSchema.parse(Array.isArray(params.page) ? params.page[0] : params.page),
   };
 }
 
 /**
- * The cache key. A stable, sorted, lossless string built from the normalised tuple — NOT the
- * raw query string, which would key one cache entry per parameter permutation.
- *
- * Deliberately human-readable rather than hashed: a `unstable_cache` key you can read in a
- * log is worth more than the few bytes a digest would save, and there is nothing secret in a
- * public directory filter.
+ * Cache key built from the normalised filters, not the raw query string. Readable rather
+ * than hashed, for debugging; nothing in it is secret.
  */
 export function directoryCacheKey(filters: DirectoryFilters): string {
   return [
@@ -169,7 +136,7 @@ export function searchCacheKey(filters: SearchFilters): string {
   return `q=${filters.q};p=${filters.page}`;
 }
 
-/** `/live/cameras` reads `jurisdiction`, `view` and `q` (sitemap.md §3). */
+/** `/live/cameras` reads `jurisdiction`, `view` and `q`. */
 export type CameraFilters = {
   q: string;
   jurisdiction: string | undefined;
@@ -181,10 +148,7 @@ export function parseCameraFilters(params: RawSearchParams): CameraFilters {
     q: searchQuerySchema
       .catch("")
       .parse(Array.isArray(params.q) ? (params.q[0] ?? "") : (params.q ?? "")),
-    /**
-     * Jurisdiction is free text on `cameras` (the content-strategist owns the value list, not
-     * the schema), so it is length-bounded and character-restricted rather than enumerated.
-     */
+    // Free text in the content, so bounded and character-restricted rather than enumerated.
     jurisdiction: optional(
       z
         .string()
@@ -201,7 +165,7 @@ export function cameraCacheKey(filters: CameraFilters): string {
   return `q=${filters.q};j=${filters.jurisdiction ?? ""};v=${filters.view ?? ""}`;
 }
 
-/** `/api/search/suggest`. One query, nothing else. Rate limited (search.md §6.5). */
+/** `/api/search/suggest` input. Rate limited. */
 export const suggestQuerySchema = z.object({
   q: z.string().trim().min(2, "Type at least two characters").max(200),
 });

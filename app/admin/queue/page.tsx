@@ -9,17 +9,11 @@ import { getVerificationQueue, type QueueEntry } from "@/lib/queries/admin";
 import { formatDate } from "@/lib/utils";
 
 /**
- * `/admin/queue` — the staleness queue. A REQUIRED v1 route (architecture HANDOFF §9.5,
- * ADR 0007 §7): "without a route that makes decay visible to an editor, `lastVerifiedAt`
- * becomes a fossil within a quarter", which would make the whole confidence mechanism
- * decorative.
+ * `/admin/queue`: entries whose verification has gone stale.
  *
- * THE ROW ACTION IS NOT PART OF SAVING AN EDIT, and that separation is the point of the
- * route. `updateTool`, `updateCamera` and their siblings never touch `last_verified_at`;
- * only `reverifyTool`, `reverifyCamera`, `reverifyPlaybook` and `recheckConnector` do, and
- * each sets it to `now()` rather than accepting a date from the caller. Coupling them would
- * let a typo fix silently assert that every claim on the page had been re-checked — the
- * back-dating dishonesty product-brief §6.3 forbids, in the other direction (ADR 0007 §8).
+ * Re-verifying is separate from editing: `update*` actions never touch `last_verified_at`;
+ * only the `reverify*`/`recheckConnector` actions do, always with `now()`. Otherwise a typo
+ * fix would claim the whole entry was re-checked.
  */
 
 export const dynamic = "force-dynamic";
@@ -35,7 +29,7 @@ export function generateMetadata() {
   );
 }
 
-/** ADR 0007 §5's stated starting value, and the number `states.md` §11.1 writes. */
+/** Staleness threshold in days. */
 const STALE_AFTER_DAYS = 180;
 
 function daysSince(date: Date | null): number | null {
@@ -63,7 +57,7 @@ export default async function AdminQueuePage() {
 
   const today = formatDate(new Date());
 
-  /** The wording of the claim an editor is about to make. It is a claim, so it is precise. */
+  /** Exact wording of what the editor is confirming. */
   const reverifyDescription = (title: string) => (
     <>
       This records that you checked <strong className="text-foreground">{title}</strong> against
@@ -158,11 +152,7 @@ export default async function AdminQueuePage() {
             showConfidence={false}
             dateHeading="terms last read"
             renderAction={(entry) =>
-              /*
-               * `recheckConnector` requires the `admin` role, so an editor is not offered a
-               * control that would refuse them. The action re-checks the role regardless —
-               * a hidden button is not authorisation.
-               */
+              // `recheckConnector` needs admin; hidden for editors (the action re-checks anyway).
               user.role === "admin" ? (
                 <ConfirmAction
                   action={recheckConnector}

@@ -5,17 +5,11 @@ import { deleteCategory, deleteTag } from "@/lib/actions/taxonomy";
 import { listCategories, listTags } from "@/lib/queries/taxonomy";
 
 /**
- * `/admin/taxonomy` — categories and tags. Admin only (sitemap.md §8).
+ * `/admin/taxonomy`: categories and tags, admin only. Deletion is final (no soft-delete).
+ * `ON DELETE RESTRICT` on `tools/playbooks.category_id` blocks deleting a category in use;
+ * the 23503 is mapped to a readable message.
  *
- * DELETION IS FINAL AND THE DIALOG SAYS SO. The schema has no soft-delete and no trash state
- * (`states.md` §12), so there is nothing to restore from. What protects the catalogue is not
- * an undo, it is `ON DELETE RESTRICT` on `tools.category_id` and `playbooks.category_id`: a
- * category with content in it cannot be deleted at all, and the 23503 that raises is turned
- * into a sentence an editor can act on rather than a Postgres code.
- *
- * A RENAME FANS OUT INTO `search_keywords` inside the same transaction (architecture HANDOFF
- * §4). Renaming is not built here — `updateCategory` and `updateTag` exist and are not wired
- * to a form in this pass; recorded in `docs/frontend/HANDOFF-live.md`.
+ * Renaming isn't wired up yet (`updateCategory`/`updateTag` exist).
  */
 
 export const dynamic = "force-dynamic";

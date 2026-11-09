@@ -5,46 +5,21 @@ import { clientSubject, consumeSafely } from "@/lib/rate-limit";
 import { buildLayerPayload } from "../../payloads";
 
 /**
- * `GET /map/data/<layer-id>` — one layer's current payload, for the client's refresh tick.
+ * `GET /map/data/<layer-id>`: one layer's payload for the client refresh.
  *
- * ## Why the browser talks to us and never to the upstream
+ * The browser never calls upstreams directly, which would leak the reader's IP and interests
+ * and make a shared rate ceiling unenforceable. Uses the same `buildLayerPayload` as the page.
  *
- * A client-side fetch straight to a source hands that source the reader's IP address and,
- * layer by layer, the pattern of what they are watching. For an audience of journalists and
- * human-rights researchers that is the interest graph this product exists not to leak
- * (ADR 0011 §1, product-brief §3.2). It also makes a shared rate ceiling unenforceable: with
- * every browser calling directly there is nothing to count.
- *
- * So every refresh comes here, and here goes through the same `buildLayerPayload` the page
- * uses — same cache entry, same TTL, same failure kinds. One code path, one clock.
- *
- * ## The slug is looked up, never interpolated
- *
- * `findLayer` resolves against the registry, and an unknown id returns a `disabled` payload
- * rather than an error page or, worse, a URL built from user input. Nothing from the request
- * reaches an outbound URL as text: the viewport below is parsed to four bounded numbers and
- * the adapter builds its own URL from constants. That is the SSRF shape ADR 0019 flags as
- * v2's top risk, closed by construction rather than by validation.
+ * SSRF: the slug is looked up in the registry, never interpolated, and the viewport is parsed
+ * to four bounded numbers. Adapters build URLs from constants.
  */
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /**
- * The viewport, from the query string, or the whole world.
- *
- * Anything that fails validation is DROPPED rather than rejected: a crafted query string must
- * not be able to render an error page, and the fallback is a correct answer rather than an
- * empty one.
- *
- * **The quantising used to be here and is now in `components/map/query.ts`**, applied once in
- * `loadSource` to the query the adapter is handed and to the cache key together. Rounding in
- * two places is how the key and the request come to describe different areas, which is QA
- * finding QV-04; and the client has to compute the same value to know whether a pan needs a
- * request at all. One grid, one function, three callers. The privacy property is unchanged —
- * the coordinate that reaches an upstream is still coarser than the one the reader is looking
- * at, and many readers looking at roughly the same place still share one call and one cache
- * entry (ADR 0014 §4).
+ * Viewport from the query string; invalid values fall back to the whole world.
+ * Quantising happens once in `components/map/query.ts` so the cache key and the request agree.
  */
 function readViewport(url: URL): MapViewport {
   const read = (key: string, limit: number): number | null => {
@@ -69,11 +44,7 @@ export async function GET(
   const layer = findLayer(slug);
 
   if (!layer) {
-    /*
-     * 404 with a payload the client can render, not an empty body. A stale bookmark or a
-     * layer removed from the registry between page load and refresh must produce a state
-     * with a sentence on it, not a blank row.
-     */
+    // 404 with a renderable payload, e.g. a layer removed since page load.
     return NextResponse.json(
       {
         layerId: slug,
@@ -87,24 +58,13 @@ export async function GET(
   }
 
   /*
-   * The per-client ceiling. QA finding QV-05: this route was unauthenticated and unlimited,
-   * and `middleware.ts` matches only `/workspaces/*` and `/admin/*`, so nothing above it
-   * counted anything either. A loop against it drove a registry read and an audit row per
-   * request against the one table in the schema with no natural bound.
-   *
-   * `consumeSafely`, which fails OPEN on a database error. That is the right trade here and
-   * the wrong one inside `lib/connectors`: this limiter protects OUR box, and if the database
-   * is unreachable the request was going to fail anyway. The connector quota protects a third
-   * party's fair-use ceiling and therefore fails closed.
+   * Per-client limit; this route is unauthenticated and middleware doesn't cover it.
+   * Fails open on DB errors since it only protects our own server (connector quotas, which
+   * protect third parties, fail closed).
    */
   const budget = await consumeSafely("map-layer", clientSubject(request));
   if (!budget.ok) {
-    /*
-     * `quotaExhausted`, not `rateLimited`. The two are kept apart everywhere in this codebase
-     * because they have opposite fixes and a reader must not conclude the source is
-     * unreliable when we are the ones who stopped: `rateLimited` means the UPSTREAM refused
-     * us. Nothing upstream was involved here at all.
-     */
+    // `quotaExhausted` (we refused), not `rateLimited` (the upstream refused).
     return NextResponse.json(
       {
         layerId: layer.id,
@@ -127,11 +87,7 @@ export async function GET(
   const payload = await buildLayerPayload(layer, layerQuery(layer, viewport));
 
   return NextResponse.json(payload, {
-    /*
-     * No shared HTTP cache in front of this. The payload's own age is inside it and the
-     * server-side cache already enforces the source's cadence; a second cache with its own
-     * clock is the two-clocks problem ADR 0014 §5 rejects.
-     */
+    // The server-side cache already enforces cadence; an HTTP cache would add a second clock.
     headers: { "cache-control": "no-store" },
   });
 }

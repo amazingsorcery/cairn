@@ -1,13 +1,8 @@
 import { z } from "zod";
 
 /**
- * Validation for authored seed content in `content/`.
- *
- * The catalogue is the product's credibility. Seed loading fails loudly on a malformed or
- * under-specified record rather than skipping it, because a silently dropped entry is a
- * catalogue that quietly disagrees with its own verification log.
- *
- * The authoring contract is documented in docs/content/editorial-standard.md.
+ * Validation for authored seed content in `content/`. Seeding fails on a malformed record
+ * rather than skipping it.
  */
 
 export const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -31,25 +26,16 @@ export const inputTypes = [
   "address", "bssid", "free-text", "none",
 ] as const;
 
-/**
- * `none` is a real value, not a gap. Tradecraft and OPSEC entries — Tor Browser, Tails,
- * VeraCrypt, a password manager — produce no investigative output at all. They protect the
- * investigator rather than yielding evidence, and forcing a false output type on them
- * would misdescribe what they are for.
- */
+/** `none` is for OPSEC tools (Tor Browser, Tails, VeraCrypt) that produce no output. */
 export const outputTypes = [
   "records", "imagery", "timeline", "graph", "raw-dataset", "document", "map",
   "metadata", "archive", "report", "alerts", "none",
 ] as const;
 
 /**
- * Mirrors `COST_MODELS` in `db/schema.ts`. `freeWithRegistration` is a distinct and
- * operationally important tier: it means the operator learns who you are before you get a
- * result, which for this audience is a threat-model fact, not a pricing detail.
- *
- * Casing rule (ADR 0004): CHECK-constrained vocabularies that code branches on are
- * camelCase, matching `needsReview`. Open `text[]` vocabularies that content grows —
- * `inputTypes`, `outputTypes` — stay kebab-case. `costModel` is the former.
+ * Mirrors `COST_MODELS` in `db/schema.ts`. `freeWithRegistration` matters: the operator
+ * learns who you are. camelCase because it's a closed, CHECK-constrained vocabulary; open
+ * ones (`inputTypes`, `outputTypes`) are kebab-case.
  */
 export const costModels = [
   "free", "freeWithRegistration", "freemium", "paid", "subscription", "enterprise",
@@ -71,10 +57,7 @@ export const toolSchema = z
   .object({
     slug: slugSchema,
     name: z.string().min(1).max(120),
-    // HTTPS is not required. Some long-standing, genuinely useful tools are still served
-    // over plain HTTP, and silently dropping them would make the catalogue less honest,
-    // not safer. The UI surfaces the insecure transport instead — which is real
-    // operational information: never send investigation material over plaintext.
+    // HTTP allowed: some useful tools are HTTP-only. The UI warns about the transport.
     url: z
       .string()
       .url()
@@ -101,8 +84,7 @@ export const toolSchema = z
     openSource: z.boolean(),
   })
   .superRefine((tool, ctx) => {
-    // An uncertain entry that does not say what is uncertain is worse than no entry:
-    // it looks like a hedge rather than information.
+    // Lower-confidence entries must say what is uncertain.
     if (
       (tool.confidence === "medium" || tool.confidence === "needsReview") &&
       !tool.confidenceNotes?.trim()
@@ -152,11 +134,7 @@ export type CategoryFile = z.infer<typeof categoryFileSchema>;
 export type PlaybookFrontMatter = z.infer<typeof playbookFrontMatterSchema>;
 export type PlaybookStep = z.infer<typeof playbookStepSchema>;
 
-/**
- * Cross-file integrity. Individually valid records can still describe an incoherent
- * catalogue — a duplicated slug, or a playbook pointing at a tool that was omitted during
- * verification. Those are the failures that reach users as broken links.
- */
+/** Cross-file checks: duplicate slugs, unknown categories/tools, step numbering. */
 export function checkCatalogueIntegrity(
   files: readonly CategoryFile[],
   playbooks: readonly PlaybookFrontMatter[],
@@ -219,21 +197,14 @@ export function checkCatalogueIntegrity(
 }
 
 /* ------------------------------------------------------------------ *
- * Live pillar — camera registry (ADR 0011, ADR 0015)
+ * Live pillar — camera registry
  * ------------------------------------------------------------------ */
 
 /**
- * A published camera feed.
+ * Intentionally published camera feeds only. Never Shodan/Insecam-indexed or
+ * default-password cameras (unauthorised access under the CFAA / Computer Misuse Act).
  *
- * The line this schema enforces is *intentionally published* versus *merely reachable*.
- * Everything here is a feed an operator chose to publish, normally under a named licence.
- * Nothing Shodan-indexed, nothing on Insecam, nothing behind a default password: viewing
- * one of those is unauthorised access under the CFAA and the Computer Misuse Act, and it
- * is frequently a domestic interior.
- *
- * `embedPermitted` defaults to the safe side by construction — the refinements below make
- * it impossible to record an embed without also recording the URL and the reason it is
- * allowed. Link-out is always safe; a wrong embed misrepresents a third party's terms.
+ * An embed requires both a URL and a recorded reason; link-out is always safe.
  */
 export const cameraSubjects = [
   "traffic",
@@ -274,7 +245,7 @@ export const cameraSchema = z
       });
     }
     if (!camera.embedPermitted && camera.embedUrl) {
-      // Storing a URL we are not permitted to load is how it eventually gets loaded.
+      // Don't store a URL we may not load.
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["embedUrl"],

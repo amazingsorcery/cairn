@@ -20,36 +20,15 @@ import { formatTimestamp } from "@/lib/utils";
 import { isoTimestamp } from "./dates";
 
 /**
- * The live map features saved into a case.
+ * Live map features saved into a case. Each row is a snapshot; upstream sources keep no
+ * history, so there is nothing live behind it.
  *
- * ## Every row is a snapshot, and the copy says so once rather than per row
+ * - Shows both the upstream observed time and our saved time.
+ * - Attribution (ODbL, CC BY, TfL terms) is stored on the row and rendered with it, so it
+ *   survives a connector being retired.
+ * - Any precision caveat sits directly under the coordinate.
  *
- * There is no live half to any of this and no "no longer available" state, because the
- * referent is one observation an upstream published and has since forgotten (ADR 0025). A
- * saved tool has a catalogue entry behind it that can be re-checked; a saved feature has
- * nothing behind it at all. The row IS the record.
- *
- * ## Two timestamps, never one
- *
- * **Observed** is the upstream's instant — the whole value of the row, because a saved feature
- * is a claim about a moment. **Saved** is ours. A single date here would be a claim taken from
- * the wrong clock, so both are printed and each is labelled.
- *
- * ## The credit is rendered with the feature
- *
- * ODbL, CC BY and the TfL terms make attribution a condition of use (ADR 0011 rule 2), and it
- * is captured on the row rather than joined from `connectors` so it survives a source being
- * retired. A footer line would not satisfy any of them.
- *
- * ## The precision caveat sits under the coordinate it qualifies
- *
- * In a full sentence, not a badge. A reader about to write "the warning is at 38.5N, 122.9W"
- * has to be told here that it is an administrative centroid; a footnote elsewhere on the page
- * is a caveat nobody carries into their notes.
- *
- * Removing is a one-way door — there is no soft delete — so it goes through a confirmation
- * naming the item, exactly as `saved-tools.tsx` does. It is the same action, because a
- * `mapFeature` is still a `workspace_items` row and the snapshot cascades from it.
+ * Removal is a hard delete via the same action as `saved-tools.tsx`.
  */
 
 export interface SavedFeaturesProps {
@@ -182,11 +161,7 @@ export function SavedFeatures({ items }: SavedFeaturesProps) {
               </p>
             ) : null}
 
-            {/*
-              The credit, verbatim, as it was owed at save time. Not joined from `connectors`:
-              a source we retire, or a registry row an operator deletes, must not take a
-              reader's evidence — or its licence terms — with it (ADR 0025).
-            */}
+            {/* Attribution as captured at save time, not joined from `connectors`. */}
             <p className="text-muted-foreground mt-2 text-xs leading-relaxed">
               {item.sourceName} · {item.attribution} · {item.licence}
             </p>

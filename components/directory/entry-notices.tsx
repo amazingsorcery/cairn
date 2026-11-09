@@ -7,35 +7,19 @@ import { isInsecureUrl } from "@/lib/content/schema";
 import { cn, displayHost, verificationAge } from "@/lib/utils";
 
 /**
- * The three notices that sit beside an entry's confidence chip and verification line, plus
- * the outbound link itself.
+ * Notices shown beside an entry's confidence chip and verification line, plus the outbound
+ * link.
  *
- * `states.md` §3.4 is the load-bearing rule here: **stale and `needsReview` are orthogonal
- * claims and must not look alike.**
- *
- *   | | stale record | needsReview |
- *   | what it says | *when* we last looked | *how sure* we are of what we found |
- *   | where | the last-verified line only | the confidence chip only |
- *   | colour | `--warning` | `--confidence-review` |
- *   | icon | `Clock` | `ShieldQuestion` |
- *
- * Both can be true of one entry, and rendering them in one colour or one icon would collapse
- * two different claims into one. For this product that is a correctness bug, not a styling
- * preference. Neither is a warning that the tool is bad: no entry in this product carries
- * such a warning. Real legal risk is stated in `legalNotes`, which is a separate mechanism.
+ * Stale (when we last looked: `--warning`, `Clock`) and `needsReview` (how sure we are:
+ * `--confidence-review`, `ShieldQuestion`) are separate claims and must look different.
+ * Neither says the tool is bad; legal risk goes in `legalNotes`.
  */
 
 /**
- * The staleness threshold from `states.md` §3.2, in days.
+ * Staleness threshold in days. Display only; never written back to `confidence`.
  *
- * It is **presentational only** and is never written back to `confidence`: an automatic
- * downgrade would be a claim no human made (ADR 0007 §5).
- *
- * 180 is this document's number. `verificationAge()` in `lib/utils.ts` ships a different,
- * three-tier scale (90 / 365) which `VerificationDate` uses for its colour. The two coexist
- * on purpose for now — the colour ramp is a gradient of concern, this is the single threshold
- * at which we say a sentence — and `states.md` §0 flags the reconciliation as the
- * content-strategist's to own. Recorded in `docs/frontend/HANDOFF-directory.md`.
+ * Differs from the 90/365 tiers `verificationAge()` uses for `VerificationDate` colour; this
+ * is the single point where we show a notice.
  */
 export const STALE_AFTER_DAYS = 180;
 
@@ -44,12 +28,7 @@ export function isStaleRecord(lastVerifiedAt: Date | string | null): boolean {
   return verificationAge(lastVerifiedAt).days > STALE_AFTER_DAYS;
 }
 
-/**
- * `states.md` §3.2. The subject of every sentence is OUR CHECK, never the tool.
- *
- * Not "this tool may be unreliable". Not "outdated". No warning icon on the tool's name. The
- * tool is fine; our record is old, and those are different claims.
- */
+/** Copy is about our check being old, not about the tool. */
 export function StaleRecordNotice({ lastVerifiedAt }: { lastVerifiedAt: Date | string | null }) {
   if (!isStaleRecord(lastVerifiedAt)) return null;
 
@@ -67,11 +46,7 @@ export function StaleRecordNotice({ lastVerifiedAt }: { lastVerifiedAt: Date | s
   );
 }
 
-/**
- * `states.md` §3.3. Note the variant: `default`, never `warning`. This is a statement about
- * our record, and dressing it in the same colour as the staleness notice would make the two
- * claims indistinguishable (§3.4).
- */
+/** `default` variant, not `warning`, so it doesn't look like the staleness notice. */
 export function NeedsReviewNotice({ reliabilityNotes }: { reliabilityNotes: string | null }) {
   return (
     <Alert variant="default" className="border-confidence-review">
@@ -97,16 +72,8 @@ export function NeedsReviewNotice({ reliabilityNotes }: { reliabilityNotes: stri
 }
 
 /**
- * `states.md` §3.8 and architecture HANDOFF §9.7.
- *
- * A statement of fact, not a recommendation. We do not tell the reader whether to click — we
- * tell them what the transport does, because for this audience that is operational
- * information: anyone on the path can read the request, and the request itself reveals what
- * is being looked into.
- *
- * Detected from the stored URL scheme. The URL is stored accurately and never silently
- * upgraded: a directory that quietly rewrote `http://` to `https://` would be less honest,
- * not safer, and would break entries whose operators serve no TLS at all.
+ * Notice for plain-HTTP URLs: the request is visible in transit. URLs are never rewritten to
+ * `https://`, which would break sites without TLS.
  */
 export function InsecureTransportNotice({ url }: { url: string }) {
   if (!isInsecureUrl(url)) return null;
@@ -124,17 +91,10 @@ export function InsecureTransportNotice({ url }: { url: string }) {
 }
 
 /**
- * The outbound catalogue link.
+ * Outbound catalogue link showing the host. `noreferrer` hides which page sent the reader.
  *
- * The host is **visible**, not hidden behind the tool's name, so a reader sees where they are
- * being sent before they go. `rel="noopener noreferrer"`: `noopener` denies the destination a
- * handle on our window, `noreferrer` means it is not told which page sent the reader — which
- * for this audience is the more important half.
- *
- * Deliberately without `nofollow ugc` — see `docs/frontend/HANDOFF-directory.md`. Shell
- * handoff §10.5 specifies that pair for Markdown bodies and user-authored content; a
- * catalogue URL is an editorially verified primary source, and marking it as untrusted
- * user-generated content would misdescribe the one link the entry exists to carry.
+ * No `nofollow ugc`: those are for user-authored content, and catalogue URLs are
+ * editorially verified.
  */
 export function ExternalToolLink({
   url,

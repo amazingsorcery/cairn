@@ -12,30 +12,15 @@ import { isSignInEnabled } from "@/lib/session-surface";
 import "./globals.css";
 
 /**
- * The application shell.
+ * Application shell.
  *
- * FONTS — `docs/brand/type.md` §3, `docs/brand/HANDOFF.md` §4
- * ----------------------------------------------------------
- * Three files: Sans 400, Sans 600, Mono 400. Latin only. No italics, no Sans 500/700, no
- * Mono 600. Adding a weight needs a reason written into `type.md` first, because this
- * ships to a 2–4 GB VPS and to a reader on a train.
+ * Fonts: Sans 400/600 and Mono 400, Latin only, to keep the payload small. `next/font`
+ * self-hosts them at build time so browsers never request Google (which would leak IP and
+ * referrer); don't swap in a `fonts.googleapis.com` link.
  *
- * `next/font/google` downloads the files at build time and self-hosts them from our own
- * origin, so **no reader's browser ever makes a request to Google**. That is a requirement
- * from product-brief §3.2, not an optimisation: a third-party font request would leak every
- * reader's IP and referrer to a third party, and Persona C would treat that as
- * disqualifying. Do not replace this with a `<link>` to `fonts.googleapis.com`.
- *
- * THE `-loaded` SUFFIX IS LOAD-BEARING. `app/tokens.css` §5 declares `--font-sans` and
- * `--font-mono` as the full fallback stacks, each beginning with `var(--font-*-loaded)`.
- * Passing `variable: "--font-sans"` here would make that token reference itself, which is
- * invalid at computed-value time and would silently drop the whole stack. `docs/brand/
- * HANDOFF.md` §4 shows the un-suffixed form; `tokens.css` is the shipped contract and wins.
- *
- * The variable classes go on `<html>`, not `<body>`. `--font-sans` is declared on `:root`
- * and a `var()` inside a custom property is resolved on the element that declares it — so
- * `--font-sans-loaded` must exist at `:root` too, or `--font-sans` resolves to nothing and
- * every element falls back to the browser's default face.
+ * The `-loaded` suffix matters: `tokens.css` defines `--font-sans` as a stack starting with
+ * `var(--font-sans-loaded)`, so `variable: "--font-sans"` would be self-referential. The
+ * classes go on `<html>` because `--font-sans` is declared on `:root`.
  */
 const fontSans = IBM_Plex_Sans({
   subsets: ["latin"],
@@ -56,8 +41,7 @@ export const metadata: Metadata = rootMetadata;
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  // Both themes are real and both are supported, so the browser is told so — this is what
-  // makes form controls and scrollbars follow the page instead of fighting it.
+  // Lets form controls and scrollbars follow the page theme.
   colorScheme: "dark light",
   themeColor: [
     { media: "(prefers-color-scheme: dark)", color: "#0b0f15" },
@@ -71,47 +55,26 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       lang="en"
       dir="ltr"
       className={`${fontSans.variable} ${fontMono.variable}`}
-      // The boot script below writes `data-theme` before React hydrates, so the server
-      // markup and the client DOM legitimately differ on this one attribute.
+      // The boot script sets `data-theme` before hydration.
       suppressHydrationWarning
     >
       <body className="flex min-h-dvh flex-col bg-background text-foreground">
         {/*
-          Theme, applied before first paint. Inline and synchronous on purpose: a stored
-          choice and `prefers-color-scheme` are only readable on the client, and anything
-          React renders runs after the browser has already painted. ADR 0016 §4–§5.
-
-          React writes the children of a `<script>` element as raw text — it escapes only a
-          literal closing-script sequence — so this needs no `dangerouslySetInnerHTML`, and
-          therefore needs no lint exception either. ADR 0016 §5 grants one for exactly this
-          script; it turned out not to be necessary. See docs/frontend/HANDOFF-shell.md §8.
-
-          The content is a module-level string literal in `components/layout/theme.ts` with
-          nothing user-controlled interpolated into it, and nothing ever may be.
+          Sets the theme before first paint (inline, synchronous). React writes `<script>`
+          children as raw text, so no `dangerouslySetInnerHTML` is needed. The content is a
+          constant; never interpolate user input into it.
         */}
         <script>{THEME_INIT_SCRIPT}</script>
 
         {/*
-          THE SESSION PROVIDER IS CONDITIONAL, and this is the one place the deployment mode
-          reaches the whole tree.
-
-          In public-only mode (ADR 0032) no provider is configured, so no session can exist.
-          The two leaves that read one — the nav's session links and the account control —
-          are not rendered at all in that mode, so mounting the provider would buy nothing
-          and cost one `/api/auth/session` request per page view for an answer that is
-          always "nobody". `components/layout/site-nav.tsx` and `account-menu.tsx` are split
-          so that `useSession` is never called rather than merely ignored, which is what
-          makes dropping it safe: `useSession` throws outside a provider, and their tests
-          render them without one.
+          In public-only mode there's no session, so skip the provider and its
+          `/api/auth/session` request. The components that call `useSession` aren't rendered
+          in that mode (it throws outside a provider).
         */}
         <HeaderSessionProvider enabled={isSignInEnabled()}>
           <SkipLink />
           <SiteHeader />
-          {/*
-            `tabIndex={-1}` is what makes the skip link actually move focus rather than only
-            scrolling. Without it Safari and Firefox jump the viewport and leave the focus
-            ring back in the header, which is the classic broken skip link.
-          */}
+          {/* `tabIndex={-1}` so the skip link moves focus in Safari/Firefox, not just scroll. */}
           <main id="main" tabIndex={-1} className="flex-1">
             {children}
           </main>

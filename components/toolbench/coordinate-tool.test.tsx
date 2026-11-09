@@ -5,12 +5,8 @@ import { describe, expect, it } from "vitest";
 import { CoordinateTool } from "./coordinate-tool";
 
 /**
- * A smoke test that the client component actually computes, and that the accessibility
- * contract in `docs/frontend/HANDOFF-shell.md` section 10.1 holds.
- *
- * The conversions themselves are covered exhaustively in `lib/toolbench/*.test.ts` against
- * published reference values. What is tested here is the wiring: that typing produces
- * output, that the output is labelled, and that the page has exactly one live region.
+ * Wiring smoke test: typing produces labelled output and the page has one live region.
+ * Conversions are covered in `lib/toolbench/*.test.ts`.
  */
 describe("the coordinate tool", () => {
   it("converts what a reader types into every notation", async () => {
@@ -23,8 +19,7 @@ describe("the coordinate tool", () => {
     expect(results).not.toBeNull();
     if (results === null) return;
 
-    // The same point verified against Snyder's worked example and the Open Location Code
-    // specification in lib/toolbench/*.test.ts, arriving here through the UI.
+    // Same reference point as the lib tests (Snyder, Open Location Code spec).
     expect(within(results).getByText("51°28'40.54\"N 000°00'05.56\"W")).toBeInTheDocument();
     expect(within(results).getByText("30U 708210mE 5707239mN")).toBeInTheDocument();
     expect(within(results).getByText("30U YC 08210 07238")).toBeInTheDocument();
@@ -44,11 +39,9 @@ describe("the coordinate tool", () => {
     const user = userEvent.setup();
     render(<CoordinateTool />);
 
-    // Two digits per axis is a 1 km box, not a point. Reporting its centre to six decimal
-    // places without saying so would invent three orders of magnitude of precision.
+    // Two digits per axis is a 1 km box, not a point.
     await user.type(screen.getByLabelText("Coordinate"), "30U YC 08 07");
-    // The number and its unit are separate text nodes inside one <strong>, so match on the
-    // element's whole text rather than on a fragment of it.
+    // Number and unit are separate text nodes in one <strong>; match the whole text.
     expect(
       await screen.findByText(
         (_content, element) => element?.tagName === "STRONG" && element.textContent === "1000 m",
@@ -68,12 +61,11 @@ describe("the coordinate tool", () => {
     expect(screen.getByLabelText("Coordinate")).toHaveAttribute("aria-invalid", "true");
   });
 
-  it("keeps exactly one polite live region, as the shell handoff requires", async () => {
+  it("keeps exactly one polite live region", async () => {
     const user = userEvent.setup();
     const { container } = render(<CoordinateTool />);
 
-    // In the DOM before any content arrives — a region created alongside its content
-    // announces nothing.
+    // Present before any content, since a region created with its content announces nothing.
     expect(container.querySelectorAll('[aria-live="polite"]')).toHaveLength(1);
 
     await user.type(screen.getByLabelText("Coordinate"), "51.477928, -0.001545");
@@ -88,8 +80,7 @@ describe("the coordinate tool", () => {
     render(<CoordinateTool />);
     await user.type(screen.getByLabelText("Coordinate"), "51.477928, -0.001545");
 
-    // The gate states the cost before the click, because opening the map tells a third
-    // party which coordinate is being investigated.
+    // Opening the map tells the tile server which coordinate is being looked at.
     expect(
       await screen.findByRole("button", { name: /show this point on a map/i }),
     ).toBeInTheDocument();

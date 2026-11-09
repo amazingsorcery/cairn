@@ -3,17 +3,10 @@
 import { useEffect } from "react";
 
 /**
- * `docs/design/flows.md` M2 — the `beforeunload` guard.
+ * `beforeunload` guard, armed only while there is unsaved input.
  *
- * The browser's own dialog is the only thing that reliably survives a tab close, so it is
- * what we use rather than a prettier one that does not fire. It is armed only while there
- * is genuinely unsaved input and disarmed the moment a save lands: a guard that fires when
- * nothing is at stake gets dismissed reflexively, and then it is not a guard.
- *
- * NOTHING IS WRITTEN TO `localStorage` AS A BACKUP. A case note in browser storage on a
- * shared machine is a threat-model failure for the audience this product is for
- * (`docs/design/states.md` §7.4). The guard and the autosave are the mitigation; local
- * persistence is not on the table.
+ * No `localStorage` backup: case notes in browser storage on a shared machine are a privacy
+ * risk.
  */
 export function useUnsavedGuard(dirty: boolean): void {
   useEffect(() => {

@@ -3,15 +3,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 /**
- * Every variable the application reads must be documented in `.env.example`.
- *
- * This exists because it already went wrong once: `RATE_LIMIT_SECRET` was added to the Zod
- * schema as a required value with no default, and never added to `.env.example`. Anyone
- * following the runbook would have built a `.env` without it, and the first deploy would
- * have refused to boot — a guaranteed failure, discovered at the worst possible moment, on
- * a fresh server, with a message about a variable they had never heard of.
- *
- * A doc that drifts from the code is worse than no doc, because people trust it.
+ * Every variable the application reads must be documented in `.env.example`, or a fresh
+ * deploy can fail to boot on a missing required variable.
  */
 
 const schemaSource = readFileSync(join(process.cwd(), "lib", "env.schema.ts"), "utf8");

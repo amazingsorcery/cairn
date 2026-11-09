@@ -4,23 +4,10 @@ import { ConfidenceChip } from "@/components/confidence-chip";
 import type { ConfidenceLevel } from "@/db/schema";
 
 /**
- * Where a confidence chip points.
+ * Links from confidence chips to their definitions on `/methodology`.
  *
- * `/methodology` is load-bearing (ADR 0007 §4, architecture HANDOFF §9.4): it is the page
- * that defines what each confidence level means, what the 1–5 reliability scale means, and
- * what `lastVerifiedAt` promises. Every confidence badge in the product links to the
- * matching anchor on it.
- *
- * The three spellings are all correct in their own layer and this map is the single
- * translation point between two of them, exactly as `components/confidence-chip.tsx` is
- * for the third:
- *
- *   stored value   `needsReview`   (camelCase — `CONFIDENCE_LEVELS` in `db/schema.ts`)
- *   URL fragment   `needs-review`  (kebab — it is a URL fragment)
- *   label          "Needs review"  (`confidenceLabel()`)
- *
- * Typing the map as `Record<ConfidenceLevel, string>` means adding a fifth level to the
- * schema fails the build here rather than producing a chip that links nowhere.
+ * Maps stored values (`needsReview`) to URL fragments (`needs-review`). Typed as
+ * `Record<ConfidenceLevel, string>` so a new level fails the build here.
  */
 
 export const METHODOLOGY_PATH = "/methodology";
@@ -55,13 +42,8 @@ export interface ConfidenceChipLinkProps {
 }
 
 /**
- * The confidence chip as a link to its definition. **Use this wherever an entry appears** —
- * directory card, detail page, search result row, camera entry — rather than rendering
- * `ConfidenceChip` bare. A chip that states a level without a route to what the level means
- * is a claim the reader cannot check, which is the one thing this product may not do.
- *
- * The chip is never the only signal of uncertainty in a row: the last-verified line always
- * sits beside it (`docs/design/wireframes/00-conventions.txt`).
+ * Confidence chip linked to its definition. Use this instead of a bare `ConfidenceChip`
+ * wherever an entry appears.
  */
 export function ConfidenceChipLink({ level, showMeter, className }: ConfidenceChipLinkProps) {
   return (

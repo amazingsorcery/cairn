@@ -1,32 +1,16 @@
 /**
- * Behavioural verification of the backend against a real database.
- *
- * `scripts/verify-db.ts` reads back what the migrations CREATED. This reads back what the
- * code DOES: the credibility CHECK actually firing, the `search_keywords` fan-out actually
- * recomputing, the rate-limit upsert actually serialising under concurrency, the ownership
- * predicate actually returning nothing to a non-owner, and the deferrable constraint
- * actually tolerating a swap while still rejecting a duplicate.
+ * Behavioural checks against a real database: CHECK constraints firing, search_keywords
+ * fan-out, rate-limit concurrency, workspace ownership, and the deferred step constraint.
+ * (`scripts/verify-db.ts` checks what migrations created.)
  *
  *   set -a; . ./.env.local; set +a
  *   DATABASE_POOL_MAX=1 ./node_modules/.bin/tsx scripts/verify-backend.ts
  *
- * Everything it writes it deletes. It is NOT safe against production — it inserts throwaway
- * users and tools — and refuses to run when NODE_ENV=production. Exits non-zero on failure,
- * so CI can gate on it once a `postgres:16` service is available.
+ * Cleans up after itself, refuses NODE_ENV=production, exits non-zero on failure.
  *
- * ── TWO STRUCTURAL CONCESSIONS TO THE LOCAL HARNESS ──────────────────────────
- * `scripts/dev-db.ts` is PGlite behind a TCP wire-protocol shim, and it diverges from real
- * PostgreSQL in two ways that shape this file:
- *
- *   1. **A connection is unusable after any statement error.** The error itself arrives
- *      intact — correct SQLSTATE, correct constraint name — and then the socket resets.
- *      Real PostgreSQL keeps the session. So every probe that EXPECTS a rejection runs on
- *      its own short-lived connection, in PHASE A, and issues exactly one failing statement.
- *   2. **It is single-connection.** So phase A finishes and closes before the pooled client
- *      in `lib/db.ts` is ever opened. Phase B then uses the application's own pool.
- *
- * Both concessions are harness-only. Against `postgres:16` the same assertions hold either
- * way; this structure simply also works locally.
+ * Structured for the local PGlite harness (`scripts/dev-db.ts`), which drops the connection
+ * after any statement error and allows only one connection: phase A runs each expected
+ * rejection on its own short-lived connection, then phase B uses the app pool.
  */
 import { Client } from "pg";
 import { and, eq, sql } from "drizzle-orm";
@@ -94,11 +78,8 @@ async function section(title: string, body: () => Promise<void>): Promise<void> 
 type Rejection = { accepted: boolean; code: string; constraint: string };
 
 /**
- * Open a connection, read what the probe needs, run ONE statement expected to fail, close.
- *
- * `setup` runs before the failing statement and on the same connection, because after the
- * failure the connection is gone (see the header note). Nothing here touches the
- * application's pool, so only one connection to the harness is ever open.
+ * Open a connection, run `setup`, run one statement expected to fail, close. Setup shares
+ * the connection because it's gone after the failure.
  */
 async function probe<T>(
   setup: (client: Client) => Promise<T>,
@@ -106,8 +87,7 @@ async function probe<T>(
   cleanup?: (client: Client, context: T) => Promise<unknown>,
 ): Promise<Rejection> {
   const client = new Client({ connectionString: env.DATABASE_URL });
-  // The socket reset that follows the error would otherwise surface as an unhandled
-  // 'error' event and take the process down.
+  // The post-error socket reset would otherwise crash the process.
   client.on("error", () => undefined);
   await client.connect();
 
@@ -168,7 +148,7 @@ function toolProbe(
 }
 
 async function phaseA(): Promise<void> {
-  await section("1. The credibility gate (ADR 0007, HANDOFF §11.4)", async () => {
+  await section("1. The credibility gate", async () => {
     // (a) published with neither a verification date nor a reliability rating
     const a = await toolProbe("verify-probe-none", "published", null, null);
     check(
@@ -189,7 +169,7 @@ async function phaseA(): Promise<void> {
     const c = await toolProbe("verify-probe-complete", "published", new Date(), 3);
     check("published tool with both is accepted", c.accepted, c.constraint);
 
-    // (d) a draft may be half-finished (ADR 0007 §2)
+    // (d) a draft may be half-finished
     const d = await toolProbe("verify-probe-draft", "draft", null, null);
     check(
       "draft tool with neither is accepted (drafts may be half-finished)",
@@ -225,7 +205,7 @@ async function phaseA(): Promise<void> {
     );
   });
 
-  await section("2. The audit log cannot hold a raw identifier (ADR 0013 §2)", async () => {
+  await section("2. The audit log cannot hold a raw identifier", async () => {
     const g = await probe(
       async (client) => {
         const r = await client.query<{ id: string }>("select id from connectors limit 1");
@@ -249,13 +229,8 @@ async function phaseA(): Promise<void> {
     );
   });
 
-  await section("2b. rate_limits.key cannot hold a raw identifier (QA Q-05)", async () => {
-    /**
-     * The auditor inserted `signin-email:victim@example.com` and a dotted quad, and both
-     * SUCCEEDED — `deriveKey` was the only thing stopping them, and `consume` takes a plain
-     * string subject. ADR 0009's whole point is that the subject is unreadable, and a
-     * convention is not a guarantee. Migration 0003 adds the CHECK; these prove it bites.
-     */
+  await section("2b. rate_limits.key cannot hold a raw identifier", async () => {
+    /** `consume` takes a plain string, so the CHECK from migration 0003 is the real guard. */
     const window = "now()";
     const attempt = (key: string) =>
       probe(
@@ -305,14 +280,8 @@ async function phaseA(): Promise<void> {
     );
   });
 
-  await section("2c. A cooldown refusal audits as rateLimited, not quotaDenied (Q-02)", async () => {
-    /**
-     * `quotaDenied` and `rateLimited` are different operational facts: one is OUR ceiling
-     * refusing the caller, the other is THEIRS refusing us. They point at opposite fixes, and
-     * an operator reading the health board at 3am must not have to tell them apart from
-     * `upstream_status`. Migration 0005 added the outcome; this proves the database accepts
-     * it, that the old value is still valid, and that nonsense is still rejected.
-     */
+  await section("2c. A cooldown refusal audits as rateLimited, not quotaDenied", async () => {
+    /** Our quota refusing vs. upstream refusing us are separate outcomes. */
     const connectorId = async (client: Client) => {
       const r = await client.query<{ id: string }>("select id from connectors limit 1");
       const id = r.rows[0]?.id;
@@ -367,12 +336,8 @@ async function phaseA(): Promise<void> {
     );
   });
 
-  await section("3. Deferred, not disabled (HANDOFF §6, §11.8)", async () => {
-    /**
-     * One UPDATE that duplicates an existing `order_index`, with no compensating update.
-     * If the constraint were simply absent this would be ACCEPTED. Section 7 in phase B
-     * proves the other half: that a genuine swap inside one transaction succeeds.
-     */
+  await section("3. Deferred, not disabled", async () => {
+    /** A lone duplicate order_index must fail; phase B checks that a swap succeeds. */
     const duplicate = await probe(
       async (client) => {
         const r = await client.query<{ id: string; order_index: number }>(
@@ -409,7 +374,7 @@ async function phaseA(): Promise<void> {
  * ================================================================== */
 
 async function phaseB(): Promise<void> {
-  await section("4. search_keywords fan-out on tag rename (HANDOFF §11.6)", async () => {
+  await section("4. search_keywords fan-out on tag rename", async () => {
     const [tag] = await db
       .select({ id: tags.id, slug: tags.slug, name: tags.name })
       .from(tags)
@@ -422,12 +387,7 @@ async function phaseB(): Promise<void> {
 
     const affected = await toolIdsForTags(db, [tag.id]);
 
-    /**
-     * The rename and the recompute run inside ONE transaction that COMMITS, and the
-     * assertions read the committed result. That is the property under test: after the
-     * transaction that renamed the tag, every carrier's `search_keywords` already reflects
-     * the new name, so search is never briefly wrong.
-     */
+    /** Rename and recompute commit together, so search is never briefly stale. */
     await db.transaction(async (tx) => {
       await tx
         .update(tags)
@@ -471,7 +431,7 @@ async function phaseB(): Promise<void> {
     check("renaming back removes the probe name from every carrier", (restored?.n ?? -1) === 0);
   });
 
-  await section("5. Search behaviour and query plan (search.md §6, §8)", async () => {
+  await section("5. Search behaviour and query plan", async () => {
     const results = await search({ q: "certificate transparency", page: 1 });
     check(
       "full-text search returns ranked hits",
@@ -494,7 +454,7 @@ async function phaseB(): Promise<void> {
 
     const typo = await search({ q: "shodann", page: 1 });
     check(
-      "the trigram fallback fires only when the ranked groups are empty (search.md §5)",
+      "the trigram fallback fires only when the ranked groups are empty",
       typo.tools.length === 0 ? typo.didYouMean.length > 0 : typo.didYouMean.length === 0,
       typo.tools.length === 0
         ? `did-you-mean: ${typo.didYouMean.map((h) => h.slug).join(", ") || "none"}`
@@ -509,10 +469,8 @@ async function phaseB(): Promise<void> {
     );
 
     /**
-     * The plan. ADVISORY, because it is size-dependent: below a few hundred rows the planner
-     * correctly prefers a sequential scan, and search.md §8 says so explicitly. What CAN be
-     * asserted locally is that the GIN index exists and is usable — the part a
-     * `drizzle-kit push` would silently destroy.
+     * Advisory only: small tables correctly get a seq scan. The forced check below asserts
+     * the GIN index exists and is usable.
      */
     const plan = await db.execute<{ "QUERY PLAN": string }>(sql`
       explain
@@ -536,14 +494,12 @@ async function phaseB(): Promise<void> {
       advisory(
         "EXPLAIN prefers a sequential scan",
         `${published?.n ?? 0} published rows is below the size at which the planner picks ` +
-          "the GIN index (search.md §8). This is NOT a pass. CI must assert " +
+          "the GIN index. This is NOT a pass. CI must assert " +
           "'Bitmap Index Scan on tools_search_vector_idx' against postgres:16.",
       );
     }
 
-    // The `status` predicate is omitted here deliberately: on a small table the planner picks
-    // the cheap btree on `status` even with `enable_seqscan` off, which proves nothing about
-    // the GIN index. A bare `@@` query isolates it.
+    // No `status` predicate: the planner would pick the status btree instead.
     await db.execute(sql`set enable_seqscan = off`);
     const forced = await db.execute<{ "QUERY PLAN": string }>(sql`
       explain select slug from ${tools}
@@ -560,7 +516,7 @@ async function phaseB(): Promise<void> {
     );
   });
 
-  await section("6. Rate limiting (ADR 0009, HANDOFF §5, §11.12)", async () => {
+  await section("6. Rate limiting", async () => {
     const subject = `verify-probe-${Date.now()}@example.invalid`;
     const policy = { limit: 3, windowSeconds: 60 };
     const now = new Date();
@@ -578,8 +534,7 @@ async function phaseB(): Promise<void> {
     const over = await consume("signin-email", subject, { policy, now });
     check("requests past the limit are refused", !over.ok, `count ${over.count} > ${policy.limit}`);
 
-    // Ten simultaneous calls must produce ten DISTINCT counts. A read-modify-write limiter
-    // produces ten 1s here and lets ten requests through on a limit of one.
+    // Concurrent calls must yield distinct counts (no lost updates).
     const parallelSubject = `verify-parallel-${Date.now()}@example.invalid`;
     const parallel = await Promise.all(
       Array.from({ length: 10 }, () =>
@@ -601,7 +556,7 @@ async function phaseB(): Promise<void> {
     const nextWindow = await consume("signin-email", subject, { policy, now: later });
     check("a new window starts a new counter", nextWindow.count === 1, `count ${nextWindow.count}`);
 
-    // HANDOFF §11.12, asserted against what is actually stored.
+    // Check what's actually stored.
     const stored = await db.execute<{ key: string }>(sql`select key from rate_limits`);
     check(
       "no stored rate_limits.key contains an @ or a dotted quad",
@@ -637,7 +592,7 @@ async function phaseB(): Promise<void> {
     `);
   });
 
-  await section("7. Workspace ownership is a SQL predicate (HANDOFF §11.2, §11.7)", async () => {
+  await section("7. Workspace ownership is a SQL predicate", async () => {
     const stamp = Date.now();
     const [owner] = await db
       .insert(users)
@@ -699,11 +654,7 @@ async function phaseB(): Promise<void> {
 
       const asOwner = await getWorkspace(workspace.id, owner.id);
       check("the owner sees the workspace", asOwner !== null);
-      /**
-       * QA finding Q-15: confidence and last-verified now arrive JOINED on the item rows.
-       * They used to cost one cached `getToolBySlug` per saved tool — two round trips each
-       * after the read split — which a warm cache hid and any editorial publish restored.
-       */
+      /** Confidence and last-verified are joined onto item rows, not fetched per tool. */
       const savedTool = asOwner?.savedTools.find((item) => item.toolSlug !== null);
       check(
         "a saved tool carries its CURRENT confidence and last-verified date, joined",
@@ -742,7 +693,7 @@ async function phaseB(): Promise<void> {
         (await assertOwnsWorkspace(workspace.id, other.id)) === null,
       );
 
-      // ADR 0008 / HANDOFF §11.7 — an editorial delete must not remove a line from a case.
+      // An editorial delete must not remove a line from a case.
       const [probeTool] = await db
         .insert(tools)
         .values({
@@ -797,7 +748,7 @@ async function phaseB(): Promise<void> {
     }
   });
 
-  await section("8. Reordering steps inside one transaction (HANDOFF §6, §11.8)", async () => {
+  await section("8. Reordering steps inside one transaction", async () => {
     const [playbook] = await db.select({ id: playbooks.id }).from(playbooks).limit(1);
     if (!playbook) throw new Error("no playbooks — run `pnpm db:seed`");
 
@@ -812,11 +763,7 @@ async function phaseB(): Promise<void> {
     const [first, second] = before;
     if (!first || !second) throw new Error("playbook has fewer than two steps");
 
-    /**
-     * Two UPDATEs that transiently duplicate an `order_index`, inside ONE transaction.
-     * Without `DEFERRABLE INITIALLY DEFERRED` the FIRST update aborts immediately — which is
-     * precisely the drag-to-reorder failure HANDOFF §6 exists to prevent.
-     */
+    /** Transiently duplicates an order_index; only works because the constraint is deferred. */
     let swapped = true;
     try {
       await db.transaction(async (tx) => {
@@ -855,7 +802,7 @@ async function phaseB(): Promise<void> {
     );
   });
 
-  await section("9. Public reads filter status='published' (HANDOFF §7, §11.3)", async () => {
+  await section("9. Public reads filter status='published'", async () => {
     const [published] = await db
       .select({ slug: tools.slug })
       .from(tools)
@@ -886,7 +833,7 @@ async function phaseB(): Promise<void> {
     check("the probe restored the row's status", restored?.status === "published");
   });
 
-  await section("10. Split reads make the partial states reachable (states.md §3.6, §8.3)", async () => {
+  await section("10. Split reads make the partial states reachable", async () => {
     const [published] = await db
       .select({ slug: tools.slug })
       .from(tools)
@@ -908,14 +855,13 @@ async function phaseB(): Promise<void> {
       `${citations.length} citations`,
     );
 
-    // §3.6: the entry loaded, the "used in" query failed. Reachable only if the two halves
-    // can be awaited independently.
+    // Entry loads while the "used in" query fails; needs independently awaitable halves.
     const toolPartial = await Promise.allSettled([
       getToolRecord(published.slug),
       Promise.reject(new Error("simulated citation failure")),
     ]);
     check(
-      "states.md §3.6 is reachable: a citation failure leaves the entry intact",
+      "a citation failure leaves the entry intact",
       toolPartial[0]?.status === "fulfilled" && toolPartial[1]?.status === "rejected",
     );
 
@@ -944,12 +890,11 @@ async function phaseB(): Promise<void> {
       Promise.reject(new Error("simulated playbook group failure")),
     ]);
     check(
-      "states.md §8.3 is reachable: one group can fail while the other renders",
+      "one search group can fail while the other renders",
       searchPartial[0]?.status === "fulfilled" && searchPartial[1]?.status === "rejected",
     );
 
-    // The fallback must fire only when both groups are genuinely EMPTY, never when one
-    // FAILED — "did you mean" after a failure is a claim we cannot support.
+    // Fallback only on genuinely empty results, never after a failure.
     const miss = await search({ q: "shodann", page: 1 });
     check(
       "the trigram fallback still fires only on a genuine zero-result query",
@@ -958,7 +903,7 @@ async function phaseB(): Promise<void> {
     );
   });
 
-  await section("11. Directory facet counts (states.md §2.5)", async () => {
+  await section("11. Directory facet counts", async () => {
     const unfiltered = parseDirectoryFilters({});
     const counts = await getDirectoryFacetCounts(unfiltered);
     const total = (await listTools(unfiltered)).total;
@@ -992,11 +937,7 @@ async function phaseB(): Promise<void> {
       counts.cost.every((f, i, all) => i === 0 || (all[i - 1]?.count ?? 0) >= f.count),
     );
 
-    /**
-     * THE RULE: a facet is excluded from its own count. With `cost=free` applied, the other
-     * cost models must still be counted — otherwise the reader cannot tell what switching
-     * would give them.
-     */
+    /** A facet is excluded from its own count, so alternatives still show counts. */
     const freeFilters = parseDirectoryFilters({ cost: "free" });
     const withFree = await getDirectoryFacetCounts(freeFilters);
     const others = withFree.cost.filter((f) => f.value !== "free");
@@ -1052,7 +993,7 @@ async function phaseB(): Promise<void> {
       .from(tools)
       .where(sql`${tools.confidence} = 'needs-review'`);
     check(
-      "no stored confidence is the hyphenated form (HANDOFF §11.10)",
+      "no stored confidence is the hyphenated form",
       (hyphenated?.n ?? -1) === 0,
     );
 
@@ -1061,7 +1002,7 @@ async function phaseB(): Promise<void> {
       where status = 'published' and embed_permitted and connector_id is null
     `);
     check(
-      "no published embedding camera lacks a connector (ADR 0012 §4)",
+      "no published embedding camera lacks a connector",
       Number(embed.rows[0]?.n ?? -1) === 0,
     );
 
@@ -1071,20 +1012,14 @@ async function phaseB(): Promise<void> {
         and (terms_url is null or legal_basis is null or last_checked_at is null)
     `);
     check(
-      "no published connector is missing its recorded legal basis (ADR 0012)",
+      "no published connector is missing its recorded legal basis",
       Number(basis.rows[0]?.n ?? -1) === 0,
     );
 
     /**
-     * NOT "every connector is disabled". `enabled` is an OPERATOR'S decision (ADR 0012 §1),
-     * and the seed deliberately never resets it — so on any database where someone has
-     * turned a connector on, that assertion would fail on correct behaviour. That the SEED
-     * writes `enabled = false` is asserted where it belongs, as a unit test against
-     * `FLIGHTS_CONNECTOR_SEED` in `lib/connectors/connectors.test.ts`.
-     *
-     * What must hold of ANY database, at any time, is this: nothing can be live without a
-     * recorded legal basis. ADR 0011 rule 1 — "a connector with no recorded basis does not
-     * ship" — and `getLiveConnector` enforces the same predicate at request time.
+     * Not "every connector is disabled": operators may enable them. What must always hold is
+     * that nothing enabled lacks a legal basis (also enforced by `getLiveConnector`). The
+     * seeded default is unit-tested in `lib/connectors/connectors.test.ts`.
      */
     const liveWithoutBasis = await db.execute<{ n: string }>(sql`
       select count(*) as n from connectors
@@ -1092,7 +1027,7 @@ async function phaseB(): Promise<void> {
         and (terms_url is null or legal_basis is null or last_checked_at is null)
     `);
     check(
-      "no ENABLED connector is missing its legal basis, terms URL or check date (ADR 0011 rule 1)",
+      "no ENABLED connector is missing its legal basis, terms URL or check date",
       Number(liveWithoutBasis.rows[0]?.n ?? -1) === 0,
     );
 

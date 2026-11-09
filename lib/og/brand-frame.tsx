@@ -1,17 +1,10 @@
 import { brand } from "@/config/brand";
 
 /**
- * The shared Open Graph card frame. `app/opengraph-image.tsx` renders it, and any per-route
- * `opengraph-image.tsx` a future page adds should render it too so every card in the product
- * is the same object with different words in it.
+ * Shared Open Graph card frame, used by `opengraph-image.tsx` routes.
  *
- * WHY THE COLOURS ARE HEX LITERALS HERE
- * -------------------------------------
- * Everywhere else in this codebase a hardcoded colour is a defect: components use the
- * semantic tokens in `app/tokens.css`. An Open Graph card is not rendered by a browser. It
- * is rasterised at build or request time by Satori, which has no stylesheet, no cascade and
- * no custom properties — so the values have to be literals. They are copied from the dark
- * theme in `app/tokens.css` §2 and are listed in `docs/brand/HANDOFF.md` §2:
+ * Satori has no CSS custom properties, so colours are hex literals copied from the dark theme
+ * in `app/tokens.css`. Keep them in sync:
  *
  *   #0b0f15  --background       (--slate-900)
  *   #111821  --card             (--slate-850)
@@ -19,12 +12,6 @@ import { brand } from "@/config/brand";
  *   #a8b9c9  --foreground-secondary (--slate-300)
  *   #74c6f2  --primary          (--azure-300)
  *   #1f2937  --border           (--slate-750)
- *
- * The card is always dark. A social card has no reader preference to respect, and the dark
- * treatment is the one the product is designed against.
- *
- * If a token value changes in `tokens.css`, change it here in the same commit. There is no
- * mechanism that can do it for us.
  */
 
 export const OG_SIZE = { width: 1200, height: 630 } as const;
@@ -40,12 +27,8 @@ export const OG_COLORS = {
 } as const;
 
 /**
- * The monogram as a data URI.
- *
- * Satori renders `<img>` from a data URI reliably; its support for arbitrary inline SVG
- * elements is narrower. The geometry is the same three stones as
- * `components/layout/logo.tsx` and `docs/brand/logo/monogram.svg` — change all three
- * together. `currentColor` cannot work here, so the colour is passed in.
+ * The monogram as a data URI (Satori handles `<img>` data URIs better than inline SVG). Same
+ * geometry as `components/layout/logo.tsx`; keep in sync.
  */
 export function monogramDataUri(color: string): string {
   const svg =
@@ -60,17 +43,13 @@ export function monogramDataUri(color: string): string {
 export interface BrandFrameProps {
   /** Small line above the title — a section name such as "methodology". Optional. */
   eyebrow?: string;
-  /** The headline. Keep it short; it is set large and does not wrap gracefully past three lines. */
+  /** The headline. Keep it under three lines. */
   title: string;
   /** One supporting line. */
   description: string;
 }
 
-/**
- * Satori implements a subset of CSS: every container needs an explicit `display: "flex"`,
- * there is no `gap` shorthand inheritance to rely on, and shorthand properties are limited.
- * The verbose style objects below are that constraint, not a preference.
- */
+/* Satori supports a CSS subset: every container needs `display: "flex"`. */
 /** Kept in sync with the nav in `components/layout/nav-links.ts`. */
 const PILLARS = ["Directory", "Playbooks", "Live", "Workspaces"] as const;
 
@@ -89,9 +68,7 @@ export function BrandFrame({ eyebrow, title, description }: BrandFrameProps) {
       }}
     >
       <div style={{ display: "flex", alignItems: "center" }}>
-        {/* eslint-disable-next-line @next/next/no-img-element -- Satori rasterises this card
-            server-side; `next/image` is a browser component and cannot run inside an
-            ImageResponse. */}
+        {/* eslint-disable-next-line @next/next/no-img-element -- `next/image` can't run in an ImageResponse. */}
         <img src={monogramDataUri(OG_COLORS.accent)} width={64} height={64} alt="" />
         <div
           style={{
@@ -154,12 +131,7 @@ export function BrandFrame({ eyebrow, title, description }: BrandFrameProps) {
           color: OG_COLORS.foregroundSecondary,
         }}
       >
-        {/*
-          The four pillars, not the tagline. The default card already uses the tagline as
-          its headline, so repeating it here said the same thing twice — visible only once
-          the image was actually looked at rather than checked for a 200 and a byte count.
-          The pillars tell a reader what the product is, which is what a share card is for.
-        */}
+        {/* Pillars rather than the tagline, which the default card already uses as its headline. */}
         {PILLARS.join("  ·  ")}
       </div>
     </div>

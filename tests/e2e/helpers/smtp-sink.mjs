@@ -1,18 +1,8 @@
 /**
- * A local stand-in for Mailpit: SMTP on 1025, Mailpit's HTTP API on 8025.
+ * A local stand-in for Mailpit when Docker isn't available: SMTP on 1025, the three Mailpit
+ * HTTP endpoints `helpers/mail.ts` uses on 8025. Prefer real Mailpit when you can.
  *
- * `docker-compose.yml` runs Mailpit for exactly this purpose and it is the right thing to
- * use. This exists because Docker is not installed on every machine that has to run this
- * suite (integration finding I-09 records the same gap for PostgreSQL), and a test that can
- * only run on some machines is a test that stops being run.
- *
- * It implements the three endpoints `helpers/mail.ts` uses, in Mailpit's own shapes, so the
- * helper cannot tell which one it is talking to and there is exactly one code path in the
- * tests. Where real Mailpit is available, use it — it is the thing production-like
- * environments will have, and it parses MIME properly rather than approximately.
- *
- * NOT A MAIL SERVER. It accepts anything, stores it in memory, relays nothing, and listens on
- * loopback only. It exists for the length of a test run.
+ * Not a mail server: accepts anything, keeps it in memory, relays nothing, loopback only.
  *
  *   node tests/e2e/helpers/smtp-sink.mjs
  */
@@ -41,11 +31,7 @@ function decodeBody(body, encoding) {
   return body;
 }
 
-/**
- * Enough MIME to find the link. Deliberately approximate: this reads the headers, splits a
- * multipart body on its boundary, and decodes each part. Real Mailpit does this properly,
- * which is one more reason to prefer it when it is there.
- */
+/** Approximate MIME parsing: headers, multipart split, per-part decoding. */
 function parse(raw) {
   const split = raw.indexOf("\r\n\r\n");
   const headerBlock = split < 0 ? raw : raw.slice(0, split);
@@ -124,8 +110,7 @@ createTcpServer((socket) => {
       const verb = line.split(" ")[0]?.toUpperCase() ?? "";
 
       if (verb === "EHLO") {
-        // No STARTTLS advertised: nodemailer then sends in the clear, which is correct for a
-        // loopback sink and avoids needing a certificate nobody would verify.
+        // No STARTTLS advertised, so nodemailer sends in the clear (loopback only).
         say("250-smtp-sink");
         say("250-AUTH PLAIN LOGIN");
         say("250-8BITMIME");

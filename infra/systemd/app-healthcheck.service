@@ -1,6 +1,5 @@
 [Unit]
 Description=Periodic health report for the application stack
-Documentation=file:///opt/app/docs/deploy/RUNBOOK.md
 Requires=docker.service
 After=docker.service
 
@@ -11,12 +10,9 @@ Type=oneshot
 User=deploy
 WorkingDirectory=/opt/app
 
-# --quiet: prints nothing when everything passes, so the journal contains only the runs
-# where something was actually wrong. Read them with:
+# --quiet logs only problem runs:
 #   journalctl -u app-healthcheck.service --since '7 days ago'
-# Exit code 2 means "warnings only". `|| true`-style tolerance is expressed with
-# SuccessExitStatus rather than shell trickery so that a genuine FAIL (exit 1) still marks
-# the unit failed and shows up in `systemctl --failed`.
+# Exit 2 (warnings only) counts as success; exit 1 still fails the unit.
 ExecStart=/opt/app/infra/healthcheck.sh --quiet
 SuccessExitStatus=0 2
 

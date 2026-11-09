@@ -6,24 +6,9 @@ import { buildCaseDocument, exportBasename } from "./document";
 import { renderCaseMarkdown } from "./markdown";
 
 /**
- * The export is an evidence artefact. These tests exist because the three properties below
- * are the ones a user relies on months after the website has moved on, and none of them is
- * visible in a screenshot:
- *
- *   1. ISO 8601 everywhere (ADR 0016 6),
- *   2. every saved tool carrying its `confidence` and `lastVerifiedAt` (architecture
- *      HANDOFF 9.1) — an export that drops them lets the product's central caveat fall out
- *      of the copy the user actually keeps,
- *   3. an entry that has left the catalogue being RECORDED as such rather than dropped
- *      (ADR 0008),
- *   4. every saved map feature carrying its attribution, its licence and — where the
- *      coordinate is an approximation — the caveat saying so (ADR 0025). The export never
- *      calls the map's renderer, so an omission here is not a missing line on a page, it is
- *      the caveat ceasing to exist.
- *
- * The regression test at the bottom is for a bug found by running the page, not by reading
- * it: `lib/queries/workspaces.ts` types these timestamps as `Date` and `db.execute` returns
- * strings, so `value.toISOString()` threw in the browser.
+ * Export properties: ISO 8601 everywhere; confidence and last-verified on every saved tool;
+ * removed catalogue entries recorded, not dropped; attribution, licence and precision
+ * caveat on every saved map feature.
  */
 
 /** A case in the shape `getWorkspace` actually returns, strings and all. */
@@ -54,7 +39,7 @@ function fixture(overrides: Partial<WorkspaceDetail> = {}): WorkspaceDetail {
       },
       {
         id: "item-2",
-        // The step it came from was deleted: title survives, link goes (ADR 0008).
+        // Source step was deleted: title survives, link goes.
         kind: "checklistStep",
         title: "Ask the uploader directly",
         orderIndex: 1,
@@ -117,7 +102,7 @@ function fixture(overrides: Partial<WorkspaceDetail> = {}): WorkspaceDetail {
         latitude: 40.28417,
         longitude: -124.4235,
         altitudeMetres: null,
-        // The upstream's instant, an hour before the reader saved it. Two facts, not one.
+        // Upstream's instant, an hour before it was saved.
         observedAt: new Date("2026-08-23T09:05:12.000Z"),
         sourceUrl: "https://earthquake.usgs.gov/earthquakes/eventpage/us7000abcd",
         attribution: "USGS Earthquake Hazards Program",
@@ -142,7 +127,7 @@ function fixture(overrides: Partial<WorkspaceDetail> = {}): WorkspaceDetail {
         attribution: "National Weather Service",
         licence: "public domain (US Government)",
         properties: { event: "Flood Warning" },
-        // The 98.7% case: a UGC zone centroid, possibly tens of km from the weather.
+        // Typical case: a UGC zone centroid, possibly tens of km from the weather.
         precision: {
           label: "approx · zone centre",
           note: "This alert names administrative zones rather than a polygon, so the coordinate is the centre of one zone and may be tens of kilometres from the weather.",
@@ -231,8 +216,6 @@ describe("buildCaseDocument", () => {
 
 
   it("keeps the upstream's observation instant and the save time apart", () => {
-    // ADR 0025: `observed_at` is a claim about a moment, and a moment taken from our own
-    // clock would be a different claim. Both are printed; neither stands in for the other.
     const doc = buildCaseDocument(fixture(), FACTS, EXPORTED_AT);
     const quake = doc.features[0];
     expect(quake?.observedAt).toBe("2026-08-23T09:05:12Z");
@@ -240,8 +223,7 @@ describe("buildCaseDocument", () => {
   });
 
   it("carries the attribution and licence of every saved feature", () => {
-    // ODbL, CC BY and the TfL terms make the credit a condition of use, and an exported case
-    // file rendering a saved feature is a display.
+    // Required by ODbL, CC BY and TfL terms.
     const doc = buildCaseDocument(fixture(), FACTS, EXPORTED_AT);
     expect(doc.features).toHaveLength(2);
     for (const feature of doc.features) {
@@ -267,10 +249,8 @@ describe("buildCaseDocument", () => {
   });
 
   /**
-   * REGRESSION. `listWorkspaces` and `getWorkspace` build their rows with
-   * `db.execute(sql\`…\`)`, which returns raw `pg` values: the timestamps are STRINGS at run
-   * time even though the declared type is `Date`. The first version of the workspace page
-   * called `.toISOString()` on them and threw. See `components/workspaces/dates.ts`.
+   * `db.execute` returns raw `pg` values, so timestamps are strings at run time despite the
+   * `Date` type. See `components/workspaces/dates.ts`.
    */
   it("accepts the timestamp strings the raw-SQL queries actually return", () => {
     const withStrings = fixture();
@@ -278,10 +258,7 @@ describe("buildCaseDocument", () => {
     const step = withStrings.checklist[0];
     if (!tool || !step) throw new Error("fixture");
 
-    // Exactly what `pg` hands back for a `timestamptz` column. The double assertion is the
-    // point of the test: the declared type says `Date` and the value is a string, which is
-    // precisely the mismatch this guards against. Narrowing through `unknown` documents
-    // that the lie is deliberate here rather than accidental.
+    // What `pg` returns for `timestamptz`; cast through `unknown` to mimic the type mismatch.
     const asAny = {
       ...tool,
       createdAt: "2026-08-22 16:10:00+02",
@@ -342,7 +319,7 @@ describe("renderCaseMarkdown", () => {
     expect(markdown).toContain("- Attribution: USGS Earthquake Hazards Program");
     expect(markdown).toContain("- Licence: public domain (US Government)");
     expect(markdown).toContain("- Saved to this case: 2026-08-23T10:02:00Z");
-    // The upstream's own field names, verbatim, so a value can be matched back to a source.
+    // Upstream field names verbatim.
     expect(markdown).toContain("- depthKm: 21.3");
   });
 
@@ -356,7 +333,7 @@ describe("renderCaseMarkdown", () => {
   });
 
   it("carries no date in a non-ISO shape", () => {
-    // `14 Aug 2026` is the UI rendering and must not reach an export (ADR 0016 6).
+    // `14 Aug 2026` is the UI format and must not reach an export.
     expect(markdown).not.toMatch(/\d{1,2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4}/);
   });
 

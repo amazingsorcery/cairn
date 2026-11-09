@@ -5,14 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
 /**
- * 404. Copy is verbatim from `docs/design/states.md` §1.2.
- *
- * This is also the page a draft or removed entry renders. It must not distinguish "never
- * existed" from "not published" — a different page for the second case would confirm the
- * existence of unpublished rows to anyone probing slugs.
- *
- * Two controls, because an error with no next action is a dead end: the directory, and a
- * search field that submits to `/search` with no JavaScript.
+ * 404. Also rendered for draft or removed entries, so it must not distinguish "never existed"
+ * from "not published". The search form works without JavaScript.
  */
 export default function NotFound() {
   return (

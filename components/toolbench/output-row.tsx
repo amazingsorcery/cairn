@@ -5,14 +5,7 @@ import type * as React from "react";
 import { cn } from "@/lib/utils";
 import { CopyButton } from "./copy-button";
 
-/**
- * One computed value: what it is, what it says, and a way to get it into your notes.
- *
- * The value is monospace on purpose. `docs/frontend/HANDOFF-shell.md` section 13 flags that
- * nobody has yet checked IBM Plex Mono's slashed zero and its 1/l/I at 13px — this component
- * is one of the first places in the product to render a hash and a grid reference at that
- * size, so that check now has somewhere concrete to happen.
- */
+/** One computed value with its label and a copy button. Monospace for hashes and grid refs. */
 export function OutputRow({
   label,
   value,

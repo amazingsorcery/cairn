@@ -9,21 +9,9 @@
 #
 # Retention: 7 daily + 4 weekly, so roughly a 5-week window.
 #
-# FORMAT — why custom format piped through gzip rather than either alone:
-#   pg_dump -Fc produces a compressed archive, so gzipping it again would normally be
-#   pointless. We pass -Z 0 to turn pg_dump's internal compression OFF and compress once
-#   with gzip -9 instead. Two concrete reasons:
-#     1. `gzip -t` gives a cheap, standard, whole-file CRC check. A custom-format archive
-#        has no equivalent one-liner.
-#     2. gzip -9 on the uncompressed stream beats pg_dump's default level, and the CPU
-#        cost is paid at 03:00 on an otherwise idle box.
-#   The archive inside is still custom format, so pg_restore keeps selective restore,
-#   parallel restore and --list.
+# Format: pg_dump -Fc -Z 0 piped through gzip -9, so `gzip -t` can CRC-check the file.
 #
-# WHAT THIS DOES NOT BACK UP: uploaded files (there are none in v1), the Caddy certificate
-# volume (regenerable from Let's Encrypt), and .env (it holds secrets and must be backed up
-# separately, by hand, into your password manager — not into a nightly tarball that then
-# gets copied to a cloud bucket).
+# Not backed up: Caddy certs (regenerable) and .env (back that up by hand, separately).
 
 set -euo pipefail
 
@@ -60,8 +48,7 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
-# All human-readable output goes to stderr so that stdout carries exactly one thing: the
-# path of the dump that was produced. deploy.sh depends on that.
+# Logs go to stderr; stdout is only the dump path (deploy.sh reads it).
 log() { printf '%s  %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >&2; }
 die() {
 	printf '%s  FATAL %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >&2
@@ -84,12 +71,10 @@ RCLONE_REMOTE="${BACKUP_RCLONE_REMOTE:-}"
 DAILY_DIR="${BACKUP_DIR}/daily"
 WEEKLY_DIR="${BACKUP_DIR}/weekly"
 mkdir -p "${DAILY_DIR}" "${WEEKLY_DIR}"
-# The dumps contain every user's notes and every session token hash. Nobody but the owner
-# reads this directory.
+# Dumps contain user notes and session token hashes: owner-only.
 chmod 700 "${BACKUP_DIR}" "${DAILY_DIR}" "${WEEKLY_DIR}"
 
-# A dump taken while a migration is mid-flight is not useful, and two concurrent pg_dumps
-# on a 2 GB box will fight for memory. One at a time.
+# One backup at a time.
 LOCK_FILE="/tmp/backup.$(basename "${REPO_DIR}").lock"
 exec 9>"${LOCK_FILE}"
 flock -w 300 9 || die "Another backup has held the lock for over 5 minutes (${LOCK_FILE})."
@@ -111,14 +96,8 @@ trap cleanup_partial EXIT
 # =======================================================================================
 [ "${QUIET}" -eq 1 ] || log "Dumping ${POSTGRES_DB} ..."
 
-# The credentials never appear on the host command line or in the host process list: the
-# single-quoted shell snippet is expanded INSIDE the container, using the environment the
-# postgres image already has. `ps` on the host shows only `sh -c ...` with literal
-# variable names.
-#
-# --no-owner / --no-acl: the restore target may use a different role name (a staging box,
-# a laptop). Ownership and grants are recreated by the app's migrations, not by the dump.
-# -Z 0: see the header — gzip does the compressing.
+# Single-quoted so credentials expand inside the container, never in the host process list.
+# --no-owner/--no-acl: the restore target may use a different role; migrations set grants.
 if ! "${COMPOSE[@]}" exec -T db sh -c '
       PGPASSWORD="$POSTGRES_PASSWORD" pg_dump \
         -U "$POSTGRES_USER" \
@@ -132,8 +111,7 @@ if ! "${COMPOSE[@]}" exec -T db sh -c '
 	die "pg_dump failed. Nothing was written. Check: docker compose -f ${COMPOSE_FILE} logs --tail=50 db"
 fi
 
-# `set -o pipefail` makes the above catch a pg_dump failure, but an EMPTY successful dump
-# is still possible if the database has no tables yet. Guard the obvious floor.
+# pipefail catches pg_dump failures, but not a near-empty successful dump.
 SIZE_BYTES="$(stat -c '%s' "${TMP}")"
 if [ "${SIZE_BYTES}" -lt 1024 ]; then
 	die "The dump is only ${SIZE_BYTES} bytes, which cannot be a real database. Refusing to keep it."
@@ -142,22 +120,14 @@ fi
 # =======================================================================================
 # Verify — before rotation, so a bad dump never displaces a good one
 # =======================================================================================
-# This is the step that separates "we have backups" from "we have files".
-#
-# Check 1: gzip CRC over the whole file. Catches truncation and bit rot on disk.
+# Check 1: gzip CRC over the whole file (truncation, bit rot).
 [ "${QUIET}" -eq 1 ] || log "Verifying gzip integrity ..."
 gzip -t "${TMP}" || die "gzip integrity check FAILED. The dump is corrupt and has been discarded."
 
-# Check 2: the decompressed stream is a parseable custom-format archive with a real table
-# of contents. Catches a dump that gzipped cleanly but was cut short by an OOM kill or a
-# disconnect mid-stream. pg_restore --list reads the TOC without touching any database.
+# Check 2: pg_restore --list can read a table of contents (catches a cut-short dump).
 [ "${QUIET}" -eq 1 ] || log "Verifying archive structure (pg_restore --list) ..."
-# pg_restore lives in the db container, not on the host, so the decompressed stream is
-# piped in and staged to a container-local temp file. It is staged rather than read from
-# /dev/stdin because pg_restore's behaviour on a non-seekable input is version-dependent,
-# and a verification step that sometimes fails for its own reasons is worse than none.
-# Cost: container /tmp needs room for one uncompressed dump. Fine at this data size; if
-# the database ever outgrows it, move this check to a host with postgresql-client installed.
+# Staged to a temp file in the db container, since pg_restore on non-seekable stdin is
+# unreliable. Needs room in container /tmp for one uncompressed dump.
 VERIFY_SCRIPT='
   set -e
   tmp=$(mktemp /tmp/verify.XXXXXXXX.dump)
@@ -173,10 +143,7 @@ if [ "${TOC_LINES}" -lt 1 ]; then
 fi
 [ "${QUIET}" -eq 1 ] || log "Archive contains ${TOC_LINES} restorable objects."
 
-# NOTE ON THE LIMIT OF THIS CHECK: a valid TOC proves the archive is structurally sound,
-# not that the DATA restores into a working application. Only a real restore proves that.
-# The RUNBOOK contains a quarterly restore drill; do it. A backup nobody has restored is
-# not a backup.
+# A valid TOC doesn't prove the data restores; test a real restore periodically.
 
 mv "${TMP}" "${TARGET}"
 chmod 600 "${TARGET}"
@@ -186,9 +153,8 @@ trap - EXIT
 # =======================================================================================
 # Weekly promotion
 # =======================================================================================
-# Sunday's daily is hard-linked into weekly/. A hard link costs no extra disk while both
-# copies exist, and the weekly copy survives when the daily is pruned — the inode is only
-# freed when the last link goes. Falls back to a real copy across filesystems.
+# Sunday's daily is hard-linked into weekly/ (survives daily pruning, no extra disk);
+# falls back to a copy across filesystems.
 if [ "$(date -u '+%u')" = "7" ] && [ "${LABEL}" = "daily" ]; then
 	WEEKLY_TARGET="${WEEKLY_DIR}/$(basename "${TARGET}" | sed 's/-daily-/-weekly-/')"
 	ln "${TARGET}" "${WEEKLY_TARGET}" 2>/dev/null || cp -p "${TARGET}" "${WEEKLY_TARGET}"
@@ -198,16 +164,10 @@ fi
 # =======================================================================================
 # Retention
 # =======================================================================================
-# Newest-first listing, skip the first N, delete the rest. Only files this script's naming
-# convention produced are ever considered, so an unrelated file dropped in the directory
-# is never deleted.
+# Keep the newest N; only our own *.dump.gz files are ever deleted.
 prune() {
 	local dir="$1" keep="$2" kind="$3" f count=0
-	# `ls -1t` is used rather than a find/sort pipeline because every filename here is
-	# generated by this script from a fixed template: a database name, a label and a UTC
-	# timestamp. None can contain a newline or a space, which is the only thing wrong with
-	# parsing ls. The grep restricts deletion to files matching our own suffix, so an
-	# unrelated file dropped into the directory is never removed.
+	# Parsing `ls` is safe here: our generated filenames contain no spaces or newlines.
 	while IFS= read -r f; do
 		count=$((count + 1))
 		if [ "${count}" -gt "${keep}" ]; then
@@ -220,8 +180,7 @@ prune() {
 prune "${DAILY_DIR}" "${KEEP_DAILY}" "daily"
 prune "${WEEKLY_DIR}" "${KEEP_WEEKLY}" "weekly"
 
-# Pre-deploy dumps are not part of the daily rotation and would otherwise accumulate for
-# ever. Keep the most recent 5 — enough to cover a bad week of deploys.
+# Pre-deploy dumps aren't rotated above; keep the latest 5.
 find "${DAILY_DIR}" -name "*-pre-deploy-*.dump.gz" -type f -printf '%T@ %p\n' 2>/dev/null |
 	sort -rn | tail -n +6 | cut -d' ' -f2- | while IFS= read -r old; do
 	rm -f "${old}"
@@ -231,34 +190,25 @@ done
 # =======================================================================================
 # Offsite copy
 # =======================================================================================
-# A backup stored only on the machine it backs up does not survive the events it exists
-# for: the provider suspending the account, the VPS being deleted, or the disk being
-# encrypted by someone else. This step is what makes it a backup rather than a snapshot.
-#
-# NO CREDENTIALS APPEAR IN THIS REPOSITORY. rclone keeps its own config in
-# ~/.config/rclone/rclone.conf, created interactively by `rclone config`. Set only the
-# remote NAME in .env as BACKUP_RCLONE_REMOTE.
+# rclone credentials live in ~/.config/rclone/rclone.conf (via `rclone config`); only the
+# remote name goes in .env as BACKUP_RCLONE_REMOTE.
 if [ "${DO_OFFSITE}" -eq 1 ] && [ -n "${RCLONE_REMOTE}" ]; then
 	if command -v rclone >/dev/null 2>&1; then
 		[ "${QUIET}" -eq 1 ] || log "Copying offsite to ${RCLONE_REMOTE} ..."
-		# `copy`, not `sync`: sync would mirror local deletions to the remote, which means
-		# a local rm -rf (accidental or hostile) propagates to the offsite copy within a
-		# day. Remote retention is configured on the bucket, with object-lock or versioning
-		# if the provider supports it.
+		# `copy`, not `sync`, so local deletions never propagate offsite. Remote retention
+		# is configured on the bucket.
 		if rclone copy --checksum "${DAILY_DIR}" "${RCLONE_REMOTE}/daily" &&
 			rclone copy --checksum "${WEEKLY_DIR}" "${RCLONE_REMOTE}/weekly"; then
 			[ "${QUIET}" -eq 1 ] || log "Offsite copy complete."
 		else
-			# Not fatal: the local dump is verified and on disk. But it must be noticed,
-			# so it is a loud stderr warning that the systemd unit will surface in
-			# `systemctl status` and in the journal.
+			# Not fatal; the local dump is verified. Warn so it shows in the journal.
 			log "WARN offsite copy FAILED. The local dump is fine. Check: rclone about ${RCLONE_REMOTE%%:*}:"
 		fi
 	else
 		log "WARN BACKUP_RCLONE_REMOTE is set but rclone is not installed: sudo apt-get install -y rclone"
 	fi
 elif [ "${DO_OFFSITE}" -eq 1 ]; then
-	# Printed every run until offsite is configured. The nagging is the point.
+	# Printed every run until offsite is configured.
 	log "WARN No offsite copy configured. Backups exist only on this server."
 	log "WARN   Option A (recommended) — object storage via rclone:"
 	log "WARN     sudo apt-get install -y rclone && rclone config      # add a remote, e.g. 'b2'"

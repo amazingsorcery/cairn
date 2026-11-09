@@ -11,14 +11,8 @@ import { pageMetadata } from "@/lib/metadata";
 import { buildSafe } from "@/lib/static-params";
 
 /**
- * `/playbooks` — the full published listing.
- *
- * ISR:1800 (architecture HANDOFF §8, sitemap.md §2). The route reads no `searchParams`,
- * no `cookies()` and no `auth()`, which is what keeps `revalidate` meaningful: any one of
- * those would silently make it dynamic and the setting would do nothing.
- *
- * Filtering happens in `PlaybookIndex`, a client leaf, over this prerendered payload.
- * Every other part of the page — heading, lead, metadata — is server-rendered.
+ * `/playbooks`: published listing, ISR (30 min). Don't read `searchParams`, `cookies()` or
+ * `auth()` or the route turns dynamic. Filtering is client-side in `PlaybookIndex`.
  */
 
 export const revalidate = 1800;
@@ -31,14 +25,11 @@ export const metadata = pageMetadata({
 });
 
 export default async function PlaybooksPage() {
-  // Prerendered (revalidate 1800) and reads the database, so it must survive a build with
-  // no DATABASE_URL — see ADR 0018. buildSafe substitutes the empty list DURING THE BUILD
-  // ONLY and rethrows at runtime, so a real outage still reaches error.tsx rather than
-  // quietly claiming there are no playbooks.
+  // buildSafe returns [] during a build with no DATABASE_URL, and rethrows at runtime so
+  // outages reach error.tsx.
   const playbooks = await buildSafe("playbooks-index", () => listPlaybooks(), []);
 
-  // Distinct categories, in the order the listing presents them, so the filter offers only
-  // values that can actually match something.
+  // Only categories that have playbooks, so every filter option can match.
   const categories = [
     ...new Map(playbooks.map((p) => [p.categorySlug, { slug: p.categorySlug, name: p.categoryName }])),
   ]
@@ -53,14 +44,8 @@ export default async function PlaybooksPage() {
         and how you know it&rsquo;s done.
       </p>
       {/*
-        The confidence chip on a playbook is the most misreadable element on this page. It
-        describes OUR RECORD of the method — whether we have re-checked that its steps and
-        its tool references still hold — and not whether the method is sound. Those are
-        different claims, and the product's credibility rests on not letting a reader
-        collapse them. Said once here rather than on every card, where it would become
-        wallpaper — and kept to a POINTER at the definition rather than a second copy of it
-        (Q-16). The cards carry mixed levels, so there is no single meaning to render; the
-        playbook detail page, which has exactly one, renders `confidenceMeaning()` itself.
+        Confidence describes our record of the method, not whether the method is sound.
+        Stated once here with a link to the definition, rather than on every card.
       */}
       <p className="mt-2 max-w-[68ch] text-sm text-muted-foreground">
         Each card&rsquo;s confidence level describes our record of that method, not the method

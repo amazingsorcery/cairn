@@ -6,22 +6,13 @@ import { ConfidenceChipLink } from "@/components/layout/methodology-anchor";
 import type { PlaybookStepDetail } from "@/lib/queries/playbooks";
 
 /**
- * One numbered step, rendered on the server.
+ * One numbered step.
  *
- * ANCHORS. The heading carries `id="step-<n>"` where `n` is 1-based (wireframe 06: "stable
- * across reorder only within a published version"). A workspace checklist item links back
- * here, so the identifier is part of the product's contract and not a styling detail.
- * `tabIndex={-1}` means following the anchor moves focus to the heading rather than leaving
- * a keyboard reader stranded in the step index.
+ * The heading's `id="step-<n>"` (1-based) is linked from workspace checklists, so keep it
+ * stable. `tabIndex={-1}` lets the anchor move focus to the heading.
  *
- * TOOLS FOR THIS STEP carry their confidence chip. A methodology that cites an uncertain
- * entry has to say so at the point of use, not only on the entry's own page — that is
- * architecture HANDOFF §9.1 applied where it actually matters: mid-method, when the reader
- * is deciding whether to rely on the tool.
- *
- * "HOW YOU KNOW THIS STEP IS DONE" uses `--success-surface` with an icon AND the heading
- * text. Never a bare green tick: dark `--success` and `--warning` differ by 1.04:1 in
- * luminance and sit on the red-green axis (`docs/design/colour.md` §5).
+ * The "done" box pairs the success colour with an icon and text: dark `--success` and
+ * `--warning` are nearly identical in luminance.
  */
 
 export interface PlaybookStepProps {

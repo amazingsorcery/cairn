@@ -3,10 +3,8 @@ import { describe, expect, it } from "vitest";
 import { classifyIncident, INCIDENT_CATEGORIES } from "./incident-type";
 
 /**
- * The classifier is the one component ADR 0033 turns into a QA gate: medical dispatch must be
- * detectable so the UI can default it OFF. Every string below is a REAL call type captured
- * from Seattle Fire (kzjm-xkqj) or SFPD (gnap-fj3t) on 2026-09-01, not an invented one — a
- * classifier tested on imagined inputs proves only that our imagination is self-consistent.
+ * Medical dispatch must be detected so the UI can default it off. All strings are real call
+ * types from Seattle Fire (kzjm-xkqj) or SFPD (gnap-fj3t), captured 2026-09-01.
  */
 
 describe("classifyIncident — medical, the field that must never be missed", () => {
@@ -43,27 +41,24 @@ describe("classifyIncident — medical, the field that must never be missed", ()
 
   it("keeps isMedical in lockstep with the category, for every category", () => {
     for (const category of INCIDENT_CATEGORIES) {
-      // isMedical is true exactly when the category is medical — the one invariant the
-      // default-off toggle depends on.
+      // isMedical iff category is medical.
       const sample = classifyIncident(category === "medical" ? "Medic Response" : "Auto Fire Alarm");
       expect(sample.isMedical).toBe(sample.category === "medical");
     }
   });
 
   it("does not let a generic word shadow a medical one", () => {
-    // "Automatic Medical Alarm" contains "alarm" (fire) but must classify medical, because
-    // medical is checked first. Getting this wrong shows a medical call by default.
+    // Contains "alarm" but must be medical; medical is checked first.
     expect(classifyIncident("Automatic Medical Alarm").category).toBe("medical");
   });
 
   it("treats an injury traffic call as medical, not road — a hurt person is health data", () => {
-    // Real SFPD type. "injur" is caught before the road rule, so an injury collision defaults
-    // OFF rather than being shown as a plain road incident (ADR 0033, privacy-protective).
+    // "injur" is matched before the road rule, so injury collisions default off.
     expect(classifyIncident("INJURY VEH ACCIDENT").category).toBe("medical");
   });
 });
 
-describe("classifyIncident — the visible categories (ADR 0033: shown by default)", () => {
+describe("classifyIncident — the visible categories (shown by default)", () => {
   const cases: ReadonlyArray<readonly [string, string]> = [
     ["Auto Fire Alarm", "fire"],
     ["Fire in Building", "fire"],
@@ -86,8 +81,7 @@ describe("classifyIncident — the visible categories (ADR 0033: shown by defaul
     ["FIGHT NO WEAPON", "publicOrder"],
     ["BURGLARY", "publicOrder"],
     ["VANDALISM", "publicOrder"],
-    // The boundary case that most matters: a shooting is public order, not a fire. "\bfires?\b"
-    // is an exact word, so "FIRED" is never swept into the fire category.
+    // "\bfires?\b" is a whole word, so "SHOTS FIRED" isn't a fire.
     ["SHOTS FIRED", "publicOrder"],
   ];
   for (const [type, expected] of cases) {
@@ -101,9 +95,8 @@ describe("classifyIncident — the visible categories (ADR 0033: shown by defaul
 
 describe("classifyIncident — unreadable codes fall to other, never guessed medical", () => {
   it("labels an agency-internal code we cannot read as other", () => {
-    // "1RED 1 Unit" is a real Seattle response code with no health word. We do not invent a
-    // meaning for it (product-brief §6); it is `other`, shown by default, and the limitation
-    // is recorded in docs/sources/seattle-fire-911.md.
+    // "1RED 1 Unit" is a real response code with no health word; we don't guess, so it's
+    // `other` and shown by default (a known limitation).
     const result = classifyIncident("1RED 1 Unit");
     expect(result.category).toBe("other");
     expect(result.isMedical).toBe(false);

@@ -1,33 +1,18 @@
 import { fail, ok, type ToolResult } from "./result";
 
 /**
- * NASA Global Imagery Browse Services (GIBS) — the satellite imagery comparator's catalogue,
- * URL templates and date arithmetic.
+ * NASA GIBS: the imagery comparator's layer catalogue, URL templates and date arithmetic.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * TERMS CHECK — 2026-09-01
- * ─────────────────────────────────────────────────────────────────────────────
- * Licence      NASA promotes full and open sharing of data. The GIBS documentation
- *              (https://nasa-gibs.github.io/gibs-api-docs/, read 2026-09-01) asks, under
- *              "Data Use Guidance and Acknowledgements", that users add an acknowledgement,
- *              and gives its exact wording — reproduced verbatim in `GIBS_ACKNOWLEDGEMENT`
- *              below and rendered on the map, at the point of display.
- * Key          None. No registration, no token, no referrer restriction.
- * Rate limit   No documented numeric limit. It is a tile service designed for slippy-map
- *              clients, and this tool is one: a browser requests the tiles for the viewport
- *              it is showing and nothing else. There is no server-side fetching and no
- *              prefetching, so our traffic is bounded by what a reader actually looks at.
- * Access ctrl  None. Public WMTS endpoint, documented, no auth.
- * Our path     THE BROWSER FETCHES THE TILES DIRECTLY. product-brief §2b: imagery is media,
- *              media is not proxied. The consequence, stated plainly on the tool page, is
- *              that NASA sees the reader's IP address and the area they are looking at — so
- *              the maps are click-to-load and the disclosure comes before the click.
+ * Terms (checked 2026-09-01, https://nasa-gibs.github.io/gibs-api-docs/):
+ *   Licence      Open data; GIBS asks for the acknowledgement in `GIBS_ACKNOWLEDGEMENT`,
+ *                shown on the map.
+ *   Key          None.
+ *   Rate limit   None documented; the browser only fetches tiles for the visible viewport.
+ *   Our path     The browser fetches tiles directly (media isn't proxied), so NASA sees the
+ *                reader's IP and area. Maps are click-to-load behind a disclosure.
  *
- * Every layer identifier, format, tile matrix set and date range below was read from
- * `https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/1.0.0/WMTSCapabilities.xml` on
- * 2026-09-01, and representative tiles were fetched to confirm each one answers. Nothing
- * here is from memory.
- * ─────────────────────────────────────────────────────────────────────────────
+ * Layer ids, formats, matrix sets and date ranges are from the WMTSCapabilities.xml at
+ * `https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/1.0.0/` (2026-09-01).
  */
 
 /** The one origin this tool contacts. Needs `img-src` in the deployed CSP. */
@@ -53,11 +38,7 @@ export interface ImageryLayer {
   readonly platform: string;
   readonly tileMatrixSet: string;
   readonly format: TileFormat;
-  /**
-   * The deepest zoom the service actually has tiles for. Beyond it a client is upsampling,
-   * and a reader reading detail out of upsampled pixels is the single most common error this
-   * kind of imagery produces.
-   */
+  /** Deepest zoom with real tiles; beyond it the client upsamples. */
   readonly maxNativeZoom: number;
   /** Metres per pixel at `maxNativeZoom`, from the tile matrix's own scale denominator. */
   readonly metresPerPixel: number;
@@ -72,13 +53,8 @@ export interface ImageryLayer {
 }
 
 /**
- * The imagery layers, all verified against the capabilities document on 2026-09-01.
- *
- * Two Terra/Aqua pairs and two VIIRS platforms are offered rather than one "satellite" layer,
- * because the choice of platform is an analytic decision and not a preference: Terra crosses
- * in the morning and Aqua in the early afternoon, so cloud that hides a site in one may have
- * cleared in the other on the same day. A tool that picked one for you would silently answer
- * "no imagery" for days on which imagery exists.
+ * Imagery layers (verified 2026-09-01). Several platforms are offered because overpass times
+ * differ: Terra is morning, Aqua early afternoon, so cloud in one may be clear in the other.
  */
 export const IMAGERY_LAYERS: readonly ImageryLayer[] = [
   {
@@ -174,12 +150,8 @@ export const IMAGERY_LAYERS: readonly ImageryLayer[] = [
     metresPerPixel: 611,
     earliest: "2016-11-30",
     /**
-     * COVERAGE ENDS. The capabilities document's own dimension ran to 2023-07-07 on
-     * 2026-09-01 and the layer's default date is that same day, so this product is no longer
-     * being produced into GIBS. It ships anyway, with the end date stated, because
-     * before-and-after night lights across 2016–2023 is a real and much-used technique for
-     * observing power loss over a city. A layer whose coverage silently stopped, presented as
-     * current, would be far worse than one that says where it stops.
+     * Coverage ends 2023-07-07 (no longer produced into GIBS). Kept, with the end date shown,
+     * for before/after night-light comparisons.
      */
     latest: "2023-07-07",
     whatItShows:
@@ -193,15 +165,8 @@ export function findImageryLayer(id: string): ImageryLayer | null {
 }
 
 /**
- * Reference overlays, drawn on top of the imagery.
- *
- * These are what make the imagery readable: 306 m/pixel true colour with no coastline is
- * often an unidentifiable smear of brown and green. Both are GIBS-hosted, so the whole tool
- * contacts exactly one third-party origin.
- *
- * `Reference_Labels_15m` exists in the capabilities document but returned 404 for every tile
- * requested from the EPSG:3857 endpoint on 2026-09-01, at four zoom levels over three
- * continents. It is omitted rather than shipped as a layer that silently draws nothing.
+ * Reference overlays drawn over the imagery, GIBS-hosted so the tool contacts one origin.
+ * `Reference_Labels_15m` is omitted: it 404s on the EPSG:3857 endpoint (checked 2026-09-01).
  */
 export interface ReferenceLayer {
   readonly id: string;
@@ -233,13 +198,8 @@ export const REFERENCE_LAYERS: readonly ReferenceLayer[] = [
  * ------------------------------------------------------------------ */
 
 /**
- * The WMTS REST template, with Leaflet's placeholders.
- *
- * Shape confirmed against the capabilities document's own `ResourceURL` template and against
- * live tiles on 2026-09-01. WMTS orders the path `{TileMatrix}/{TileRow}/{TileCol}`, which
- * is `{z}/{y}/{x}` and NOT `{z}/{x}/{y}` — the transposed version returns tiles of a
- * different place rather than an error, so it is a mistake that renders as a plausible map
- * of somewhere else.
+ * WMTS REST template with Leaflet placeholders. WMTS order is `{z}/{y}/{x}`, not `{z}/{x}/{y}`;
+ * transposing silently shows a different place.
  */
 export function imageryTileTemplate(layer: ImageryLayer, isoDate: string): string {
   return (
@@ -264,14 +224,7 @@ export function toIsoDate(instant: Date): string {
   return instant.toISOString().slice(0, 10);
 }
 
-/**
- * Parse and validate a calendar date, rejecting the ones that look valid and are not.
- *
- * `new Date("2023-02-29")` rolls over to 1 March rather than failing, so a tool that trusted
- * it would silently request a different day than the reader asked for — and then report
- * whatever it found under the wrong date, which on a chronolocation tool is the whole
- * finding.
- */
+/** Parse a calendar date strictly; `new Date("2023-02-29")` would roll over to 1 March. */
 export function parseIsoDate(text: string): ToolResult<string> {
   const match = ISO_DATE.exec(text.trim());
   if (!match) return fail("Dates are YYYY-MM-DD.");
@@ -318,13 +271,7 @@ export interface CoverageCheck {
   readonly problem: string | null;
 }
 
-/**
- * Is this layer's imagery available on this date?
- *
- * Refuses rather than clamps. A clamped date would render the nearest available day under
- * the label of the day the reader asked for, and the entire value of a before-and-after
- * comparison is that the two dates are the dates you believe they are.
- */
+/** Is imagery available on this date? Refuses rather than clamping to the nearest day. */
 export function checkCoverage(layer: ImageryLayer, isoDate: string, today: string): CoverageCheck {
   const parsed = parseIsoDate(isoDate);
   if (!parsed.ok) return { isoDate, problem: parsed.error };
@@ -351,11 +298,8 @@ export function checkCoverage(layer: ImageryLayer, isoDate: string, today: strin
 }
 
 /**
- * Ground distance one screen pixel covers at a given zoom, in metres, at a given latitude.
- *
- * Used to tell the reader, in the interface, when they have zoomed past the point where the
- * imagery carries any more information. Web Mercator: 156543.03392 m/px at zoom 0 on the
- * equator, halving each level, times cos(latitude).
+ * Metres per screen pixel at a zoom and latitude (Web Mercator: 156543.03392 m/px at z0 on the
+ * equator, halving per level, times cos(lat)). Used to warn when zoomed past native detail.
  */
 export function metresPerPixel(zoom: number, latitude: number): number {
   return (156_543.03392 * Math.cos((latitude * Math.PI) / 180)) / 2 ** zoom;

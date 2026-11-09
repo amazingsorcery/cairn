@@ -5,17 +5,8 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 
 /**
- * `states.md` §3.7 — the entry itself failed to load. Copy verbatim, controls verbatim:
- * `reload` and `back to the directory`.
- *
- * This is the whole-page case. The partial case (§3.6, the "used in these playbooks" query
- * failing while the entry loads) is not reachable today: `getToolBySlug()` fetches the entry
- * and its citations in one function, so a failure in either throws both. Splitting it needs a
- * second export from `lib/queries/tools.ts`, which this agent does not own — recorded in
- * `docs/frontend/HANDOFF-directory.md`.
- *
- * Nothing from `error` is rendered. A server error message can carry a table name or a query
- * fragment, and Next has already logged the real error with its digest server-side.
+ * The entry failed to load. `getToolBySlug()` fetches the entry and its playbook citations
+ * together, so either failing lands here. `error` isn't rendered; Next logs it server-side.
  */
 export default function ToolError({ reset }: { error: Error; reset: () => void }) {
   return (

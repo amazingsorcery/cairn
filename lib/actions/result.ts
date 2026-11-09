@@ -4,16 +4,8 @@ import { ForbiddenError, UnauthenticatedError } from "@/lib/auth";
 import { logger } from "@/lib/logger";
 
 /**
- * The Server Action return contract.
- *
- * Actions RETURN failures rather than throwing them. A thrown error in a Server Action
- * reaches the client as a generic "An error occurred in the Server Components render" with
- * the message stripped in production, which is correct for an unexpected error and useless
- * for "that slug is already taken". So expected failures are values with a field path, and
- * only genuinely unexpected ones throw.
- *
- * `fieldErrors` is keyed by the same path Zod produces, so a form can attach a message to
- * the input that caused it without a translation layer.
+ * Server Action return contract. Expected failures are returned as values, since thrown
+ * errors reach the client with the message stripped in production. `fieldErrors` uses Zod paths.
  */
 export type ActionSuccess<T> = { ok: true; data: T };
 export type ActionFailure = {
@@ -48,12 +40,8 @@ export function fromZodError(error: z.ZodError): ActionFailure {
 }
 
 /**
- * Postgres error codes and constraint names, mapped to sentences an editor can act on.
- *
- * HANDOFF §3: "The name appears in the Postgres error, so map them to friendly messages in
- * the form layer." This is that map. An unmapped constraint falls through to a generic
- * message and a logged error — better a vague sentence than a raw `23514` quoting internal
- * SQL at a user.
+ * Constraint names mapped to user-facing messages. Unmapped constraints get a generic
+ * message and are logged.
  */
 const CONSTRAINT_MESSAGES: Readonly<Record<string, string>> = {
   tools_slug_key: "That slug is already used by another tool.",
@@ -65,13 +53,13 @@ const CONSTRAINT_MESSAGES: Readonly<Record<string, string>> = {
   users_email_key: "An account already exists for that address.",
 
   tools_published_requires_verification_check:
-    "A tool cannot be published without a verification date and a reliability rating (ADR 0007).",
+    "A tool cannot be published without a verification date and a reliability rating.",
   playbooks_published_requires_verification_check:
-    "A playbook cannot be published without a verification date (ADR 0007).",
+    "A playbook cannot be published without a verification date.",
   cameras_published_requires_verification_check:
     "A camera cannot be published without a verification date and a note on why embedding is or is not permitted.",
   connectors_published_requires_legal_basis_check:
-    "A connector cannot be published without a terms URL, a recorded legal basis and a check date (ADR 0012).",
+    "A connector cannot be published without a terms URL, a recorded legal basis and a check date.",
   connectors_attribution_check:
     "State the attribution this source requires, or mark attribution as not required.",
   connectors_api_key_env_var_check:
@@ -99,11 +87,8 @@ function asPgError(error: unknown): PgError | null {
 }
 
 /**
- * Wrap an action body. Turns the four expected failure shapes into values and lets anything
- * else through as an unexpected failure — logged with the error, returned without it.
- *
- * The user never sees a database message. `detail` on a unique violation contains the
- * conflicting VALUE, which for `users_email_key` is somebody's email address.
+ * Wrap an action body: expected failures become values; anything else is logged and returned
+ * as a generic failure. Database messages never reach the user.
  */
 export async function guard<T>(
   scope: string,
@@ -136,8 +121,7 @@ export async function guard<T>(
           "Something still references this record, so it cannot be removed. Move or delete the dependent entries first.",
         );
       }
-      // `detail` is deliberately not logged: on a unique violation it contains the
-      // conflicting value, which for users_email_key is somebody's address.
+      // Don't log `detail`: on a unique violation it holds the value (e.g. an email address).
       logger.error({ scope, code: pg.code, constraint: pg.constraint }, "Database error");
       return fail("unexpected", "That could not be saved. Nothing was changed.");
     }

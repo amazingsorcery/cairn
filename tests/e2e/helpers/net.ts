@@ -1,18 +1,9 @@
 import type { Page } from "@playwright/test";
 
 /**
- * Outbound-request accounting.
- *
- * ADR 0011 and ADR 0015 make "which origins does the browser talk to" a *product* property,
- * not a performance one: a connection to a camera operator tells that operator which patch
- * of the world a reader is looking at, and a connection to a tile server tells the tile
- * server the same thing. Those guarantees are one well-meaning `<link rel=preconnect>` away
- * from being false, and nothing in the type system or the linter would notice.
- *
- * So the tests treat **any** request whose origin is not the application's own origin as
- * outbound. That is deliberately stricter than "an operator origin": a regression is more
- * likely to arrive as a font CDN, an analytics beacon or a preconnect than as a literal
- * `jamcams.tfl.gov.uk` reference, and product-brief §3.2 forbids the first two outright.
+ * Outbound-request accounting. Which origins the browser contacts is a privacy property
+ * (an operator learns what a reader looks at), so any non-app origin counts as outbound,
+ * including font CDNs, analytics and preconnects.
  */
 
 /** `data:`, `blob:` and `about:` never leave the machine and are not outbound. */
@@ -37,15 +28,8 @@ export interface OutboundRecorder {
 }
 
 /**
- * Record every outbound request the page makes, and optionally **abort** them.
- *
- * Aborting matters: a recorder alone proves the request was attempted but still lets the
- * connection happen, which for a privacy assertion means the test has already done the thing
- * it is asserting nobody does. `block: true` records *and* refuses, so a regression fails the
- * test without leaking the reader's IP to the operator on the way.
- *
- * `allow` is an origin allowlist consulted only while blocking — used by the click-to-load
- * test, which stubs the operator's image rather than letting the request reach them.
+ * Record every outbound request, optionally aborting it (`block: true`) so a regression
+ * doesn't actually reach the third party.
  */
 export async function watchOutbound(
   page: Page,

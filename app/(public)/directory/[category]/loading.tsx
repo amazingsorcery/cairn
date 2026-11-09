@@ -2,12 +2,8 @@ import { ToolGridSkeleton } from "@/components/directory/tool-card";
 import { Skeleton } from "@/components/ui/skeleton";
 
 /**
- * `states.md` §2.3, for the single-category listing. No filter rail to reserve on this route:
- * the facets live on `/directory`, which is where query state belongs.
- *
- * One `aria-live` region, skeletons `aria-hidden` (shell handoff §10.1). Every card
- * placeholder reserves the confidence chip and the last-verified line so the layout does not
- * jump and an entry never appears, even for a frame, to have no confidence value.
+ * No filter rail here; facets live on `/directory`. Card skeletons reserve the confidence
+ * chip and last-verified line so the layout doesn't jump.
  */
 export default function CategoryLoading() {
   return (

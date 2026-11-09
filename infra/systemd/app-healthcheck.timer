@@ -1,11 +1,8 @@
 [Unit]
 Description=Run the stack health report every 6 hours
-Documentation=file:///opt/app/docs/deploy/RUNBOOK.md
 
 [Timer]
-# Every six hours. Frequent enough to catch a certificate renewal failure or a filling
-# disk with weeks to spare; infrequent enough that `systemctl --failed` staying clean
-# actually means something.
+# Every six hours.
 OnCalendar=00/6:07:00
 RandomizedDelaySec=2min
 Persistent=true

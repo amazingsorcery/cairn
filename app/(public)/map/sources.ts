@@ -16,59 +16,29 @@ import { dropPayload, readPayload, writePayload } from "@/lib/live/feature-cache
 import { devStressSource } from "./dev-stress-source";
 
 /**
- * WHERE THE MAP GETS ITS DATA. Server-only — imported by `page.tsx` and by
- * `data/[slug]/route.ts`, and by nothing in `components/map/`.
+ * Server-only data loading for the map (used by `page.tsx` and `data/[slug]/route.ts`).
+ * Turns a registry `sourceSlug` into a `CachedSourceResult`, adding the shared cache and
+ * staleness on top of the `lib/sources/` adapters.
  *
- * Its whole job is to turn a registry entry's `sourceSlug` into a `CachedSourceResult`. The
- * adapters themselves belong to the integrations engineer in `lib/sources/`; this file adds
- * the two things the contract deliberately leaves to the caller — the shared cache and the
- * staleness that only the cache can know.
+ * Cache key is `slug:normalisedQuery`, never per viewer: it keeps us within upstream fair use,
+ * hides individual users from upstreams, and can't encode who asked. Global feeds share
+ * `slug:unscoped`.
  *
- * ## The cache is one entry per source AND QUESTION, never per viewer
- *
- * ADR 0014 §4. One shared payload serves every reader, which does three things at once: it
- * holds us inside each upstream's fair-use ceiling, it means the upstream sees our server
- * rather than a pattern of individual users, and it guarantees the cache key cannot encode
- * who asked. A per-user key on a live surface would rebuild the interest graph ADR 0013
- * removed from the audit log.
- *
- * **Shared per question, not per source.** The key was the slug alone, which is right for the
- * five global feeds and was wrong the moment one layer became viewport-scoped: a reader who
- * opened `/map` inside one TTL of somebody zooming into Tokyo was handed Tokyo's aircraft as
- * the answer for Europe, marked `fresh`, with a real observation instant under it (QA finding
- * QV-04). The key is now `slug:normalisedQuery` — the same shape `lib/connectors/runtime.ts`
- * uses — and the normalised query is what the adapter is handed, so the entry cannot be the
- * answer to a question nobody asked. A global feed passes `{}` and every reader still shares
- * `slug:unscoped`, which is what ADR 0014 §4 is actually about.
- *
- * §6 of the same ADR: the payload rests only here, for a bounded time, and never in a table.
- * A module-level `Map` satisfies all of that. What it does not do is survive a restart or span
- * processes: ADR 0019 put Redis and a poller worker in the stack for exactly that, **ADR 0031
- * removed both**, and nothing replaced them. So this is the shipped cache rather than a stand-
- * in for one — a deploy empties it and the next reader pays a cold poll, which is a real
- * property an operator should know (QA finding QV-31, and see `docs/sources/HANDOFF.md` §4).
+ * The cache is in-process memory only: a restart empties it and the next reader pays a cold
+ * poll. Payloads are never written to the database.
  */
 
 /* ------------------------------------------------------------------ *
  * The adapter lookup
  * ------------------------------------------------------------------ */
 
-/**
- * The adapter for a source slug, or null.
- *
- * Null rather than throwing. A registry entry whose adapter has not landed yet renders
- * `notConfigured` on that layer alone with a sentence saying so — which is a designed state,
- * and is what lets a layer be designed before its source exists.
- */
+/** The adapter for a slug, or null (the layer then renders `notConfigured`). */
 export function resolveAdapter(slug: string): SourceAdapter<SourceFeature> | null {
   const real = findSourceAdapter(slug);
   if (real) return real;
   /*
-   * The synthetic renderer stress source. Two independent gates keep it out of production —
-   * this one and the `devOnly` filter in `components/map/registry/index.ts` — because
-   * `process.env.NODE_ENV` is a build-time constant, so both branches are dropped from the
-   * production bundle rather than merely hidden. Synthetic data on a shipped path would be
-   * fabricated content on a product whose entire value is credibility (product-brief §6).
+   * Dev-only stress source. Also gated by `devOnly` in `components/map/registry/index.ts`;
+   * `NODE_ENV` is inlined at build time so both branches are stripped from production.
    */
   if (process.env.NODE_ENV !== "production" && slug === devStressSource.slug) {
     return devStressSource;
@@ -81,26 +51,9 @@ export function resolveAdapter(slug: string): SourceAdapter<SourceFeature> | nul
  * ------------------------------------------------------------------ */
 
 /**
- * The registry row the **development-only** stress source is authorised against.
- *
- * ## Why this exists at all
- *
- * `pollSource` resolves a `connectors` row and refuses anything without one — correctly, and
- * that refusal is the kill-switch working. The synthetic 10,000-point layer has no row, so it
- * rendered as `disabled` and the renderer measurement the brief requires ("10k+ points
- * without dropping frames") could not be taken at all. QA hit exactly that.
- *
- * ## Why it is a synthetic row rather than a seeded one
- *
- * Seeding a row would put a connector for a source that does not exist into the operator's
- * registry — the one table whose value is that every row is a real upstream with a recorded
- * legal basis. Instead the row is supplied here, in memory, for one slug, under a
- * `NODE_ENV` gate the bundler evaluates at build time, so it cannot exist in production.
- *
- * The point is that the stress layer still goes through `pollSource` like every other source:
- * the rule is one governed path, not one governed path plus an exception. Nothing outbound
- * happens either way — the adapter generates its points in this process — which is also why
- * the ceiling is nominal and the audit is a no-op below.
+ * In-memory connector row for the dev-only stress source. `pollSource` refuses sources
+ * without a row, and seeding one would put a fake upstream in the real registry. This keeps
+ * the stress layer on the same `pollSource` path as everything else.
  */
 function stressConnectorRow(): Connector {
   const now = new Date();
@@ -136,25 +89,14 @@ function stressConnectorRow(): Connector {
   };
 }
 
-/**
- * Governance overrides for one adapter: none, except for the dev-only stress source.
- *
- * Both gates are build-time constants, so this whole branch — and the row above it — is
- * dropped from a production bundle rather than merely unreachable, which is the same
- * construction `resolveAdapter` and `MAP_LAYERS` use for the same layer.
- */
+/** Governance overrides: none, except for the dev-only stress source (stripped in production). */
 function governanceFor(adapter: SourceAdapter<SourceFeature>): Partial<GovernanceDeps> {
   if (process.env.NODE_ENV === "production" || adapter.slug !== devStressSource.slug) return {};
   return {
     getConnector: async () => stressConnectorRow(),
-    /* No request leaves this process, so there is no upstream fair-use share to spend. */
+    /* No outbound request, so no global ceiling to spend. */
     consumeGlobal: async () => ({ ok: true }),
-    /*
-     * No audit row: `connector_requests.connector_id` is a foreign key and this row is not in
-     * the table. Writing one would mean seeding the fiction into the database, which is the
-     * thing this construction exists to avoid — and an audit log records outbound calls, of
-     * which this makes none.
-     */
+    /* No audit row: the FK to `connectors` would fail, and no outbound call is made. */
     audit: async () => {},
   };
 }
@@ -163,26 +105,14 @@ function governanceFor(adapter: SourceAdapter<SourceFeature>): Partial<Governanc
  * The shared cache
  * ------------------------------------------------------------------ */
 
-/**
- * The payload cache lives in `lib/live/feature-cache.ts` now, not here.
- *
- * It moved because it grew a second reader. ADR 0025 makes the SERVER the authority on a
- * saved feature's attribution, licence, source name and title, and `addWorkspaceItem`
- * resolves that from this exact cache by `(sourceSlug, featureRef)` — QA finding QV-14 is
- * what a snapshot assembled from a request body costs. A Server Action cannot import from a
- * route segment, so the cache sits below both of us and neither owns it.
- *
- * Nothing else about it changed: one entry per source AND question (QV-04), the same
- * whole-degree grid, the same 256-entry ceiling with oldest-first eviction, and the same
- * `globalThis` handle so a dev-server module reload does not empty it.
+/*
+ * The payload cache is in `lib/live/feature-cache.ts` so `addWorkspaceItem` can also read
+ * it when saving a feature.
  */
 
 /**
- * The SIDE cache the adapters get — a different thing from the payload cache above.
- *
- * Several adapters need a long-lived store that is not their payload (NWS resolves UGC zone
- * codes to centroids, Radio Browser discovers a mirror), and without a handle here each would
- * invent its own in-process map that empties on every deploy.
+ * Side cache for adapters' own lookups (e.g. NWS zone centroids, Radio Browser mirror),
+ * separate from the payload cache.
  */
 const globalForSideCache = globalThis as typeof globalThis & {
   __cairnMapSideCache?: Map<string, { value: string; expiresAt: number }>;
@@ -191,24 +121,16 @@ const globalForSideCache = globalThis as typeof globalThis & {
 const sideCache = (globalForSideCache.__cairnMapSideCache ??= new Map());
 
 /**
- * The cache key: the source, plus the question, normalised.
- *
- * `sourceQueryKey` and the query handed to `pollSource` come from the same normalisation
- * (`components/map/query.ts`), so the key cannot describe a different area than the one the
- * upstream was asked about. The client computes the same key to decide whether a pan needs a
- * request at all — one function, three callers, no second grid to drift.
+ * Cache key: source plus normalised query. Uses the same normalisation as the request
+ * (`components/map/query.ts`), which the client also uses to decide if a pan needs a fetch.
  */
 function cacheKeyFor(adapter: SourceAdapter<SourceFeature>, query: SourceQuery): string {
   return `${adapter.slug}:${sourceQueryKey(query)}`;
 }
 
 /**
- * The narrow `get`/`set` slice the contract hands to every adapter, over the same process-local
- * store as the payload cache above. Two methods and no more: an adapter that could enumerate
- * or flush the cache would be able to reach data that is not its own.
- *
- * It is not durable and no longer claims to be (QV-31). An entry written here is gone at the
- * next restart, so every adapter must treat a miss as a cold start rather than an error.
+ * Get/set only, so adapters can't enumerate or flush others' entries. Not durable: adapters
+ * must treat a miss as a cold start.
  */
 const cache: SourceCache = {
   async get(key: string): Promise<string | null> {
@@ -223,8 +145,7 @@ const cache: SourceCache = {
   async set(key: string, value: string, ttlSeconds?: number): Promise<void> {
     sideCache.set(key, {
       value,
-      /* No TTL means "for this process", not "forever": an unbounded cache on a small VPS
-         is a slow memory leak with a friendly name. A day is the ceiling. */
+      /* Default TTL of one day so entries can't accumulate forever. */
       expiresAt: Date.now() + (ttlSeconds ?? 86_400) * 1000,
     });
   },
@@ -233,13 +154,8 @@ const cache: SourceCache = {
 const REQUEST_TIMEOUT_MS = 9000;
 
 /**
- * What the map needs back from one governed poll.
- *
- * `ttlSeconds` and `attribution` are on here rather than read off the adapter because the
- * **registry row is authoritative for both** (ADR 0024). The row's `cache_ttl_seconds` is
- * what an operator can change under load without a deploy — the same argument that made
- * `enabled` a column — and for adsb.lol the row says 60s where the adapter constant says 30s.
- * Reading `adapter.ttlSeconds` here would poll twice as fast as the operator asked.
+ * Result of one governed poll. `ttlSeconds` and `attribution` come from the registry row,
+ * which is authoritative over adapter constants and can be changed without a deploy.
  */
 export interface MapSourceLoad extends CachedSourceResult<SourceFeature> {
   readonly ttlSeconds: number;
@@ -247,58 +163,28 @@ export interface MapSourceLoad extends CachedSourceResult<SourceFeature> {
 }
 
 /**
- * Fetch a source through the shared cache. Three outcomes, matching ADR 0014 §2 exactly:
+ * Fetch a source through the shared cache:
  *
  *   fresh        inside the TTL, or a successful refresh
- *   stale        past the TTL, refresh failed, still inside the horizon: same data, marked
- *   unavailable  past the horizon, or no data was ever obtained
+ *   stale        past the TTL, refresh failed, still inside the horizon
+ *   unavailable  past the horizon, or no data ever obtained
  *
- * `stale` is set HERE and nowhere else, because here is the only place that knows. That is
- * why `SourceResult` does not carry the field: an adapter has just called upstream and could
- * only ever have written `false`, which is six adapters lying the same way.
+ * `stale` is only known here, which is why `SourceResult` doesn't carry it.
  *
- * ## Every upstream call goes through `pollSource`, never `adapter.fetch`
- *
- * `pollSource` does the registry lookup, the kill-switch, the global ceiling and the audit
- * row, in that order, and a disabled source returns its typed `disabled` failure **before any
- * request**. Calling `adapter.fetch` here would make the map a second, ungoverned route to
- * the same upstream — so an operator hitting the kill-switch would silence `/live/flights`
- * while `/map` kept calling. A kill-switch that does not kill is worse than none, because the
- * operator believes the traffic stopped and stops looking.
+ * Always goes through `pollSource` (registry lookup, kill-switch, global ceiling, audit),
+ * never `adapter.fetch`, so the kill-switch applies to the map too.
  */
 export async function loadSource(
   adapter: SourceAdapter<SourceFeature>,
   query: SourceQuery,
   /**
-   * The layer's `precision` fallback, applied to every feature before it is cached.
-   *
-   * ## Why the cache and not the panel
-   *
-   * `PositionalPrecision` belongs on `SourceFeature` and several adapters have not adopted it
-   * yet — `nws-alerts` in particular, whose 98.7% zone-centroid caveat is still computed by
-   * `MapLayerDefinition.precision` in `components/map/registry/weather.ts`. The map panel
-   * papers over that with `featurePrecision(layer, feature)`, which prefers the feature's own
-   * value and falls back to the layer's.
-   *
-   * Nothing outside the map calls that function, and everything outside the map that needs
-   * the caveat reads the FEATURE. So a workspace snapshot of an NWS alert would have carried
-   * a bare coordinate with no caveat at all, and the PDF a reader opens in six months would
-   * have shown an administrative centroid as a position — which is the exact loss
-   * `SourceFeature.precision` was added to prevent, arriving from the other side.
-   *
-   * Applying it here means **the cache holds the feature as the map presents it**, so the
-   * snapshot records what the reader actually saw. When an adapter adopts the field its own
-   * value wins and this becomes a no-op for that source; when every adapter has, the
-   * parameter and `MapLayerDefinition.precision` are deleted together.
+   * Layer-level precision fallback, applied before caching so snapshots and exports (which
+   * read the feature directly) keep the caveat. Needed until every adapter (e.g. `nws-alerts`)
+   * sets `SourceFeature.precision` itself.
    */
   precisionFallback?: (feature: SourceFeature) => PositionalPrecision | null,
 ): Promise<MapSourceLoad> {
-  /**
-   * Never overwrites a value the adapter set. `null` from an adapter is a positive claim —
-   * "this coordinate is as exact as the source can make it" — and the 1.3% of NWS alerts that
-   * do carry real geometry matter as much as the rest, because caveating everything is
-   * caveating nothing.
-   */
+  /** Never overwrites an adapter's value; `null` from an adapter means "exact". */
   const withPrecision = (features: readonly SourceFeature[]): readonly SourceFeature[] => {
     if (!precisionFallback) return features;
     return features.map((feature) =>
@@ -308,22 +194,15 @@ export async function loadSource(
     );
   };
 
-  /*
-   * NORMALISED ONCE, HERE, AND USED FOR BOTH THE KEY AND THE CALL. Deriving the key from one
-   * value and the request from another is QV-04 in miniature, so there is deliberately no
-   * second expression of the grid below this line.
-   */
+  // Normalise once and use it for both the cache key and the request.
   const normalised = normaliseSourceQuery(query);
   const key = cacheKeyFor(adapter, normalised);
   const cached = readPayload(key);
   const now = Date.now();
 
   /*
-   * A cache hit makes no outbound call, so it does not need re-authorising: the kill-switch
-   * governs traffic, and there is none. The TTL it is measured against is the one the last
-   * governed poll returned — the registry row's — so an operator who lowers it shortens this
-   * window too. Worst case a switched-off source stays on screen for one TTL, and then the
-   * poll below observes the switch and the entry is purged rather than allowed to go stale.
+   * A cache hit makes no outbound call, so no re-authorisation. A switched-off source can stay
+   * visible for at most one TTL before the next poll sees the switch and purges it.
    */
   if (cached && (now - cached.observedAt.getTime()) / 1000 < cached.ttlSeconds) {
     return {
@@ -339,10 +218,8 @@ export async function loadSource(
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     cache,
     /*
-     * `env` is a function rather than the whole `process.env` so an adapter reads the one key
-     * it declared and cannot browse the deployment's secrets. A missing key comes back
-     * `undefined` and the adapter returns `notConfigured` upward rather than throwing —
-     * ADR 0018: the build must not require runtime secrets.
+     * A getter rather than `process.env` so adapters can't enumerate secrets. A missing key
+     * makes the adapter return `notConfigured`; the build doesn't need runtime secrets.
      */
     env: (name: string) => process.env[name],
   };
@@ -355,13 +232,7 @@ export async function loadSource(
   );
 
   if (result.ok) {
-    /*
-     * `sourceName` and `sourceKind` are cached WITH the payload, because a second reader
-     * needs them and must not re-derive them: `addWorkspaceItem` writes them into a
-     * `workspace_feature_snapshots` row (ADR 0025), and a snapshot whose source name came
-     * from anywhere other than the poll that produced the feature is a record of what
-     * something else claimed.
-     */
+    // Cached with the payload because `addWorkspaceItem` copies them into snapshots.
     const features = withPrecision(result.features);
     const entry = {
       sourceSlug: adapter.slug,
@@ -375,7 +246,7 @@ export async function loadSource(
     };
     writePayload(key, entry);
     return {
-      /* The DTO carries the same features the cache holds — one shape, not two. */
+      /* Same features as the cache entry. */
       result: { ok: true, features, observedAt: result.observedAt },
       stale: false,
       cachedAt: entry.cachedAt,
@@ -385,14 +256,8 @@ export async function loadSource(
   }
 
   /*
-   * A REFUSAL IS NOT AN OUTAGE, AND STALE-WHILE-REVALIDATE MUST NOT SURVIVE ONE.
-   *
-   * `rateLimited`, `timeout` and `upstreamError` mean the upstream is having a moment, and
-   * showing the last good payload with a visible "stale" marker is the right service. A
-   * kill-switch, a missing key or a spent budget are OUR decisions, and continuing to display
-   * a source an operator has just switched off would rebuild — one layer down, in the cache —
-   * exactly the defect that made this function call `pollSource` in the first place. So the
-   * entry is dropped and the layer goes to its unavailable state immediately.
+   * Upstream failures (`rateLimited`, `timeout`, `upstreamError`) may serve stale data.
+   * Our own refusals (kill-switch, missing key, spent quota) drop the entry immediately.
    */
   const isOurDecision =
     result.failure.kind === "disabled" ||
@@ -401,11 +266,7 @@ export async function loadSource(
 
   if (cached && !isOurDecision) {
     const ageSeconds = (now - cached.observedAt.getTime()) / 1000;
-    /*
-     * The horizon is the adapter's own declared window, not a multiplier. Aircraft declare
-     * three minutes because a stale position is worse than none; a camera index a day. One
-     * number cannot fit both, which is why this is on the contract now (ADR 0014 §3).
-     */
+    // Per-adapter horizon (e.g. minutes for aircraft, a day for a camera index).
     const horizon = cached.ttlSeconds + adapter.staleWhileRevalidateSeconds;
     if (ageSeconds <= horizon) {
       return {
@@ -418,10 +279,7 @@ export async function loadSource(
     }
   }
 
-  /*
-   * Past the horizon, or refused by us, the entry is dropped rather than kept with an
-   * ever-growing age label. A cache is not a place to keep data we have decided not to show.
-   */
+  // Past the horizon or refused by us: drop the entry.
   const lastGoodAt = cached?.observedAt ?? null;
   dropPayload(key);
   return {

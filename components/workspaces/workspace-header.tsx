@@ -31,34 +31,17 @@ import { SaveIndicator, type SaveState } from "./save-indicator";
 import { useUnsavedGuard } from "./use-unsaved-guard";
 
 /**
- * The case header: title, status, provenance, and the two destructive doors.
+ * Case header: title, status, provenance, export and delete.
  *
- * THE TITLE AUTOSAVES ON PAUSE AND ON BLUR, exactly as `flows.md` M1 specifies for it —
- * "notes and the workspace title save 800 ms after typing stops and on blur" — with the
- * same three-state text indicator and the same `beforeunload` guard as a note. It is less
- * work than a note and still work.
+ * The title autosaves 800 ms after typing stops and on blur, with the same indicator and
+ * unload guard as notes. "Mark completed" is manual, never triggered by checklist progress.
  *
- * MARK COMPLETED IS OFFERED, NEVER AUTOMATIC (`flows.md` 3, step 10). The user decides when
- * a case is finished; a checklist reaching 9/9 is evidence, not a verdict.
- *
- * DELETING REQUIRES TYPING THE CASE TITLE (`states.md` 7.9). It cascades to every note and
- * item the user has and there is no soft delete in the schema, so the confirmation names
- * exactly what is about to go and the button stays disabled until the title matches. Cancel
- * carries initial focus.
+ * Delete cascades with no soft delete, so it requires typing the case title.
  */
 
 /**
- * Q-12. `ExportDialog` pulls Radix Dialog and the format chooser in behind it, and this
- * header renders on every case page — so a statically imported dialog put 54.7 kB of route
- * chunk (219 kB First Load) on the one route a researcher sits on for hours, often on a bad
- * connection in the field, whether or not they ever export anything.
- *
- * Loaded on demand instead, and mounted only once `exporting` is true. Same pattern, and the
- * same reason, as `components/live/flights-surface.tsx` deferring its Leaflet map.
- *
- * `ssr: false` is correct rather than merely convenient: the dialog is closed on the server
- * in every render that matters, so there is nothing to prerender, and it reaches for
- * `window` (`URL.createObjectURL`, an `<a download>`) the moment it does anything.
+ * Loaded on demand (~55 kB) and mounted only while exporting. `ssr: false` because it is
+ * never open on the server and uses `window` APIs.
  */
 const ExportDialog = dynamic(
   () => import("./export-dialog").then((module) => module.ExportDialog),
@@ -73,11 +56,7 @@ export interface WorkspaceHeaderProps {
   status: WorkspaceStatus;
   createdAt: Date | string;
   playbook: { slug: string; title: string } | null;
-  /**
-   * `features` is the count of map features saved into the case (ADR 0025). It is rendered
-   * only when it is non-zero, so the delete confirmation keeps exactly the wording
-   * `states.md` 7.9 specifies for every case that has none.
-   */
+  /** `features` (saved map features) is only shown in the delete confirmation when non-zero. */
   counts: { notes: number; tools: number; steps: number; features: number };
 }
 
@@ -112,19 +91,9 @@ export function WorkspaceHeader({
   const inFlight = useRef(false);
 
   /**
-   * Q-09 — WCAG 2.4.3. Opening the rename form REPLACES its own trigger, so without this the
-   * browser has nowhere to put focus and drops it on `<body>`: a keyboard user asks to rename
-   * the case and is returned to the top of the document, with the whole header and nav to
-   * traverse before reaching the field they just asked for.
-   *
-   * `renameButtonRef` is the trigger and `titleInputRef` is what replaces it. Focus moves
-   * into the input when the mode opens and back to the trigger when it closes — the trigger
-   * is remounted by then, which is why the restore runs in an effect keyed on `renaming`
-   * rather than inside the click handler.
-   *
-   * `exportButtonRef` is passed to the dialog, which returns focus to it on close (Radix's
-   * own restore cannot find the trigger because the dialog is driven by controlled state
-   * rather than by `DialogTrigger`).
+   * Focus management (WCAG 2.4.3). The rename input replaces its trigger, so focus moves to
+   * the input on open and back to the remounted trigger on close (hence the effect).
+   * `exportButtonRef` is passed to the dialog, which has no `DialogTrigger` to restore to.
    */
   const renameButtonRef = useRef<HTMLButtonElement>(null);
   const titleInputRef = useRef<HTMLInputElement>(null);
@@ -168,8 +137,7 @@ export function WorkspaceHeader({
       titleInputRef.current?.focus();
       titleInputRef.current?.select();
     } else if (wasRenaming.current) {
-      // Only on the close transition, never on first mount — stealing focus on load would
-      // be its own defect.
+      // Only on close, not on first mount.
       renameButtonRef.current?.focus();
     }
     wasRenaming.current = renaming;
@@ -202,14 +170,7 @@ export function WorkspaceHeader({
     <header>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          {/*
-            Q-13 — WCAG 1.3.1. The `h1` is mounted in BOTH modes. Renaming used to swap it out
-            for a bare input, leaving `/workspaces/[id]` with no level-one heading at all: a
-            screen-reader user navigating by heading lost the document's identity at exactly
-            the moment they were editing it. While renaming, the `h1` carries the current
-            title visually-hidden and wraps the field, so the outline survives the interaction
-            and the input is still labelled by its own `<label>`.
-          */}
+          {/* Keep an `h1` while renaming (visually hidden) so the page always has one. */}
           {renaming ? (
             <div className="max-w-[52ch]">
               <h1 className="sr-only">{saved}</h1>

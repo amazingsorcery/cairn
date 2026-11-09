@@ -1,16 +1,10 @@
 import type { z } from "zod";
 
 /**
- * The one interface every live source implements.
+ * The interface every live source implements, so adding a source never touches the map
+ * component. If the map ever needs `if (source === "aircraft")`, fix it here.
  *
- * This file is the contract that lets the map and the adapters be built in parallel, and it
- * is the reason **adding a source never requires touching the map component**. If a map
- * component ever needs `if (source === "aircraft")`, this abstraction has failed and the fix
- * belongs here, not there.
- *
- * Product-brief §2b. Adapters return small JSON only — never media. Video and audio URLs are
- * handed to the client to connect to directly, because relaying them through one VPS
- * exhausts its bandwidth in hours and turns a linking site into a rebroadcasting one.
+ * Adapters return small JSON, never media; media URLs go to the client directly.
  */
 
 /** What a source is about, which drives default styling and the layer legend grouping. */
@@ -29,14 +23,7 @@ export const SOURCE_KINDS = [
 ] as const;
 export type SourceKind = (typeof SOURCE_KINDS)[number];
 
-/**
- * Attribution is data, not decoration.
- *
- * Returning it from the adapter is what makes it impossible for the UI to forget: a layer
- * cannot render without having been handed the credit its licence requires. Several sources
- * make attribution a condition of use, so a missing line is a licence breach, not a polish
- * defect.
- */
+/** Attribution, returned by the adapter so a layer can't render without its required credit. */
 export interface Attribution {
   /** Exact text the licence requires. Rendered at the point of display, not in a footer. */
   readonly text: string;
@@ -46,39 +33,20 @@ export interface Attribution {
   readonly licence: string;
 }
 
-/** Why a layer has no usable data. Every one of these renders a distinct, honest state. */
+/** Why a layer has no usable data. Each renders a distinct state. */
 export type SourceFailure =
   | { readonly kind: "upstreamError"; readonly status?: number; readonly message: string }
-  /** THEY refused us. Backing off is the fix; our own quota is irrelevant. */
+  /** The upstream refused us; back off. */
   | { readonly kind: "rateLimited"; readonly retryAfterSeconds?: number }
   /**
-   * WE refused ourselves — the connector's global ceiling was already spent.
-   *
-   * Distinct from `rateLimited` because the two have opposite fixes, and an operator reads
-   * this under pressure: `quotaExhausted` means raise our ceiling if the upstream allows it,
-   * `rateLimited` means lower it because the upstream does not. Collapsing them is the same
-   * conflation that made `quotaDenied` cover both outcomes on the health board until it was
-   * split, and the same one behind confidence-versus-reliability and our-record-versus-the-
-   * entry. This codebase keeps meeting it; the answer is always to keep them apart.
+   * Our own global ceiling was spent. Distinct from `rateLimited` because the fixes are
+   * opposite (raise our ceiling vs. lower it).
    */
   | { readonly kind: "quotaExhausted"; readonly resetsAt?: Date }
   /**
-   * THEY MOVED, AND WE DO NOT FOLLOW. QA finding QV-18.
-   *
-   * The upstream answered a 3xx pointing at a different host, and `fetchUpstream` refused it
-   * rather than walking it: "the upstream is trustworthy" is exactly the assumption an SSRF
-   * exploits, and an open redirect on an otherwise honest service is enough.
-   *
-   * Its own kind rather than an `upstreamError`, for the reason this union exists at all: an
-   * operator reads these under pressure, and "they moved" and "they are down" lead to
-   * opposite investigations. A source that has moved is fixed by updating a URL in
-   * `lib/sources/<slug>.ts` after checking where it now points; a source that is down is
-   * fixed by waiting. Reporting the first as the second sends somebody looking for an outage
-   * that is not there.
-   *
-   * NO PAYLOAD, deliberately. The destination host is upstream-controlled text and would end
-   * up rendered; it goes to the structured log (`scope: "source.http"`, `redirectHost`) where
-   * an operator can find it and no reader can be shown it.
+   * Upstream redirected off its pinned host and we refused to follow (SSRF). Separate from
+   * `upstreamError` since "moved" and "down" need different fixes. No payload: the host is
+   * upstream-controlled and goes to the log (`redirectHost`) only.
    */
   | { readonly kind: "redirected" }
   | { readonly kind: "schemaChanged"; readonly message: string }
@@ -86,11 +54,7 @@ export type SourceFailure =
   | { readonly kind: "notConfigured"; readonly missingEnvVar: string }
   | { readonly kind: "disabled"; readonly reason: string };
 
-/**
- * A fetch either produced features or it did not. It never throws for an expected condition:
- * one bad upstream must disable its own layer and nothing else (product-brief §2b), and an
- * exception crossing a layer boundary is how one source takes down a map.
- */
+/** Features or a typed failure; never throws for expected conditions, so one bad source can't break the map. */
 export type SourceResult<T> =
   | {
       readonly ok: true;
@@ -101,13 +65,8 @@ export type SourceResult<T> =
   | { readonly ok: false; readonly failure: SourceFailure; readonly lastGoodAt: Date | null };
 
 /**
- * A result plus the staleness only the cache layer can know.
- *
- * `stale` deliberately does NOT live on `SourceResult`: an adapter has just called upstream,
- * so the only honest value it could ever set is `false`. Whether the caller is looking at a
- * cache entry served past its TTL because the upstream is unreachable is known by the layer
- * holding the payload cache — `app/(public)/map/sources.ts` — and nowhere else. Putting the field on the adapter's return would
- * have invited six adapters to each lie about it in the same way.
+ * A result plus staleness, which only the cache layer (`app/(public)/map/sources.ts`) knows;
+ * an adapter that just called upstream could only ever say `false`.
  */
 export interface CachedSourceResult<T> {
   readonly result: SourceResult<T>;
@@ -118,18 +77,9 @@ export interface CachedSourceResult<T> {
 }
 
 /**
- * How precisely a feature's coordinate describes where the thing actually is.
- *
- * This is on the FEATURE, not derived per-layer, because it leaks otherwise. The map
- * engineer built a per-layer `precision()` renderer for the weather caveat and then found
- * the hole: a reader can save an NWS alert into a workspace and read a precise-looking
- * coordinate in a PDF export months later, with nothing left to say it is an administrative
- * centroid possibly tens of kilometres from the weather. The export never calls the map's
- * renderer. Carrying it here means the snapshot carries it too.
- *
- * `null` means the coordinate is as exact as the source can make it — and returning `null`
- * for the 1.3% of NWS alerts that do have real geometry matters as much as setting it for
- * the rest, because caveating everything is caveating nothing.
+ * How precisely a coordinate locates the thing. Carried on the feature (not per layer) so the
+ * caveat survives into workspace snapshots and exports. `null` means as exact as the source
+ * allows.
  */
 export interface PositionalPrecision {
   /** Short qualifier for a table cell, beside the number it qualifies: "approx · zone centre". */
@@ -153,22 +103,15 @@ export interface SourceFeature {
   readonly label: string;
   /** Where this feature came from, so a reader can always get back to the origin. */
   readonly sourceUrl?: string;
-  /**
-   * Set when the coordinate is an approximation. `null` or absent means it is as exact as
-   * the source can make it. Travels with the feature into a workspace snapshot and an
-   * export, so the caveat cannot be lost at a boundary the map does not own.
-   */
+  /** Set when the coordinate is approximate; null/absent means exact. */
   readonly precision?: PositionalPrecision | null;
   /** Adapter-specific detail, rendered by the feature panel. Never `any`. */
   readonly properties: Readonly<Record<string, string | number | boolean | null>>;
 }
 
 /**
- * What is being asked for. Most sources ignore all of it; viewport-scoped ones do not.
- *
- * This exists so the registry can hold *sources* rather than pre-bound instances of a
- * source. Binding a viewport into the slug at construction time works right up until two
- * viewports are needed, and then the registry is quietly holding two of the same thing.
+ * What is being asked for. Lets viewport-scoped sources take the viewport per call instead of
+ * being pre-bound in the registry.
  */
 export interface SourceQuery {
   readonly bbox?: {
@@ -188,14 +131,9 @@ export interface SourceQuery {
 export interface SourceContext {
   readonly signal: AbortSignal;
   /**
-   * The shared side cache. One entry space for every adapter, namespaced by `cacheKey`.
-   *
-   * NOT DURABLE, and the word used to be here (QA finding QV-31). ADR 0019 planned Redis and
-   * a poller worker; **ADR 0031 removed both** and nothing replaced them, so what ships is a
-   * `Map` in the web process — see `app/(public)/map/sources.ts`. It survives across polls
-   * and across a dev-server hot reload; it does not survive a restart or a deploy and it does
-   * not span processes. Anything an adapter puts here it may have to earn again after a
-   * deploy, so a cache miss must always be a cold start rather than an error.
+   * Shared side cache, namespaced by `cacheKey`. Not durable: a per-process `Map`
+   * (`app/(public)/map/sources.ts`) that survives polls and hot reloads but not restarts. A
+   * miss must be treated as a cold start.
    */
   readonly cache: SourceCache;
   /** Reads a required key and returns `notConfigured` upward rather than throwing. */
@@ -203,13 +141,8 @@ export interface SourceContext {
 }
 
 /**
- * The narrow slice of a cache an adapter may use — two methods, no enumeration and no flush,
- * so one adapter cannot reach another's entries.
- *
- * A `Map` in the web process in production, and a `Map` in tests. It was documented as "Redis
- * in production" until ADR 0031 removed the container that would have provided it (QV-31).
- * Kept as an interface anyway: it is the seam a shared store would slot into, and it is what
- * lets `createMemoryCache()` stand in for one without an adapter noticing.
+ * The cache slice an adapter may use: get/set only, no enumeration or flush. An in-process
+ * `Map` today; kept as an interface so a shared store could slot in.
  */
 export interface SourceCache {
   get(key: string): Promise<string | null>;
@@ -223,20 +156,12 @@ export interface SourceAdapter<T extends SourceFeature = SourceFeature> {
   readonly homepage: string;
   readonly attribution: Attribution;
 
-  /**
-   * Cache lifetime in seconds, and the floor on how often we may call upstream.
-   * Product-brief §2b: aircraft 5–10s, ships ~30s, quakes ~60s, fires ~15min, webcams ~1h.
-   */
+  /** Cache lifetime in seconds, and the floor on how often we may call upstream. */
   readonly ttlSeconds: number;
 
   /**
-   * How long a cached payload may still be shown, past `ttlSeconds`, when the upstream is
-   * unreachable — after which the surface shows nothing rather than something wrong.
-   *
-   * Separate from `ttlSeconds` because they answer different questions: when to refetch, and
-   * when to stop believing. A 30-second aircraft feed and a one-hour camera index do not
-   * share a horizon, and ADR 0014 §3 requires one. Aircraft positions are worthless within
-   * minutes; a camera index is fine for a day.
+   * How long past `ttlSeconds` a cached payload may be shown while the upstream is
+   * unreachable; after that, show nothing. Varies widely (aircraft: minutes; cameras: days).
    */
   readonly staleWhileRevalidateSeconds: number;
 
@@ -246,23 +171,12 @@ export interface SourceAdapter<T extends SourceFeature = SourceFeature> {
   /** Zod schema for the raw upstream payload. A parse failure is `schemaChanged`. */
   readonly responseSchema: z.ZodTypeAny;
 
-  /**
-   * Map an already-validated upstream payload to features.
-   *
-   * Separate from `fetch` so it can be tested against a captured fixture with no network —
-   * which is the most valuable test an adapter has, because upstream shape changes are the
-   * failure this whole layer exists to survive. Capture real payloads; do not invent them.
-   */
+  /** Map a validated payload to features. Separate from `fetch` so captured fixtures can be tested offline. */
   normalise(payload: unknown, query: SourceQuery): readonly T[];
 
   /**
-   * Fetch and normalise. Must not throw for an expected failure — return one.
-   *
-   * `query` carries the viewport for sources that are scoped to one, so a viewport-scoped
-   * source can describe itself rather than being baked into the registry as a pre-bound
-   * instance. `cache` is the shared store: several adapters need a long-lived side cache
-   * (NWS zone centroids, mirror discovery) that must survive a worker restart, and without
-   * a handle here each one invents its own in-process map that empties on every deploy.
+   * Fetch and normalise; return expected failures, don't throw. `ctx.cache` is for long-lived
+   * side data (NWS zone centroids, mirror discovery).
    */
   fetch(query: SourceQuery, ctx: SourceContext): Promise<SourceResult<T>>;
 

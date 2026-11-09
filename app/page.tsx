@@ -14,37 +14,15 @@ import { isSignInEnabled } from "@/lib/session-surface";
 import { cn } from "@/lib/utils";
 
 /**
- * `/` — the front door.
+ * `/`, revalidated hourly. Don't read `searchParams`, `cookies()` or `auth()` here or the
+ * route stops being static; the header's signed-in state is filled in client-side.
  *
- * **ISR:3600** (architecture HANDOFF §8). Nothing here reads `searchParams`, `cookies()` or
- * `auth()`; the header's signed-in state is upgraded client-side by the shell precisely so
- * this route can stay prerendered (shell handoff §9, sitemap.md §10.1). Adding any of the
- * three would make the `revalidate` below silently meaningless.
- *
- * WHAT THIS PAGE MAY NOT DO — `docs/brand/HANDOFF.md` §7.1 and `states.md` §9.1: no hero
- * banner making a claim about the reader's abilities. It opens with what the thing is.
- *
- * COUNTS ARE READ, NEVER GUESSED. `states.md` §9.1: "If a count cannot be read, the block
- * renders without its number rather than with a zero. A zero we could not verify is a false
- * statement." Every count below is `number | null`, every failure degrades to `null`, and the
- * page never whole-page-errors (§9.3).
- *
- * WHAT THIS PAGE SAYS ABOUT VERIFICATION. `docs/content/verification-log.md` records that of
- * 94 seed entries, 36 were looked up during this build and 58 carry the model knowledge
- * horizon instead. The copy below therefore promises a *dated* record, not a fresh one, and
- * sends the reader to `/methodology` for what the levels mean. Overstating it here would be
- * the one lie this product cannot afford (product-brief §6).
+ * Counts are `number | null`: an unreadable count is omitted rather than shown as zero.
  */
 
 export const revalidate = 3600;
 
-/**
- * Every count is read independently and every failure is contained.
- *
- * `Promise.allSettled`, not `Promise.all`: `states.md` §9.3 requires a failed block to render
- * its description with no count while the rest of the page stays whole. One rejected read must
- * not take the front door down.
- */
+/** `allSettled` so one failed read only drops its own count, not the page. */
 async function readCounts() {
   const [tools, categories, playbooks, connectors, cameras, recent] = await Promise.allSettled([
     listTools({
@@ -94,13 +72,7 @@ function join(parts: (string | null)[]): string | null {
   return present.length > 0 ? present.join(" · ") : null;
 }
 
-/**
- * One pillar.
- *
- * `href` is nullable on purpose. `states.md` §9.2: a pillar with nothing published "still
- * renders, saying what the pillar is, without a count and without a link" — product-brief §8's
- * "if it isn't built, it isn't linked" applies to empty as well as to unbuilt.
- */
+/** One pillar. `href` is null when nothing is published, so the card renders unlinked. */
 function Pillar({
   title,
   href,
@@ -227,12 +199,7 @@ export default async function HomePage() {
             metric={liveMetric}
             cta="see what is published"
           />
-          {/*
-            The fourth pillar exists only where somebody can sign in. In public-only mode no
-            provider is configured, `/workspaces` answers 404, and this card would be both a
-            dead link and a promise the deployment cannot keep (ADR 0032). The other three
-            pillars are the product either way, and the grid reflows to them.
-          */}
+          {/* Hidden in public-only mode, where `/workspaces` 404s. */}
           {isSignInEnabled() ? (
             <Pillar
               title="workspaces"
@@ -245,12 +212,7 @@ export default async function HomePage() {
         </ul>
       </section>
 
-      {/*
-        The honest sentence about the dates. `verification-log.md`: 36 of 94 seed entries were
-        looked up during this build and 58 carry the model knowledge horizon. Rather than print
-        a number that drifts the moment an editor touches the queue, this says the part that
-        stays true — every entry carries its own date, and the dates are not all recent.
-      */}
+      {/* Not every seed entry was re-checked recently, so promise a dated record, not a fresh one. */}
       <section aria-labelledby="dating-heading" className="mt-12 max-w-[68ch]">
         <h2 id="dating-heading" className="text-xl font-semibold tracking-tight">
           What the dates mean
@@ -307,13 +269,7 @@ export default async function HomePage() {
           <h2 id="recent-heading" className="text-xl font-semibold tracking-tight">
             Recently published entries
           </h2>
-          {/*
-            `listRecentTools` orders by `published_at DESC` — when the entry went live, not
-            when it was last verified. The heading says "published" because that is what the
-            query returns; calling it "recently verified" would be a claim the data does not
-            support. Each card carries its own last-verified date, which is the number that
-            answers the freshness question.
-          */}
+          {/* `listRecentTools` orders by `published_at`, not verification date. */}
           <p className="mt-2 text-sm text-foreground-secondary">
             Ordered by when the entry was published. Each card shows when it was last verified.
           </p>

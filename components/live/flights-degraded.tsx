@@ -5,17 +5,10 @@ import { Countdown, RetryAtButton, RetryButton } from "./live-controls";
 import { formatAge, formatClockUtc, type LiveQuotaScope, type LiveReason } from "./live-format";
 
 /**
- * `/live/flights` when there is nothing recent enough to show. `docs/design/states.md`
- * §5.4–§5.6, `wireframes/08-live-flights.txt`.
+ * `/live/flights` when there is nothing recent enough to show. Each failure reason gets its
+ * own message: what's wrong, how old the last good data was, and what the reader can do.
  *
- * FOUR DIFFERENT THINGS CAN GO WRONG AND THEY NEED FOUR DIFFERENT SENTENCES. "It broke" is
- * not a state (ADR 0011 rule 5). Each of these says what is wrong, how old the last good
- * data was, and what the reader can do about it — including saying, in two of the four
- * cases, that there is nothing to do and why offering a retry would be a lie.
- *
- * Past `cache_ttl + stale_while_revalidate` the surface shows NOTHING rather than something
- * old (ADR 0014 §3). There is a point past which "aircraft positions from 40 minutes ago"
- * is not degraded service, it is a different and misleading product.
+ * Past `cache_ttl + stale_while_revalidate` we show nothing rather than old positions.
  */
 
 export interface FlightsDegradedProps {
@@ -28,35 +21,19 @@ export interface FlightsDegradedProps {
   lastGoodAgeSeconds: number | null;
   /** ISO instant the fixed-window quota clears. Only meaningful for `quota-exhausted`. */
   quotaResetAt: string | null;
-  /**
-   * WHICH counter refused. Null when nothing said — in which case the copy blames nobody.
-   *
-   * This was a boolean, `perViewerQuota`, derived by the surface from the first four words of
-   * the server's message. Three counters can refuse, not two, and the guess defaulted to the
-   * one branch that makes a claim about a named operator (QV-29).
-   */
+  /** Which counter refused. Null when unknown, in which case the copy blames nobody. */
   quotaScope: LiveQuotaScope | null;
   perUserLimit: number | null;
   windowSeconds: number | null;
 }
 
 /**
- * THE SENTENCE FOR EACH COUNTER, CHOSEN BY THE COUNTER (QA finding QV-29).
+ * Message for each quota counter. Only the shared ceiling relates to the upstream's fair-use
+ * limit; the entry counter refuses before any upstream is involved. `null` gets a sentence
+ * that's true for any of our counters.
  *
- * Only ONE of the three ceilings has anything to do with an upstream's fair-use limit, and
- * the shared-ceiling sentence was being shown for all of them — including for the per-client
- * entry counter, which refuses before a registry row is read and therefore cannot be evidence
- * of anything about an operator. Telling a reader that a named third party's limit is
- * exhausted when it is not is the worst copy defect this product has, because not saying
- * things it cannot support is the entire proposition.
- *
- * `null` — nothing said — gets the sentence that is true whichever of our counters refused.
- * The old default was the one that named an operator.
- *
- * NO POSSESSIVE IS BUILT OUT OF THE OPERATOR NAME. `operator` is a registry string and reads
- * "adsb.lol (community ADS-B aggregator)"; the previous copy rendered
- * "adsb.lol (community ADS-B aggregator)’s fair-use limit". `components/map/layer-status.tsx`
- * met the same trap with source names and its tests forbid it.
+ * Don't build a possessive from `operator`: it can end in a parenthesis
+ * ("adsb.lol (community ADS-B aggregator)").
  */
 function quotaSentence(
   scope: LiveQuotaScope | null,
@@ -161,16 +138,9 @@ export function FlightsDegraded({
 
       <div className="mt-4 flex flex-wrap items-center gap-3">
         {/*
-          NO RETRY BUTTON when the connector is switched off. Retry cannot help, and offering
-          it would be a lie about the reader's options (states.md §5.6). The same applies to a
-          quota we have not yet cleared: the control is there, but disabled and honest about
+          No retry when disabled (it can't help) or rate-limited (don't invite calls to a
+          service that asked us to stop). An uncleared quota gets a disabled retry that says
           when it will work.
-
-          NO RETRY BUTTON when the upstream rate-limited us either, and this one is not about
-          honesty but about conduct: a retry control is an invitation to keep calling a service
-          that has just asked us to stop. That is the behaviour QA finding Q-02 was about
-          (product-brief §3.2 constraint 5). The server holds a cooldown regardless, so the
-          button could not work — but it should not be offered in the first place.
         */}
         {reason === "upstream-down" || reason === "stale" ? <RetryButton /> : null}
         {reason === "quota-exhausted" && quotaResetAt ? (
@@ -190,7 +160,6 @@ const TITLE: Record<LiveReason, string> = {
   "quota-exhausted": "Aircraft positions paused",
   "rate-limited": "Aircraft positions paused",
   disabled: "Flight tracking is switched off",
-  // Near-unreachable here: the viewport is clamped by `flightParamsSchema`, not typed by a
-  // reader. It is a real state on the Toolbench, where the parameters come from a text field.
+  // Rare here since `flightParamsSchema` clamps the viewport; reachable from the Toolbench.
   "bad-request": "That view could not be read",
 };

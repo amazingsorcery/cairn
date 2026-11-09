@@ -8,28 +8,17 @@ import {
 import { INPUT_TYPES, OUTPUT_TYPES } from "@/lib/validation/vocabulary";
 
 /**
- * The facet vocabulary as the directory renders it: which groups exist, in what order, and
- * what each stored value is called on screen.
+ * Directory facet groups, order and display labels.
  *
- * The value lists are IMPORTED, never retyped. `COST_MODELS` and `CONFIDENCE_LEVELS` carry
- * Postgres CHECK constraints (`db/schema.ts`); `INPUT_TYPES` and `OUTPUT_TYPES` are the open
- * vocabularies the content-strategist grows in `lib/content/schema.ts`. A hand-written copy
- * here would drift on the first addition and the symptom would be a facet that silently
- * cannot find the entries it is named after.
- *
- * Labels are sentence case with no title case anywhere (`docs/brand/voice.md` §5), and the
- * four confidence labels come from `confidenceLabel()` so the chip and the checkbox beside
- * it can never disagree about what a level is called.
+ * Value lists are imported from the schema/vocabulary modules so they can't drift.
+ * Confidence labels come from `confidenceLabel()` to match the chip.
  */
 
 /** The `searchParams` key each facet group writes. Matches `parseDirectoryFilters`. */
 export const FACET_KEYS = ["category", "tag", "cost", "input", "output", "confidence"] as const;
 export type FacetKey = (typeof FACET_KEYS)[number];
 
-/**
- * `freeWithRegistration` is a threat-model fact rather than a pricing tier — the operator
- * learns who you are before you get a result — so it is spelled out rather than abbreviated.
- */
+/** `freeWithRegistration` is spelled out: registering identifies you to the operator. */
 const COST_LABELS: Record<CostModel, string> = {
   free: "free",
   freeWithRegistration: "free with registration",
@@ -45,10 +34,7 @@ export function costLabel(value: string): string {
     : value;
 }
 
-/**
- * Input and output types are kebab-case in storage because they are an open `text[]`
- * vocabulary the content grows (`lib/validation/vocabulary.ts`). On screen they are words.
- */
+/** Input/output types are stored kebab-case; display them as words. */
 export function typeLabel(value: string): string {
   return value.replace(/-/g, " ");
 }
@@ -76,10 +62,8 @@ export const INPUT_OPTIONS: readonly string[] = INPUT_TYPES;
 export const OUTPUT_OPTIONS: readonly string[] = OUTPUT_TYPES;
 
 /**
- * Architecture HANDOFF §9.8: `outputTypes: ['none']` is a category, not an empty state.
- * Tradecraft and OPSEC entries — a browser, an encrypted volume, a password manager —
- * protect the investigator rather than yielding evidence. The group carries this line so a
- * reader does not read the checkbox as "no data".
+ * `outputTypes: ['none']` is a real category (OPSEC tools such as browsers or password
+ * managers), not "no data".
  */
 export const OUTPUT_NOTE =
   "Output type none is a real category: the entry protects the investigator rather than yielding evidence.";

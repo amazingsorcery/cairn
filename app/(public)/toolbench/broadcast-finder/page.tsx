@@ -120,12 +120,7 @@ export default function BroadcastFinderPage() {
             </strong>{" "}
             A stream leaves no artefact. Note the station, the exact time in UTC, and what was
             said,{" "}
-            {/*
-              The link is to a route that only exists where somebody can sign in. In
-              public-only mode `/workspaces` answers 404 (ADR 0032), so the sentence keeps its
-              instruction — which is the part that matters to the reader — and drops the
-              pointer to a page that is not served.
-            */}
+            {/* `/workspaces` 404s in public-only mode, so drop the link there. */}
             {isSignInEnabled() ? (
               <>
                 in your{" "}

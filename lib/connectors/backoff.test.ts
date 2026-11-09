@@ -10,16 +10,8 @@ import {
 import { clearCooldowns, runConnector } from "./runtime";
 
 /**
- * Regression tests for QA finding Q-02.
- *
- * The audit log recorded 57 `429`s and one `420` against adsb.lol — 29% of every outbound
- * call refused — because nothing backed off and the client kept polling. product-brief §3.2
- * constraint 5 is "respect robots.txt, terms of service and rate limits", which this product
- * tells its own users is the line between OSINT and a computer-misuse offence.
- *
- * These tests are the guard on the mechanism. The end-to-end proof that the surface stops
- * polling is in `lib/connectors/connectors.test.ts` and the `live` computation in
- * `components/live/flights-surface.tsx`.
+ * Backoff on upstream rate limits (429/420). End-to-end polling behaviour is covered in
+ * `connectors.test.ts` and `components/live/flights-surface.tsx`.
  */
 
 beforeEach(() => {
@@ -32,8 +24,7 @@ describe("isRateLimitStatus", () => {
   });
 
   it("recognises 420 Enhance Your Calm", () => {
-    // Non-standard, and exactly what adsb.lol returned once in the audit log. Treating it as
-    // a generic upstream error would keep us calling a service that asked us twice to stop.
+    // Non-standard, but adsb.lol has returned it.
     expect(isRateLimitStatus(420)).toBe(true);
   });
 
@@ -62,8 +53,7 @@ describe("parseRetryAfter", () => {
   });
 
   it("returns null when the header is absent or unparseable", () => {
-    // adsb.lol sends none — measured 2026-08-31 — so this is the live path, and it must fall
-    // through to DEFAULT_COOLDOWN_SECONDS rather than to zero.
+    // adsb.lol sends no Retry-After, so callers fall back to DEFAULT_COOLDOWN_SECONDS.
     expect(parseRetryAfter(null, now)).toBeNull();
     expect(parseRetryAfter("", now)).toBeNull();
     expect(parseRetryAfter("soon", now)).toBeNull();
@@ -97,8 +87,7 @@ describe("the per-connector cooldown", () => {
   });
 
   it("extends but never shortens an existing cooldown", () => {
-    // A second 429 arriving mid-cooldown must not reset the clock DOWN — that would let a
-    // burst of refusals shorten the very backoff they should be lengthening.
+    // A later 429 with a shorter wait must not shorten the cooldown.
     openCooldown("adsb-lol", 120, now);
     openCooldown("adsb-lol", 10, now);
     expect(cooldownRemaining("adsb-lol", now)).toBe(120);
@@ -108,8 +97,7 @@ describe("the per-connector cooldown", () => {
   });
 
   it("defaults to a cooldown longer than the connector's own window", () => {
-    // The upstream limiter is a load-dependent token bucket with no published number, so
-    // backing off for less than one window would just re-enter the burst that caused it.
+    // Upstream limit is unpublished; backing off less than a window re-enters the burst.
     expect(DEFAULT_COOLDOWN_SECONDS).toBeGreaterThanOrEqual(60);
   });
 });
@@ -121,15 +109,8 @@ describe("the per-connector cooldown", () => {
 const recorded: { outcome: string; upstreamStatus: number | null; durationMs: number }[] = [];
 
 /**
- * The limiter is stubbed to PERMIT, so this suite tests the cooldown and nothing else.
- *
- * It used not to be stubbed at all, which worked while the per-user quota was spent after the
- * cooldown check: the cooldown branch returned first and nothing reached the limiter. QV-02
- * moved that quota above the cache read — and therefore above the cooldown — so an unstubbed
- * `consume` now throws (there is no database in a unit test), `runConnector` fails CLOSED as
- * it should, and every assertion here saw `quota-exhausted` instead of `rate-limited`. The
- * fail-closed behaviour is correct and is asserted in `connector-cache.test.ts`; here it was
- * only hiding the thing this file is about.
+ * The limiter is stubbed to permit so only the cooldown is under test. The quota is spent
+ * before the cooldown check, and an unstubbed `consume` would fail closed (no DB here).
  */
 vi.mock("@/lib/rate-limit", () => ({
   consume: vi.fn(async () => ({ ok: true, count: 1, limit: 100, remaining: 99, resetAt: new Date() })),
@@ -201,18 +182,14 @@ describe("a cooldown refusal is audited as rateLimited, never as quotaDenied", (
     const envelope = await runConnector(driver, {}, { subject: "probe-subject" }, { connector });
 
     expect(recorded).toHaveLength(1);
-    // THE ASSERTION THIS TEST EXISTS FOR. `quotaDenied` would send an operator to tune OUR
-    // ceiling; the fix for this event is to back off from THEIRS (migration 0005). Someone
-    // collapsing the two outcomes back together must fail here.
+    // Upstream refusal (rateLimited) must stay distinct from our own quota (quotaDenied).
     expect(recorded[0]?.outcome).toBe("rateLimited");
     expect(recorded[0]?.outcome).not.toBe("quotaDenied");
-    // Nothing left the building, so there is no status and no wall-clock cost.
+    // No request was made.
     expect(recorded[0]?.upstreamStatus).toBeNull();
     expect(recorded[0]?.durationMs).toBe(0);
 
-    // The operator's view and the reader's view must describe the SAME event. An audit row
-    // saying "they refused us" beside an envelope blaming our own quota would be two
-    // accounts of one moment, and the health board is read against what users report.
+    // The envelope reason must match the audit outcome.
     expect(envelope.reason).toBe("rate-limited");
     expect(envelope.reason).not.toBe("quota-exhausted");
   });
@@ -229,8 +206,7 @@ describe("a cooldown refusal is audited as rateLimited, never as quotaDenied", (
 
   it("does not call the upstream at all while the cooldown is open", async () => {
     openCooldown("backoff-probe", 45);
-    // `driver.fetch` throws if reached; reaching it would be the bug this whole finding is
-    // about — continuing to call a service that asked us to stop.
+    // `driver.fetch` throws if reached.
     await expect(
       runConnector(driver, {}, { subject: "probe-subject" }, { connector }),
     ).resolves.toMatchObject({ reason: "rate-limited" });

@@ -3,28 +3,12 @@ import { describe, expect, it, vi } from "vitest";
 import { attachHlsStream, browserPlaysHlsNatively, narrowHlsModule } from "./hls";
 
 /**
- * HLS is the one media kind that needs code rather than an element.
+ * HLS playback. Chrome/Firefox fail silently on `<video src=".m3u8">`, so:
+ * 1. Use native HLS where available and never load the library.
+ * 2. Load the library only when a stream is opened (injected loader).
+ * 3. Report every failure (library load, no MSE, fatal stream error).
  *
- * Safari and iOS play an `.m3u8` natively from `<video src>`; Chrome and Firefox will not,
- * and — this is the part that matters — they fail *silently*. The element sits there, nothing
- * plays, and no error surfaces. Every silent failure in this codebase has been treated as a
- * defect rather than a limitation, so this module has three jobs and each of them is tested
- * here rather than described in a comment:
- *
- * 1. **Use the browser's own player where it exists** and never load a library at all. Roughly
- *    a fifth of this audience is on Safari or iOS and should pay nothing for a polyfill.
- * 2. **Load the library only at the moment a reader opens a stream**, never at import time —
- *    which is why the loader is an injected function returning a promise rather than a
- *    top-level `import`.
- * 3. **Fail out loud.** A library that will not load, a browser without Media Source
- *    Extensions, and a fatal error mid-stream all have to reach the panel, because the
- *    alternative is a play button that does nothing.
- *
- * The fake below matches hls.js's documented surface — default-exported class, static
- * `isSupported()`, `Events.ERROR`, `loadSource`, `attachMedia`, `on`, `destroy` — which is
- * also exactly the surface `narrowHlsModule` checks at runtime. The dependency is not
- * installed yet (the maintainer adds it); when it is, `narrowHlsModule` is what proves the
- * real module still has that shape rather than a type assertion claiming it does.
+ * The fake matches the hls.js surface that `narrowHlsModule` checks at runtime.
  */
 
 interface FakeHlsRecord {
@@ -62,16 +46,14 @@ function fakeHlsModule(options: { supported?: boolean } = {}) {
 
 function videoElement(canPlay = ""): HTMLMediaElement {
   const element = document.createElement("video");
-  // jsdom's canPlayType always returns "", which is the Chrome/Firefox answer. Overriding it
-  // per element is how the Safari branch gets exercised at all.
+  // jsdom's canPlayType always returns "" (like Chrome/Firefox); override to test Safari.
   Object.defineProperty(element, "canPlayType", { value: () => canPlay, configurable: true });
   return element;
 }
 
 describe("native HLS", () => {
   it("is detected from the element itself, not from a user-agent string", () => {
-    // Sniffing the UA would be wrong twice over: it is unreliable, and it is a fingerprinting
-    // read on an audience that objects to those.
+    // No UA sniffing: unreliable, and a fingerprinting read.
     expect(browserPlaysHlsNatively(videoElement("maybe"))).toBe(true);
     expect(browserPlaysHlsNatively(videoElement("probably"))).toBe(true);
     expect(browserPlaysHlsNatively(videoElement(""))).toBe(false);
@@ -87,8 +69,7 @@ describe("native HLS", () => {
 
     expect(result.mode).toBe("native");
     expect(element.getAttribute("src")).toBe("https://example.org/live.m3u8");
-    // THE ASSERTION THIS TEST IS FOR. A polyfill fetched on a browser that does not need it
-    // is bytes and a third-party request for nothing.
+    // No library fetch on browsers that don't need it.
     expect(loader).not.toHaveBeenCalled();
   });
 });
@@ -108,7 +89,7 @@ describe("the library path, for browsers without native HLS", () => {
     expect(result.mode).toBe("library");
     expect(record.loaded).toEqual(["https://example.org/live.m3u8"]);
     expect(record.attached).toEqual([element]);
-    // Never our origin. The reader's browser talks to the operator; product-brief §2b.
+    // The browser talks to the operator directly, never via our origin.
     expect(element.getAttribute("src")).toBeNull();
   });
 
@@ -123,8 +104,7 @@ describe("the library path, for browsers without native HLS", () => {
       loader: () => Promise.resolve(module),
     });
 
-    // Autoplay is forbidden outright (ADR 0015) and moving pictures that start on their own
-    // are also what `prefers-reduced-motion` is about. The reader presses play.
+    // No autoplay; the reader presses play.
     expect(play).not.toHaveBeenCalled();
   });
 
@@ -156,8 +136,7 @@ describe("the library path, for browsers without native HLS", () => {
 
     record.fire?.({ fatal: true, details: "manifestLoadError" });
     expect(onFatalError).toHaveBeenCalledTimes(1);
-    // A manifest blocked by connect-src arrives here. The panel must say so and link out,
-    // rather than leaving a player that will never start.
+    // e.g. a manifest blocked by connect-src; the panel then links out.
     expect(record.destroyed).toBe(1);
   });
 });
@@ -172,8 +151,7 @@ describe("when the stream cannot be played here at all", () => {
   });
 
   it("says the same when the loader resolves to something that is not the library", async () => {
-    // A dynamic import is an external boundary like any other, so its result is narrowed
-    // rather than asserted. An upstream that changes its export shape must not throw here.
+    // The dynamic import result is narrowed, so a changed export shape doesn't throw.
     const result = await attachHlsStream(videoElement(), "https://example.org/live.m3u8", {
       onFatalError: vi.fn(),
       loader: () => Promise.resolve({ notTheLibrary: true }),
@@ -182,8 +160,7 @@ describe("when the stream cannot be played here at all", () => {
   });
 
   it("distinguishes a browser without Media Source Extensions from a missing library", async () => {
-    // Different sentence for the reader: one is our deployment's problem, the other is their
-    // browser's, and telling them the wrong one sends them to the wrong remedy.
+    // Different message: ours to fix vs. the reader's browser.
     const { module } = fakeHlsModule({ supported: false });
     const result = await attachHlsStream(videoElement(), "https://example.org/live.m3u8", {
       onFatalError: vi.fn(),
@@ -202,7 +179,7 @@ describe("narrowing what the dynamic import returned", () => {
     expect(narrowHlsModule(undefined)).toBeNull();
     expect(narrowHlsModule({})).toBeNull();
     expect(narrowHlsModule({ default: {} })).toBeNull();
-    // A class with no static isSupported is a different library, or a different major version.
+    // No static isSupported: a different library or major version.
     expect(narrowHlsModule({ default: class {}, Events: { ERROR: "e" } })).toBeNull();
   });
 });

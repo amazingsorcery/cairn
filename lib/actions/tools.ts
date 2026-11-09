@@ -22,19 +22,11 @@ import {
 } from "./search-keywords";
 
 /**
- * Editorial mutations on `tools`. `editor` or `admin` (sitemap.md §8).
+ * Editorial mutations on `tools` (`editor` or `admin`).
  *
- * THREE things every action here gets right, and each of them is a silent failure if not:
- *
- * 1. **`search_keywords` is recomputed IN THE SAME TRANSACTION** as any write that changes
- *    the category, the tags, or the facet arrays (HANDOFF §4). The `search_vector` generated
- *    column reads that text column, so a missed recompute means the entry is in the
- *    catalogue and unfindable by the facet that should find it. Nothing errors.
- * 2. **Revalidation runs AFTER commit, never inside the transaction** (caching.md §5). A
- *    rolled-back transaction that already purged the cache serves a re-render of stale data
- *    with a fresh timestamp — worse than the stale entry it replaced.
- * 3. **Draft edits purge nothing** (caching.md §5.1). A draft is on no public page, and
- *    purging on every keystroke-save would make the cache useless during an editing session.
+ * 1. `search_keywords` is recomputed in the same transaction as any category/tag/facet change.
+ * 2. Revalidation runs after commit, never inside the transaction.
+ * 3. Draft edits purge nothing; drafts aren't on public pages.
  */
 
 /** The tag set for a tool mutation, assembled once so publish and delete cannot diverge. */
@@ -69,7 +61,7 @@ export async function createTool(input: unknown): Promise<ActionResult<{ id: str
         await tx.insert(toolTags).values(tagIds.map((tagId) => ({ toolId: row.id, tagId })));
       }
 
-      // Same transaction as the insert. HANDOFF §4.
+      // Same transaction as the insert.
       await recomputeToolSearchKeywords(tx, [row.id]);
       return row.id;
     });
@@ -91,16 +83,14 @@ export async function updateTool(input: unknown): Promise<ActionResult<{ id: str
     const result = await db.transaction(async (tx) => {
       const [row] = await tx
         .update(tools)
-        // `last_verified_at` is deliberately absent: a save NEVER moves it (ADR 0007 §8).
-        // Coupling them would let a typo fix silently assert that every claim on the page
-        // was re-checked. `reverifyTool` is the only path that touches it.
+        // No `last_verified_at`: only `reverifyTool` moves it.
         .set({ ...fields, updatedById: user.id })
         .where(eq(tools.id, id))
         .returning({ id: tools.id, slug: tools.slug, status: tools.status });
 
       if (!row) return null;
 
-      // Replace the tag set wholesale. A diff would be three statements to save one.
+      // Replace the tag set wholesale.
       await tx.delete(toolTags).where(eq(toolTags.toolId, id));
       if (tagIds.length > 0) {
         await tx.insert(toolTags).values(tagIds.map((tagId) => ({ toolId: id, tagId })));
@@ -120,7 +110,7 @@ export async function updateTool(input: unknown): Promise<ActionResult<{ id: str
 
     if (!result) return fail("notFound", "That tool does not exist.");
 
-    // Only a PUBLISHED tool has cache entries to purge (caching.md §5.1).
+    // Only published tools have cache entries to purge.
     if (result.status === "published" && result.categorySlug) {
       for (const tag of toolTags_(result.slug, result.categorySlug, result.tagSlugs)) {
         revalidateTag(tag);
@@ -132,13 +122,8 @@ export async function updateTool(input: unknown): Promise<ActionResult<{ id: str
 }
 
 /**
- * Publish. The database is the enforcement (`tools_published_requires_verification_check`);
- * the Zod check above it exists so the editor is told which field is missing rather than
- * being shown a constraint name.
- *
- * `published_at` is set on the FIRST transition to published and never cleared on unpublish
- * (HANDOFF §4) — it drives the "recently added" ordering, and clearing it would make an
- * unpublish-republish cycle look like a brand-new entry.
+ * Publish. The DB constraint enforces the gate; Zod names the missing field.
+ * `published_at` is set on first publish and never cleared, since it drives "recently added".
  */
 export async function publishTool(input: unknown): Promise<ActionResult<{ id: string }>> {
   return guard("tool.publish", async () => {
@@ -202,7 +187,7 @@ export async function publishTool(input: unknown): Promise<ActionResult<{ id: st
         revalidateTag(tag);
       }
     }
-    // Belt and braces on the two highest-traffic listing paths (caching.md §1).
+    // Also purge the two highest-traffic listing paths.
     revalidatePath("/directory");
     revalidatePath("/");
 
@@ -220,7 +205,7 @@ export async function unpublishTool(input: unknown): Promise<ActionResult<{ id: 
     const result = await db.transaction(async (tx) => {
       const [row] = await tx
         .update(tools)
-        // `published_at` is NOT cleared. HANDOFF §4.
+        // `published_at` is not cleared.
         .set({ status: "draft", updatedById: user.id })
         .where(eq(tools.id, parsed.data.id))
         .returning({ id: tools.id, slug: tools.slug, categoryId: tools.categoryId });
@@ -251,16 +236,9 @@ export async function unpublishTool(input: unknown): Promise<ActionResult<{ id: 
 }
 
 /**
- * Delete.
- *
- * THE TRAP: `/playbooks/[slug]` renders the name and summary of every linked tool, so its
- * cache entry contains data from `tools`. Deleting the tool cascades away
- * `playbook_step_tools`, after which there is nothing left to join and the affected playbook
- * slugs are unrecoverable. They are therefore collected BEFORE the delete, inside the same
- * transaction (caching.md §5.2, HANDOFF §7).
- *
- * `workspace_items` rows survive with their `title` and `checked` state intact and
- * `tool_id` null — that is `ON DELETE SET NULL` and ADR 0008, and it is the whole point.
+ * Delete. Playbook pages render linked tools, so citing playbook slugs are collected before
+ * the cascade removes `playbook_step_tools`. `workspace_items` keep their title and get a
+ * null `tool_id` (`ON DELETE SET NULL`).
  */
 export async function deleteTool(input: unknown): Promise<ActionResult<{ id: string }>> {
   return guard("tool.delete", async () => {
@@ -316,11 +294,8 @@ export async function deleteTool(input: unknown): Promise<ActionResult<{ id: str
 }
 
 /**
- * "Confirm still accurate" — the ONLY action that moves `last_verified_at` (ADR 0007 §8).
- *
- * It takes no date from the caller. The date is `now()`, because the claim being recorded is
- * that a human looked *now*; accepting a date would make back-dating a form field, which is
- * the dishonesty product-brief §6.3 forbids.
+ * "Confirm still accurate": the only action that moves `last_verified_at`. Uses `now()`;
+ * takes no date, so it can't be back-dated.
  */
 export async function reverifyTool(input: unknown): Promise<ActionResult<{ id: string }>> {
   return guard("tool.reverify", async () => {
@@ -338,8 +313,7 @@ export async function reverifyTool(input: unknown): Promise<ActionResult<{ id: s
     const row = updated[0];
     if (!row) return fail("notFound", "That tool does not exist.");
 
-    // The verification date renders on every public surface where the entry appears
-    // (ADR 0007 §3), so a published entry's caches must be purged.
+    // The verification date is shown publicly, so purge published entries.
     if (row.status === "published") {
       revalidateTag(TAG.tools);
       revalidateTag(TAG.tool(row.slug));
@@ -350,11 +324,7 @@ export async function reverifyTool(input: unknown): Promise<ActionResult<{ id: s
   });
 }
 
-/**
- * Bulk re-verify from `/admin/queue`. Same rule: the date is `now()`, never supplied.
- * ONE statement for the whole set — the queue's whole purpose is clearing a backlog, and a
- * per-row round trip would make that unusable at any real size.
- */
+/** Bulk re-verify from `/admin/queue`, in one statement. The date is `now()`. */
 export async function reverifyTools(ids: unknown): Promise<ActionResult<{ count: number }>> {
   return guard("tool.reverify.bulk", async () => {
     const user = await requireEditor();

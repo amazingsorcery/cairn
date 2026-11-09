@@ -6,15 +6,8 @@ import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 
 /**
- * The secondary nav inside `/admin`. `wireframes/11-admin-queue.txt`, 1280px.
- *
- * `/admin/connectors` and `/admin/taxonomy` are rendered only for an `admin`, because the
- * layout knows the role and does not pass them otherwise. That is a convenience, not
- * authorisation: the routes themselves call `requireAdminPage()` and a non-admin gets 404
- * whether or not the link was ever drawn. A hidden nav link has never been a control.
- *
- * `aria-current="page"` is driven by the same prefix rule the primary nav uses, so a detail
- * route under a section still marks its section current.
+ * Secondary nav inside `/admin`. Hiding admin-only links is cosmetic; those routes enforce
+ * `requireAdminPage()` themselves. Detail routes mark their section as current.
  */
 
 export interface AdminNavLink {

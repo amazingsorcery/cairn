@@ -9,23 +9,11 @@ import { getPlaybookBySlug } from "@/lib/queries/playbooks";
 import { requireSession } from "../session";
 
 /**
- * `/workspaces/new` — start a case, optionally from a playbook.
+ * `/workspaces/new`: start a case, optionally from `?playbook=<slug>`. Signed-out users go
+ * through sign-in and come back here with the playbook still attached.
  *
- * THIS ROUTE IS THE LANDING POINT FOR "start a case from this playbook".
- * `/playbooks/[slug]` links here for everyone, signed in or out. Signed out, `requireSession`
- * redirects to `/signin?callbackUrl=/workspaces/new?playbook=<slug>`, and the reader comes
- * back to this form with the playbook still attached — so the intent survives the round trip
- * instead of dropping them on a bare page (`docs/design/flows.md` ⚠ W0).
- *
- * `docs/design/states.md` §4.7 says "the case is created on return". It is created by one
- * click on return rather than zero, deliberately: a GET that writes a row is triggerable
- * from any link a reader can be sent, and the click buys the reader the chance to name the
- * case, which matters once they have more than three. Recorded as a decision the
- * maintainer may overrule in `docs/frontend/HANDOFF-workspaces.md` §8.
- *
- * A `?playbook=` slug that does not resolve is NOT an error: the reader still wanted a case,
- * so they get a blank one and are told the playbook could not be attached. Failing the whole
- * page because a query parameter went stale would be worse service.
+ * Creating the case takes a click: a GET that writes a row could be triggered by any link.
+ * An unresolvable slug gives a blank case with a notice, not an error.
  */
 
 export const dynamic = "force-dynamic";

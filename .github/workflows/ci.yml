@@ -5,42 +5,26 @@ on:
     branches: ["**"]
   pull_request:
 
-# A second push to the same branch makes the first run irrelevant. Cancel it rather than
-# paying for it and waiting behind it. Keyed on the ref, so pushes to different branches
-# and to a PR's head do not cancel each other.
+# Cancel superseded runs on the same ref.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# Least privilege. Nothing here writes to the repository, opens a PR, or pushes a package.
 permissions:
   contents: read
 
 env:
-  # Silences the "Corepack is about to download..." prompt, which otherwise hangs a
-  # non-interactive runner until the step times out.
+  # Stops Corepack's download prompt from hanging the runner.
   COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
   NEXT_TELEMETRY_DISABLED: "1"
 
-# ACTION PINNING: these are pinned to major-version tags, which GitHub moves as patches
-# land. That is the common practice and it is not the strongest option — a tag can be
-# repointed at different code. To pin to immutable commit SHAs instead, resolve each one:
-#
+# Actions are pinned to major tags. To pin to SHAs instead:
 #   gh api repos/actions/checkout/git/refs/tags/v4 --jq .object.sha
-#
-# and rewrite as `actions/checkout@<sha> # v4`. Real SHAs are deliberately not guessed
-# here; look them up rather than trust a value copied from a document.
+# and use `actions/checkout@<sha> # v4`.
 
 jobs:
   # =====================================================================================
-  # Everything that needs the application and its database.
-  #
-  # Deliberately ONE job rather than four. Each extra job repeats the checkout, the pnpm
-  # install and the Next.js build — on this project that is roughly two minutes of pure
-  # duplication per job, and it buys nothing, because the steps below are strictly
-  # ordered anyway: there is no useful world in which e2e runs while typecheck is still
-  # unknown. Steps fail fast in order, so a lint error still stops the run before the
-  # browser download.
+  # App + database checks. One job so install and build aren't repeated; steps fail fast.
   # =====================================================================================
   verify:
     name: typecheck, lint, test, build, e2e
@@ -49,18 +33,8 @@ jobs:
 
     services:
       postgres:
-        # The same major version as production. Testing against a different major is how
-        # you find out about a syntax or planner difference in production instead of here.
-        #
-        # NOT `postgis/postgis`. ADR 0022 refuses PostGIS: there is no spatial predicate in
-        # this product and no `cached_features` table. (ADR 0022's original wording added
-        # "the live positions live in Redis and expire"; since ADR 0031 they live in the web
-        # process's own memory and expire there. Either way they are not in Postgres, so
-        # Postgres needs no spatial type.) `postgres:16` IS the real thing here, and
-        # matching production is the whole
-        # reason this service container exists. If ADR 0022 is ever reversed, this image and
-        # docker-compose.prod.yml's must change in the same commit — a CI that runs against
-        # an extension production does not have tests a database nobody deploys.
+        # Same image as production. No PostGIS: nothing uses spatial queries. Keep in sync
+        # with docker-compose.prod.yml.
         image: postgres:16
         env:
           POSTGRES_USER: postgres
@@ -68,8 +42,7 @@ jobs:
           POSTGRES_DB: app_test
         ports:
           - 5432:5432
-        # Without this the job proceeds as soon as the container starts and the first
-        # migration races initdb. --health-start-period covers first-boot initdb.
+        # Wait for initdb so the first migration doesn't race it.
         options: >-
           --health-cmd "pg_isready -U postgres -d app_test"
           --health-interval 5s
@@ -77,15 +50,7 @@ jobs:
           --health-retries 10
           --health-start-period 20s
 
-      # ONE service container. There was a `redis:7-alpine` here for the source cache, the
-      # rate limiter and the SSE pub/sub path; ADR 0031 removed all three from the product.
-      # The cache is in-process, the limiter is fixed-window in Postgres (ADR 0009), and the
-      # stream was never built. A CI service container for a dependency the application does
-      # not open is the same defect as the production container that had no consumer.
-
     env:
-      # The database the app, the migrations and Playwright all talk to. `localhost`
-      # because the service container's port is published onto the runner.
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/app_test
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -96,10 +61,7 @@ jobs:
       AUTH_URL: http://localhost:3000
       AUTH_TRUST_HOST: "true"
 
-      # Obviously non-functional values. They exist so that boundary validation (Zod on
-      # process.env) passes and the build completes; no test may depend on them working.
-      # Real OAuth and SMTP are not exercised in CI — an e2e sign-in test must stub the
-      # provider or use a test-only credentials path. See docs/deploy/HANDOFF.md #9.
+      # Dummy values so env validation passes. Real OAuth/SMTP are not exercised in CI.
       AUTH_GITHUB_ID: ci-not-a-real-client-id
       AUTH_GITHUB_SECRET: ci-not-a-real-client-secret
       SMTP_HOST: localhost
@@ -112,11 +74,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # pnpm must exist before setup-node, because setup-node's `cache: pnpm` shells out
-      # to `pnpm store path` to find the directory it is caching. Reversing these two
-      # steps produces a confusing "Unable to locate executable file: pnpm".
-      # No `version:` is given: action-setup v4 reads the packageManager field in
-      # package.json (pnpm@11.1.3), so CI cannot drift from the lockfile's producer.
+      # Must run before setup-node, whose pnpm cache calls `pnpm store path`.
+      # Version comes from package.json's packageManager field.
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         with:
@@ -126,20 +85,13 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          # Keyed on pnpm-lock.yaml. A lockfile change is the only thing that should
-          # invalidate the dependency cache.
           cache: pnpm
 
       - name: Install dependencies
-        # --frozen-lockfile fails rather than silently resolving a different tree when
-        # package.json and pnpm-lock.yaml disagree. That disagreement is a real bug and CI
-        # is where it should surface.
         run: pnpm install --frozen-lockfile
 
       - name: Generate an ephemeral AUTH_SECRET
-        # Generated per run rather than committed. A committed placeholder that looks like
-        # a secret invites someone to copy it into a real .env; a value that only exists
-        # for 20 minutes cannot be.
+        # Per-run so no secret-looking value is committed.
         run: echo "AUTH_SECRET=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
 
       - name: Typecheck
@@ -148,48 +100,27 @@ jobs:
       - name: Lint
         run: pnpm lint
 
-      # WITH COVERAGE, because `vitest.config.ts` carries per-directory coverage thresholds
-      # and a threshold that only runs on a developer's machine is not a floor. The numbers
-      # guard `lib/actions/workspaces.ts`, `lib/queries/workspaces.ts` and the case-file
-      # export route — the code that decides who may read whose case file (QA finding QV-16).
-      #
-      # This step also needs the `postgres` service, and has it: the DB-backed suites create
-      # and migrate their own `app_test_vitest` database beside `app_test`, so they neither
-      # depend on nor disturb the migrate/seed/build/e2e steps that follow. If Postgres is
-      # unreachable, `tests/db/harness.ts` fails the run rather than skipping quietly.
+      # Coverage thresholds in vitest.config.ts guard the workspace access-control code.
+      # DB-backed suites use their own `app_test_vitest` database and fail (not skip) if
+      # Postgres is unreachable.
       - name: Unit tests, with coverage thresholds
         run: pnpm test:coverage
 
-      # The catalogue is the product's credibility. A duplicate slug, a playbook step
-      # citing a tool that was omitted during verification, or non-contiguous step
-      # ordering all reach users as broken links, and none of them are caught by tsc.
+      # Catches duplicate slugs, playbook steps citing missing tools, and step-order gaps.
       - name: Validate seed content
         run: pnpm content:check
 
-      # The CSP img-src allowlist is generated from content/cameras/ and config/live.ts
-      # (ADR 0017). If they disagree, either a camera provider was added without widening
-      # the policy — every embed silently blocked in production — or the policy was widened
-      # without content justifying it. Both are defects; neither is visible in development,
-      # where there is no CSP at all.
+      # The CSP img-src allowlist is generated from content/cameras/ and config/live.ts;
+      # drift would block embeds in production (dev has no CSP).
       - name: Check the generated CSP matches the content
         run: pnpm csp:check
 
-      # There was no dependency gate here, and the audit that found that also found 3
-      # critical and 7 high advisories sitting in the tree unnoticed — including one in the
-      # auth library about existence-based checks failing open, which is the mechanism every
-      # other control in this app sits behind. A gate is what stops that recurring.
-      #
-      # Fails on high and critical only. One moderate is knowingly allowed: esbuild's
-      # dev-server advisory, which requires a running `vite dev` and is not present in the
-      # production image at all. Tightening to `moderate` would gate the build on a
-      # vulnerability that cannot be reached by anything we ship.
+      # High/critical only. The known moderate (esbuild dev-server) is not in the
+      # production image.
       - name: Audit dependencies
         run: pnpm audit --audit-level high
 
-      # Migrations before build: any page that reads the database during static generation
-      # needs the schema to exist. Running them here also means the migration script itself
-      # is exercised on every commit, against a real Postgres 16 — which is the only way a
-      # broken migration gets caught before it reaches the production deploy.
+      # Before build, since static generation may read the database.
       - name: Run migrations
         run: pnpm db:migrate
 
@@ -199,11 +130,7 @@ jobs:
       - name: Build
         run: pnpm build
 
-      # Chromium only. Installing all three engines costs several minutes and a few hundred
-      # megabytes per run; the production target is a normal desktop browser and the
-      # cross-engine matrix is not what this pipeline is for. Add firefox/webkit here on
-      # the day a rendering bug justifies it.
-      # --with-deps pulls the shared libraries Chromium needs on a bare ubuntu runner.
+      # Chromium only, to keep CI fast.
       - name: Install Playwright (chromium)
         run: pnpm exec playwright install --with-deps chromium
 
@@ -211,8 +138,6 @@ jobs:
         run: pnpm test:e2e
 
       - name: Upload the Playwright report
-        # `always()` so the report survives a failing run — which is the only run where
-        # anyone wants it.
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
@@ -224,14 +149,8 @@ jobs:
           if-no-files-found: ignore
 
   # =====================================================================================
-  # Prove the Dockerfile still builds.
-  #
-  # This is not redundant with the job above. It exercises things `pnpm build` on a runner
-  # never touches: the pnpm install inside a Linux container, layer ordering, the
-  # standalone-output guard, and the file layout of the final image. Without it, a broken
-  # Dockerfile is discovered on the VPS at deploy time, which is the worst possible moment.
-  # Runs in parallel — no `needs:` — so a Dockerfile regression is reported even when a
-  # test is failing.
+  # Check the Dockerfile still builds (in-container install, standalone output, layout).
+  # Runs in parallel with `verify`.
   # =====================================================================================
   docker:
     name: docker image builds
@@ -249,21 +168,15 @@ jobs:
         with:
           context: .
           target: runner
-          # Nothing is pushed: there is no registry in this deployment. The VPS builds
-          # from source in deploy.sh. This job only has to answer "does it build".
+          # No registry; the VPS builds from source in deploy.sh.
           push: false
-          # load: true would export the image into the runner's docker daemon, which costs
-          # time and disk for no benefit here. The build succeeding is the assertion.
           load: false
           tags: app-web:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Build the migration image
-        # Built separately because it is a different Dockerfile target with a different
-        # dependency set (it keeps devDependencies so tsx is available). A change that
-        # breaks only this target would otherwise reach production and fail at the
-        # migration step of a deploy, after the backup and after the build.
+        # Separate target that keeps devDependencies (tsx).
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -274,15 +187,8 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # There is no `worker` target to build. The Dockerfile stage was removed with the
-      # container it produced (ADR 0031): its CMD was `pnpm worker`, a script that never
-      # existed in package.json, so every image this step ever built was one that could not
-      # start. Two targets ship: runner and migrator.
-
   # =====================================================================================
-  # Static validation of the infrastructure files themselves.
-  # Cheap (well under a minute) and catches the class of error that is otherwise only
-  # found by running the thing on the server at 2 a.m.
+  # Static validation of the infrastructure files.
   # =====================================================================================
   infra:
     name: shell + compose + caddy validation
@@ -293,15 +199,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Lint the shell scripts
-        # ubuntu-latest ships shellcheck. -S warning: style suggestions are noise; genuine
-        # quoting and portability bugs are not.
+        # -S warning skips style-only suggestions.
         run: shellcheck -S warning infra/*.sh
 
       - name: Validate docker-compose.prod.yml
-        # `compose config` performs the full ${...} substitution, so it needs a .env. The
-        # example file is used with its placeholder values, which is exactly what we want
-        # to validate: the FILE's structure, not any real credential. deploy.sh separately
-        # refuses to run while those placeholders are still in place.
+        # `compose config` needs a .env for substitution; the example's placeholders suffice.
         run: |
           cp .env.example .env
           docker compose -f docker-compose.prod.yml config --quiet
@@ -309,25 +211,11 @@ jobs:
           rm -f .env
 
       - name: Assert the production topology
-        # `compose config` proves the file PARSES. These three assertions prove it says what
-        # it is meant to say, which is a different question and the one that matters. Each
-        # corresponds to a failure that stays invisible until it is exploited or until the
-        # site is already down:
-        #
-        #   1. Exactly four services: caddy, db, migrate, web. `migrate` is in the list
-        #      because `config` renders profile-gated services too; it never starts on `up`.
-        #      A service silently added or dropped by a bad merge is a change to the attack
-        #      surface, and nothing else in this pipeline would notice.
-        #   2. ONLY caddy publishes ports. A stray `ports:` on web or db puts that service
-        #      on the VPS's public IP — and UFW does not save you, because Docker writes its
-        #      own iptables rules ahead of UFW's chain. An unauthenticated Postgres on a
-        #      public port is the whole database.
-        #   3. db is NOT on `edge`. `edge` is the network the internet reaches. Keeping db
-        #      off it is what makes "unreachable from outside" a property of the topology
-        #      rather than a promise about the Caddyfile.
-        #
-        # jq is preinstalled on ubuntu-latest. `config --format json` needs Compose v2.20+,
-        # which the runner image has.
+        # Asserts:
+        #   1. Services are exactly caddy, db, web (plus profile-gated migrate).
+        #   2. Only caddy publishes ports (Docker's iptables rules bypass UFW).
+        #   3. db is not on the internet-facing `edge` network.
+        # `config --format json` needs Compose v2.20+.
         run: |
           cp .env.example .env
           docker compose -f docker-compose.prod.yml config --format json > /tmp/compose.json
@@ -335,10 +223,8 @@ jobs:
 
           echo "Services:"; jq -r '.services | keys | .[]' /tmp/compose.json
 
-          # `migrate` is filtered out before comparing rather than named in the expected
-          # list, because whether `compose config` renders a profile-gated service at all is
-          # a property of the Compose version, not of this file. Filtering makes the
-          # assertion true either way, while still catching a service added or dropped.
+          # Filter out `migrate`: whether profile-gated services are rendered depends on
+          # the Compose version.
           jq -e '([.services | keys[] | select(. != "migrate")] | sort) == ["caddy","db","web"]' \
             /tmp/compose.json > /dev/null \
             || { echo "FAIL: expected exactly caddy, db, web (plus the profile-gated migrate)"; exit 1; }
@@ -358,10 +244,7 @@ jobs:
           fi
           echo "OK: db is off the edge network"
 
-          # No service may declare a dependency on a service that is not in the file. A
-          # leftover `depends_on: redis` would make every `up` fail with a message about an
-          # undefined service, on the server, at the end of a deploy — the exact class of
-          # failure ADR 0031 removed. Cheap to assert, so assert it.
+          # Every depends_on must name a defined service, or `up` fails at deploy time.
           jq -e '
             (.services | keys) as $defined
             | [.services | to_entries[]
@@ -374,10 +257,7 @@ jobs:
           echo "OK: every depends_on names a service that exists"
 
       - name: Validate the Caddyfile
-        # `caddy validate` parses the config and builds the full provisioning graph, so it
-        # catches a misspelled directive, a bad matcher, and an unbalanced brace. DOMAIN
-        # and ACME_EMAIL are supplied because the file reads them as {$VAR} at load time;
-        # the values are irrelevant to whether the syntax is correct.
+        # The Caddyfile reads DOMAIN/ACME_* at load time; dummy values are enough.
         run: |
           docker run --rm \
             -e DOMAIN=ci.example.invalid \

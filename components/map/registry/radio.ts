@@ -3,48 +3,20 @@ import type { FeaturePrecision, LayerMedia, MapLayerDefinition, Rgba } from "./t
 import { boolProp, instantProp, numberProp, stringProp } from "./props";
 
 /**
- * Internet radio stations, from the Radio Browser community catalogue.
+ * Internet radio stations from the Radio Browser community catalogue. A registry of points,
+ * not a live feed; the value is the detail panel.
  *
- * ## Like the camera layer, this is a registry of points rather than a live feed
+ * The browser connects to the broadcaster directly; we never relay audio (bandwidth, and the
+ * catalogue's public-domain dedication doesn't cover the streams). We don't send the
+ * catalogue's click telemetry, which would reveal which stations each reader opens.
  *
- * Nothing here is happening. A station has a location because somebody typed one into a
- * community catalogue, and the value of the layer is the panel: who broadcasts, in what
- * language, on what codec, whether the catalogue's own checker could still reach the stream,
- * and where to hear it.
+ * The `<audio>` element only mounts on press, with `preload="none"`.
  *
- * ## The audio is never ours — product-brief §2b
+ * About 20% of working geolocated stations use plain `http:` (2,473 of 12,413, measured
+ * 2026-08-31), which browsers silently block as mixed content. They're shown, with a link
+ * out instead of a play button.
  *
- * The stream URL is handed to the reader; the reader's browser is what connects to the
- * broadcaster. Relaying audio through one VPS exhausts its bandwidth in hours and turns a
- * linking site into a rebroadcasting one, which is a different legal posture entirely — and
- * the catalogue's public-domain dedication covers *the catalogue*, not the audio. The
- * maintainer dedicated the rights they had; a station's stream is not among them.
- *
- * **We also decline the catalogue's click telemetry.** Its API asks callers to report every
- * station a user opens so popular stations can be ranked. For a media player that is a fair
- * trade; here it would tell a third party which station each reader listened to, which is
- * precisely the interest-graph leak product-brief §3.2 constraint 4 forbids. The layer's
- * description says so, because a reader of this product should not have to take it on trust.
- *
- * **The panel plays the stream, behind an explicit press** (`MapLayerDefinition.media`, added
- * 2026-09-01 to close the gap this file used to describe). The `<audio>` element does not exist
- * until the reader asks for it, it carries `preload="none"`, and its `src` is the broadcaster's
- * own URL — the bytes go from the station to the reader and never through us. Nothing is
- * reported back to the catalogue about which station was opened, which is the same decision
- * recorded above, now visible in the interface.
- *
- * ## One in five of these cannot play on this page, and we say which
- *
- * Measured by the integrations engineer on 2026-08-31: **20% of working geolocated stations
- * publish a plain `http:` stream URL** (2,473 of 12,413). A browser on an HTTPS page blocks
- * those as mixed content whatever our own policy says, and it does it silently — the reader
- * presses play, nothing happens, and concludes the tool is broken. They are surfaced rather
- * than filtered: dropping a fifth of the catalogue without saying so is the quiet
- * incompleteness this codebase has already been bitten by twice.
- *
- * ## The property names this file reads
- *
- * From `lib/sources/radio-browser.ts`, and listed in `docs/frontend/HANDOFF-map.md` §3:
+ * Properties read (from `lib/sources/radio-browser.ts`):
  *
  *   stationUuid       string   the catalogue's own identifier
  *   streamUrl         string   what the CLIENT would connect to. Never fetched by us
@@ -64,13 +36,8 @@ import { boolProp, instantProp, numberProp, stringProp } from "./props";
  */
 
 /**
- * --slate-300 #A8B9C9 and --slate-700 #2A3646, per `app/tokens.css` §1.
- *
- * The neutral, and it is a considered choice rather than what was left. Every other family in
- * the palette is spoken for by a layer, and the only unused one besides slate is red — which
- * on this product means destructive. A radio station is not an alert, and colouring it like
- * one would make the map read as though something were wrong in Helsinki. A seventh layer
- * will need a new primitive in `app/tokens.css`, which is the brand engineer's file.
+ * --slate-300 #A8B9C9 and --slate-700 #2A3646, per `app/tokens.css`. Neutral because red
+ * means destructive; a new layer will need a new primitive in `app/tokens.css`.
  */
 const SLATE_300: Rgba = [168, 185, 201, 220];
 const SLATE_700: Rgba = [42, 54, 70, 235];
@@ -94,12 +61,7 @@ function formatInstant(feature: SourceFeature, key: string): string | null {
     .replace(",", "")} UTC`;
 }
 
-/**
- * Whether the stream can play in a browser on this page, in the column and in three words.
- *
- * Not a padlock and not a colour: the consequence is functional rather than a security
- * grading, and "plain http" is the phrase that tells a reader why the audio will not start.
- */
+/** "plain http" or "https": whether the stream can play on this page. */
 function streamSecurity(feature: SourceFeature): string | null {
   const insecure = boolProp(feature, "isInsecureStream");
   if (insecure === null) return null;
@@ -108,26 +70,14 @@ function streamSecurity(feature: SourceFeature): string | null {
 
 function formatBitrate(feature: SourceFeature): string | null {
   const bitrate = numberProp(feature, "bitrateKbps");
-  /*
-   * The catalogue records 0 for a station whose bitrate nobody has filled in, and rendering
-   * "0 kbps" would read as a measurement rather than as a blank. It becomes an em dash and a
-   * screen-reader "not reported", like every other absence on this map.
-   */
+  /* The catalogue uses 0 for "unknown"; treat it as missing. */
   if (bitrate === null || bitrate <= 0) return null;
   return `${NUMBER.format(Math.round(bitrate))} kbps`;
 }
 
 /**
- * THE LOCATION CAVEAT, ON EVERY STATION.
- *
- * A dot on a map is read as "the thing is here", and for an internet radio station that
- * inference is wrong three times over: the coordinate is what somebody entered into a
- * community catalogue, it usually names a studio or a city rather than a transmitter, and an
- * internet stream has no coverage area at all — it plays anywhere with a connection.
- *
- * It is set for every feature because it is uniformly true of this source, which is a
- * different situation from the weather layer's 98.7%. There is no station here whose
- * coordinate is a precise, source-published position, so there is none to leave uncaveated.
+ * Location caveat for every station: the coordinate is hand-entered in the catalogue,
+ * usually a studio or city, and an internet stream has no coverage area.
  */
 function stationPrecision(feature: SourceFeature): FeaturePrecision {
   const place = stringProp(feature, "country");
@@ -143,27 +93,13 @@ function stationPrecision(feature: SourceFeature): FeaturePrecision {
 }
 
 /**
- * The stream, as something the reader can actually use — or as a link when it cannot be.
+ * The stream as playable media, or a link out when it can't play here.
  *
- * ## The 20% is the whole design of this function
+ * Plain-`http:` streams are silently blocked as mixed content, so they get `kind: "link"`:
+ * a top-level navigation in a new tab, which works.
  *
- * A plain-`http:` stream is blocked as mixed content by any browser on an HTTPS page, and it
- * fails **silently**: no error, no console, nothing. A play button on one of those is a control
- * that lies. Measured on 2026-08-31, that is 2,473 of 12,413 working geolocated stations.
- *
- * So they get `kind: "link"`, which opens the stream in a new tab — a top-level navigation the
- * browser will honour, connecting the reader to the broadcaster exactly as the audio element
- * would have. Same connection, same disclosure, one more step, and it works.
- *
- * Filtering them out instead would have been quieter and worse: dropping a fifth of a
- * catalogue without saying so is the silent-incompleteness failure this codebase has met
- * three times.
- *
- * `credit` is null throughout, and that is not an oversight. Radio Browser's maintainer
- * dedicated the catalogue to the public domain and asks for nothing; the layer credits them
- * anyway in its own status row, which is where a credit for the *catalogue* belongs. What we
- * must not do is invent a credit line for the station's audio, whose licence the catalogue's
- * dedication does not cover and cannot.
+ * `credit` is null: the catalogue is public domain (credited in the status row), and we
+ * don't invent a credit for the station's audio.
  */
 function radioMedia(feature: SourceFeature): LayerMedia | null {
   const url = stringProp(feature, "streamUrl");
@@ -191,26 +127,12 @@ function radioMedia(feature: SourceFeature): LayerMedia | null {
   }
 
   /*
-   * HLS IS NOT A PROGRESSIVE STREAM AND AN <audio> ELEMENT CANNOT PLAY IT.
+   * HLS (~1 in 15 stations) can't play in a plain `<audio>` on Chrome/Firefox, so it goes
+   * through the HLS player with `medium: "audio"`.
    *
-   * Thirteen of the two hundred stations in the captured catalogue page publish an `.m3u8`
-   * manifest — roughly one in fifteen. Safari and iOS play those natively; Chrome and Firefox
-   * do not, and they fail in the worst possible way: the element accepts the URL, nothing
-   * plays, and no error is raised anywhere. Until this kind existed, those stations had a play
-   * button that silently did nothing on most browsers — the same defect as the plain-http
-   * stations above, arrived at by a different route.
-   *
-   * `kind: "stream"` routes them through the HLS player, which uses the browser's own
-   * implementation where there is one and dynamically loads a library where there is not, and
-   * which says so out loud when it can do neither. `medium: "audio"` because a radio station's
-   * manifest carries no pictures; an `.m3u8` alone cannot tell anyone that.
-   *
-   * **This path needs `connect-src` for the broadcaster's origin in production.** The library
-   * fetches manifest and segments over XHR rather than as media, so today's policy blocks it
-   * outside Safari — and the catalogue's stream hosts are an open, community-edited set that
-   * cannot be allow-listed. That is a ruling for `docs/frontend/HANDOFF-map.md` §2.3, not a
-   * decision this file may take. Meanwhile the reader gets the honest "we cannot play this
-   * here" state with a link out, which is strictly better than the silence they get today.
+   * Outside Safari this needs `connect-src` for the broadcaster's origin, and the catalogue's
+   * hosts are an open set that can't be allow-listed. Until the CSP allows it, the player
+   * shows a "can't play here" message with a link out.
    */
   const kind = boolProp(feature, "isHls") === true ? "stream" : "audio";
 
@@ -270,13 +192,7 @@ export const radioLayer: MapLayerDefinition = {
       radiusUnits: "pixels",
       lineWidthUnits: "pixels",
       getPosition: (f) => [f.longitude, f.latitude],
-      /*
-       * HOLLOW MEANS THE STREAM WILL NOT PLAY HERE. A plain-http stream is blocked as mixed
-       * content by any browser on this page, so the difference between the two rings is
-       * whether the thing the dot stands for is reachable at all — which is the most useful
-       * distinction this layer can draw. The table says "plain http" in words in its own
-       * column, so the ring is a shortcut rather than the only signal.
-       */
+      /* Hollow = plain-http stream that won't play here (also stated in the table). */
       getFillColor: (f) => (boolProp(f, "isInsecureStream") === true ? [0, 0, 0, 0] : input.colour),
       getRadius: 5.5,
       getLineColor: (f) => (f.id === input.selectedId ? input.selectedColour : input.colour),
@@ -286,7 +202,7 @@ export const radioLayer: MapLayerDefinition = {
         getLineColor: [input.selectedId, input.colour, input.selectedColour],
         getLineWidth: [input.selectedId],
       },
-      /* A station does not move, and the catalogue changes over days. Nothing to animate. */
+      /* Stations don't move; nothing to animate. */
       transitions: {},
       onClick: (info) => {
         if (info.object) input.onSelect(info.object.id);
@@ -353,11 +269,7 @@ export const radioLayer: MapLayerDefinition = {
         return parts.length === 0 ? null : parts.join(" · ");
       },
     },
-    /*
-     * Text, not a link, for the same reason the camera layer shows its image URL as text: a
-     * link would be a connection to a third party one stray tap away, and the reader should
-     * make that choice knowing what it does. The row below says whether it can work at all.
-     */
+    /* Text, not a link, so connecting is always a deliberate choice. */
     { label: "Stream URL", value: (f) => stringProp(f, "streamUrl"), mono: true },
     {
       label: "Catalogue's own check",

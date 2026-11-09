@@ -16,40 +16,18 @@ import { classifyIncident, type IncidentCategory } from "./incident-type";
 /**
  * The shared machinery behind every US municipal open-data CAD/911 adapter.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * ONE FILE PER CITY, ONE HELPER FOR THE PART THAT IS THE SAME
- * ─────────────────────────────────────────────────────────────────────────────
- * ADR 0033 is explicit: **per-city adapter — a city that does not publish it does not get
- * one.** So Seattle and San Francisco are two `SourceAdapter`s in two files, each with its
- * own slug, its own terms record in `docs/sources/<slug>.md`, and its own row in the
- * connector registry. This is NOT the camera seam (one adapter over N providers): a city's
- * dispatch is one upstream under one licence, which is exactly the shape `SourceAdapter` is
- * for. What the cities share is the Socrata transport and the feature they produce, and only
- * that lives here.
+ * One adapter per city (each its own slug and registry row); only the Socrata transport and
+ * feature shape are shared here.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * THE BINDING CONSTRAINTS, ENFORCED HERE SO A CITY CANNOT FORGET THEM
- * ─────────────────────────────────────────────────────────────────────────────
- * ADR 0033, and QA will check each:
- *   - **Live-only, nothing persisted.** These adapters return features; nothing here writes
- *     to a database. The `mapFeature` save path excludes this layer (map-engineer's concern);
- *     this module never offers a persistence handle to tempt it.
- *   - **Medical carries an explicit field.** Every feature has `properties.category` and
- *     `properties.isMedical`, classified from the operator's own call type by
- *     `incident-type.ts`. Medical is never dropped and never shown by default — the UI reads
- *     `isMedical` to keep it OFF until a reader opts in.
- *   - **No identity resolution.** We map the row the operator published to a point and stop.
- *     No field is cross-referenced against anything; a `sensitive`-flagged row whose location
- *     the operator has already withheld is dropped rather than reconstructed.
+ * Constraints enforced here:
+ *   - Live-only: nothing is persisted.
+ *   - Every feature has `category` and `isMedical`; medical calls are kept but hidden by
+ *     default in the UI.
+ *   - No identity resolution. Rows whose location the operator withheld are dropped, not
+ *     reconstructed.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * SOCRATA (SODA) — THE TRANSPORT
- * ─────────────────────────────────────────────────────────────────────────────
- * Both cities publish through Socrata's SODA API. An app token is OPTIONAL: without one,
- * requests share a per-IP throttle; with one (sent as `X-App-Token`), Socrata does not
- * throttle reasonable use. We poll once per TTL from the worker, comfortably inside even the
- * anonymous throttle, so a missing token DEGRADES (slower, possibly a 429 under load) rather
- * than DISABLES — it is not an `apiKeyEnvVar`, and the layer still boots without it.
+ * Socrata app token (`X-App-Token`) is optional: without it requests share a per-IP throttle,
+ * which our polling stays inside. So it's not an `apiKeyEnvVar`; missing it only degrades.
  */
 
 /* ------------------------------------------------------------------ *
@@ -63,11 +41,7 @@ export interface EmergencyFeature extends SourceFeature {
     readonly incidentType: string;
     /** Coarse category for the legend and the layer toggles. See `incident-type.ts`. */
     readonly category: IncidentCategory;
-    /**
-     * TRUE → the UI keeps this call OFF by default. A medical call is health data about an
-     * identifiable person at an address (ADR 0033). The one flag a layer reads before it
-     * renders a dispatch by default.
-     */
+    /** True means the UI hides this call by default (health data about a person). */
     readonly isMedical: boolean;
     /** Which service dispatched, e.g. "Seattle Fire Department", "San Francisco Police". */
     readonly agency: string;
@@ -87,14 +61,8 @@ export interface EmergencyFeature extends SourceFeature {
 }
 
 /**
- * Dispatch coordinates are a REPORTED location, block- or intersection-level.
- *
- * Carried on the feature (not derived per-layer) so it travels into a workspace snapshot and
- * a PDF export, where the map's renderer never runs — the same hole `PositionalPrecision`
- * closed for NWS zone centroids (`types.ts`). An emergency dispatch point is where the call
- * was reported, often an intersection or block face, not a rooftop; saying so is the honest
- * caveat and stops a reader reading a precise-looking coordinate months later as an exact
- * address.
+ * Dispatch coordinates are a reported block/intersection, not an address. Carried on the
+ * feature so the caveat survives into workspace snapshots and exports.
  */
 const DISPATCH_PRECISION: PositionalPrecision = {
   label: "approx · dispatch location",
@@ -122,13 +90,8 @@ export interface EmergencyRecord {
 }
 
 /**
- * Everything a city adapter needs, generic over its ROW schema.
- *
- * The row schema is the unit of validation; the adapter wraps it in `z.array(...)` itself, so
- * a city writes and tests one row shape rather than an array shape. `toRecord` is typed
- * against that row with no `any` at the seam, and may return `null` to DROP a row — which is
- * how a city honours the operator's own redaction (SFPD withholds a sensitive call's
- * location) or discards a row with no usable coordinate.
+ * A city adapter spec, generic over its row schema (wrapped in `z.array` here). `toRecord`
+ * returns `null` to drop a row, e.g. operator-redacted or with no usable coordinate.
  */
 export interface EmergencyCitySpec<R extends z.ZodTypeAny> {
   readonly slug: string;
@@ -168,20 +131,15 @@ function socrataHeaders(env: (name: string) => string | undefined): Record<strin
 }
 
 /**
- * Build a `SourceAdapter` for one city from its spec.
- *
- * `fetch` is the same five steps every adapter runs — cooldown-guarded fetch, decode,
- * validate, map, record — with every failure a typed value rather than a throw
- * (product-brief §2b). It does not reuse `pollJson` only because SODA needs the optional
- * app-token header; the validation and mapping discipline is identical.
+ * Build a `SourceAdapter` for one city. Same steps as `pollJson` (fetch, decode, validate,
+ * map, record; failures are typed values), but with the optional app-token header.
  */
 export function defineEmergencyCity<R extends z.ZodTypeAny>(spec: EmergencyCitySpec<R>): EmergencyCity {
   const responseSchema = z.array(spec.rowSchema).min(0);
 
   function recordToFeature(record: EmergencyRecord): EmergencyFeature | null {
     const position = coordinatePair(record.longitude, record.latitude);
-    // No usable coordinate → not drawable, and dropping it here keeps the on-screen count
-    // honest rather than parking a dispatch at null island.
+    // No usable coordinate: drop rather than draw at 0,0.
     if (!position) return null;
 
     const classification = classifyIncident(record.incidentType);
@@ -243,8 +201,7 @@ export function defineEmergencyCity<R extends z.ZodTypeAny>(spec: EmergencyCityS
         url: spec.resourceUrl,
         signal: ctx.signal,
         headers: socrataHeaders(ctx.env),
-        // Small JSON — the SODA URL carries its own $order and $limit — so the default byte
-        // cap is plenty. A touch more time than the default: SODA can be slow under load.
+        // Small JSON ($limit in the URL); extra time because SODA can be slow under load.
         timeoutMs: 12_000,
       });
       if (!outcome.ok) return { ok: false, failure: outcome.failure, lastGoodAt: lastGoodAt(spec.slug) };

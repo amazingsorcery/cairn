@@ -5,13 +5,8 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 
 /**
- * The Live section's error boundary. `docs/design/states.md` §0: two sentences, what
- * happened then what to do, no apology and no "something went wrong", and a real control.
- *
- * A CONNECTOR FAILURE NEVER REACHES HERE. `runConnector` returns a degraded envelope rather
- * than throwing, precisely so that an upstream outage renders as a designed state that says
- * how old the last good data was (ADR 0011 rule 5). This boundary is for the other kind of
- * failure — our own database or render — where there genuinely is nothing to say about age.
+ * Error boundary for Live. Connector failures don't reach here (`runConnector` returns a
+ * degraded envelope); this covers our own database or render errors.
  */
 export default function LiveError({ reset }: { error: Error; reset: () => void }) {
   return (

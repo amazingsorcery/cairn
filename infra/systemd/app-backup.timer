@@ -1,24 +1,16 @@
 [Unit]
 Description=Run the nightly database backup
-Documentation=file:///opt/app/docs/deploy/RUNBOOK.md
 
 [Timer]
-# 03:12 server time (keep the server on UTC — see .env TZ). Not 03:00: every cron example
-# on the internet uses the top of the hour, so shared infrastructure and provider snapshot
-# schedules cluster there. An odd minute avoids the pile-up.
+# 03:12 server time (UTC). Off the hour to avoid the usual scheduling pile-up.
 OnCalendar=*-*-* 03:12:00
 
-# Spread the actual start over 5 minutes. Harmless here, and good manners if this ever
-# becomes several servers backing up to the same bucket.
 RandomizedDelaySec=5min
 
-# THE reason to prefer a systemd timer over cron on a single VPS: if the machine was
-# powered off or rebooting at 03:12, cron simply skips that night and you silently lose a
-# day of backup history. Persistent=true records the last run and fires as soon as the
-# machine is up again.
+# Run a missed backup as soon as the machine is back up.
 Persistent=true
 
-# Do not race the boot sequence; give Docker time to bring the stack up first.
+# Give Docker time to start the stack after boot.
 OnBootSec=10min
 
 [Install]

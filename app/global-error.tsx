@@ -5,19 +5,11 @@ import { THEME_INIT_SCRIPT } from "@/components/layout/theme";
 import "./globals.css";
 
 /**
- * The last-resort boundary: it catches a failure in the root layout itself, and it
- * therefore has to render its own `<html>` and `<body>`.
+ * Catches failures in the root layout, so it renders its own `<html>` and `<body>`. Imports
+ * only the stylesheet and theme script, since anything else could be what failed.
  *
- * Deliberately self-contained. It imports the stylesheet and the theme script and nothing
- * else — no header, no footer, no session provider, no fonts. Anything it imported could be
- * the thing that just failed, and an error page that throws is not an error page.
- *
- * No `next/font` call here either. Adding one would download a second copy of the family at
- * build time to serve a page nobody should ever see, so `<body>` names the fallback stack
- * directly: `--font-sans-loaded` is not defined without the layout's class, which would make
- * `--font-sans` resolve to nothing at all.
- *
- * Copy is `docs/design/states.md` §1.3. Nothing from `error` is rendered — see `app/error.tsx`.
+ * No `next/font`: without the layout's class `--font-sans` resolves to nothing, so `<body>`
+ * names the fallback stack directly. Nothing from `error` is rendered (see `app/error.tsx`).
  */
 export default function GlobalError({ reset }: { error: Error & { digest?: string }; reset: () => void }) {
   return (

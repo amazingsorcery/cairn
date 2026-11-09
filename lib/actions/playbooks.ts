@@ -20,11 +20,8 @@ import { fail, fromZodError, guard, ok, type ActionResult } from "./result";
 import { recomputePlaybookSearchKeywords } from "./search-keywords";
 
 /**
- * Editorial mutations on `playbooks` and `playbook_steps`. `editor` or `admin`.
- *
- * Same three rules as `tools.ts`: recompute `search_keywords` in the same transaction as any
- * write that changes what feeds it (here: the category, and every step title and objective),
- * revalidate only after commit, and purge nothing for a draft edit.
+ * Editorial mutations on `playbooks` and `playbook_steps`. Same rules as `tools.ts`:
+ * recompute `search_keywords` in-transaction, revalidate after commit, no purge for drafts.
  */
 
 async function categorySlugFor(
@@ -57,7 +54,7 @@ export async function createPlaybook(input: unknown): Promise<ActionResult<{ id:
       return row.id;
     });
 
-    // A new playbook is a draft. Draft edits purge nothing (caching.md §5.1).
+    // New playbooks are drafts; nothing to purge.
     return ok({ id });
   });
 }
@@ -74,7 +71,7 @@ export async function updatePlaybook(input: unknown): Promise<ActionResult<{ id:
     const result = await db.transaction(async (tx) => {
       const [row] = await tx
         .update(playbooks)
-        // No `lastVerifiedAt`: a save never moves it (ADR 0007 §8).
+        // No `lastVerifiedAt`: a save never moves it.
         .set({ ...fields, updatedById: user.id })
         .where(eq(playbooks.id, id))
         .returning({ id: playbooks.id, slug: playbooks.slug, status: playbooks.status });
@@ -100,16 +97,9 @@ export async function updatePlaybook(input: unknown): Promise<ActionResult<{ id:
 }
 
 /**
- * Replace the whole step list.
- *
- * Steps are not edited one at a time. Contiguity of `order_index` is a property of the SET
- * (HANDOFF §3), so a single-step edit cannot express it and a partial write would leave a
- * gap. One transaction: delete, insert, relink tools, recompute keywords.
- *
- * Deleting and reinserting means step ids change, which matters: `workspace_items.step_id`
- * is `ON DELETE SET NULL`, so a user's checklist entry keeps its snapshot title and checked
- * state and loses only its link (ADR 0008). That is the designed behaviour when an editor
- * rewrites a method, and it is why the snapshot exists.
+ * Replace the whole step list in one transaction (contiguity is a property of the set).
+ * Step ids change, so existing checklist items keep their title and checked state but lose
+ * the link (`ON DELETE SET NULL`).
  */
 export async function replacePlaybookSteps(
   input: unknown,
@@ -133,9 +123,7 @@ export async function replacePlaybookSteps(
 
       await tx.delete(playbookSteps).where(eq(playbookSteps.playbookId, playbookId));
 
-      // ONE multi-row insert. `playbook_steps_playbook_order_uniq` is DEFERRABLE INITIALLY
-      // DEFERRED, so uniqueness is checked at commit and the intermediate states inside this
-      // transaction cannot abort it.
+      // The order unique constraint is deferred, so it's checked at commit.
       const inserted = await tx
         .insert(playbookSteps)
         .values(
@@ -167,8 +155,7 @@ export async function replacePlaybookSteps(
         await tx.insert(playbookStepTools).values(links).onConflictDoNothing();
       }
 
-      // Step titles and objectives ARE the playbook's `search_keywords` (HANDOFF §4).
-      // Same transaction as the write that changed them.
+      // Step titles and objectives feed `search_keywords`.
       await recomputePlaybookSearchKeywords(tx, [playbookId]);
       await tx.update(playbooks).set({ updatedById: user.id }).where(eq(playbooks.id, playbookId));
 
@@ -188,15 +175,8 @@ export async function replacePlaybookSteps(
 }
 
 /**
- * Drag-to-reorder.
- *
- * ONE transaction, ONE statement, which is the entire reason
- * `playbook_steps_playbook_order_uniq` is `DEFERRABLE INITIALLY DEFERRED` (HANDOFF §6):
- * swapping two steps transiently duplicates an `order_index`, and a non-deferred constraint
- * would abort mid-statement and force a shuffle through sentinel values.
- *
- * The client sends step ids in their new order; the indexes come from array position, so a
- * client cannot invent one or leave a gap.
+ * Drag-to-reorder in one statement; relies on the deferred unique constraint since swaps
+ * transiently duplicate `order_index`. Indexes come from array position.
  */
 export async function reorderPlaybookSteps(
   input: unknown,
@@ -218,9 +198,7 @@ export async function reorderPlaybookSteps(
 
       if (!playbook) return null;
 
-      // Every submitted id must belong to this playbook, and the submitted list must be the
-      // WHOLE list — a partial reorder would leave gaps, which the contiguity invariant
-      // forbids and no constraint would catch.
+      // Must be exactly this playbook's full step list, or gaps would appear.
       const existing = await tx
         .select({ id: playbookSteps.id })
         .from(playbookSteps)
@@ -242,8 +220,7 @@ export async function reorderPlaybookSteps(
         where s.id = v.id and s.playbook_id = ${playbookId}
       `);
 
-      // Step ORDER is part of the derivation (`string_agg(... order by s.order_index)`), so
-      // reordering changes `search_keywords` even though no title changed.
+      // Step order affects `search_keywords`.
       await recomputePlaybookSearchKeywords(tx, [playbookId]);
       await tx.update(playbooks).set({ updatedById: user.id }).where(eq(playbooks.id, playbookId));
 
@@ -293,8 +270,7 @@ export async function publishPlaybook(input: unknown): Promise<ActionResult<{ id
       });
       if (!gate.success) return { kind: "gate" as const, error: gate.error };
 
-      // A playbook with no steps is not a method. The database cannot express this — it
-      // would need a cross-table CHECK — so it is asserted here.
+      // Needs a cross-table check, so it's enforced here rather than in the DB.
       const [stepCount] = await tx
         .select({ count: sql<number>`count(*)::int` })
         .from(playbookSteps)
@@ -348,7 +324,7 @@ export async function unpublishPlaybook(input: unknown): Promise<ActionResult<{ 
     const result = await db.transaction(async (tx) => {
       const [row] = await tx
         .update(playbooks)
-        // `published_at` is NOT cleared (HANDOFF §4).
+        // `published_at` is not cleared.
         .set({ status: "draft", updatedById: user.id })
         .where(eq(playbooks.id, parsed.data.id))
         .returning({
@@ -392,7 +368,7 @@ export async function deletePlaybook(input: unknown): Promise<ActionResult<{ id:
 
       const categorySlug = await categorySlugFor(tx, current.categoryId);
       // Steps cascade; `workspaces.playbook_id` and `workspace_items.step_id` are
-      // ON DELETE SET NULL, so every open case keeps its checklist (ADR 0008).
+      // ON DELETE SET NULL, so open cases keep their checklists.
       await tx.delete(playbooks).where(eq(playbooks.id, current.id));
       return { id: current.id, slug: current.slug, categorySlug };
     });
@@ -410,7 +386,7 @@ export async function deletePlaybook(input: unknown): Promise<ActionResult<{ id:
   });
 }
 
-/** "Confirm still accurate". The date is `now()`, never supplied by the caller (ADR 0007 §8). */
+/** "Confirm still accurate". The date is `now()`, never supplied by the caller. */
 export async function reverifyPlaybook(input: unknown): Promise<ActionResult<{ id: string }>> {
   return guard("playbook.reverify", async () => {
     const user = await requireEditor();
@@ -437,7 +413,7 @@ export async function reverifyPlaybook(input: unknown): Promise<ActionResult<{ i
   });
 }
 
-/** Bulk re-verify from `/admin/queue`. ONE statement. */
+/** Bulk re-verify from `/admin/queue`, in one statement. */
 export async function reverifyPlaybooks(ids: unknown): Promise<ActionResult<{ count: number }>> {
   return guard("playbook.reverify.bulk", async () => {
     const user = await requireEditor();

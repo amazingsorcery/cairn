@@ -2,19 +2,11 @@ import { deriveSignInMode, type SignInMode } from "./auth-mode";
 import { parseEnv, type EnvPhase, type ServerEnv } from "./env.schema";
 
 /**
- * Eagerly validated environment.
+ * Eagerly validated environment: importing this throws on bad config, so the container fails
+ * at boot. Server-only.
  *
- * Importing this module parses `process.env` and throws if anything is wrong, so a
- * misconfigured container fails at boot rather than serving 500s later. The schema itself
- * lives in `env.schema.ts` so it can be unit-tested without a real environment.
- *
- * Server-only. Never import this from a Client Component.
- *
- * The phase distinction exists because `docker build` deliberately carries no secrets
- * (an ARG is visible in `docker history`) while Next imports every route module — and so
- * this one — to collect page data. Without it, `docker build` cannot succeed. Next sets
- * `NEXT_PHASE` to `phase-production-build` only during `next build`, never during
- * `next start`, so the strict path is the one that actually serves traffic. See ADR 0018.
+ * `docker build` carries no secrets but Next still imports route modules during the build, so
+ * the build phase is lenient. `NEXT_PHASE` is only `phase-production-build` during `next build`.
  */
 const phase: EnvPhase =
   process.env.NEXT_PHASE === "phase-production-build" ? "build" : "runtime";
@@ -27,11 +19,8 @@ export const isBuildPhase = phase === "build";
 export type { ServerEnv };
 
 /**
- * Which sign-in methods are actually usable with the current configuration — and, when the
- * answer is "none", the fact that this deployment has no signed-in surface at all.
- *
- * Derived by `lib/auth-mode.ts`, which `middleware.ts` also calls against raw `process.env`
- * in the Edge runtime. One function, one answer, in both places.
+ * Usable sign-in methods for this configuration. Same derivation `middleware.ts` uses in the
+ * Edge runtime.
  */
 export const authProviders: SignInMode = deriveSignInMode({
   AUTH_GITHUB_ID: env.AUTH_GITHUB_ID,

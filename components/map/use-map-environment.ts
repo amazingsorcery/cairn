@@ -10,18 +10,10 @@ import { DEFAULT_THEME, readTheme, type Theme } from "@/components/layout/theme"
  */
 
 /**
- * The theme the document is actually showing, kept current as it changes.
+ * The current theme as a value. deck.gl and MapLibre don't react to CSS variables, and the
+ * theme module doesn't broadcast changes, so this observes `data-theme` read-only.
  *
- * deck.gl draws into a canvas and MapLibre loads a whole style file, so neither reacts to a
- * CSS custom property changing. Both have to be told, which means the map needs the theme as
- * a *value* rather than as a class — and it needs to hear about a change, which the theme
- * module does not broadcast. A `MutationObserver` on the one attribute the toggle writes is
- * the read-only way to hear it without adding a second source of truth
- * (`HANDOFF-shell.md` §8: do not read or write `data-theme` yourself).
- *
- * The first render returns `DEFAULT_THEME` rather than reading the DOM, because the server
- * rendered against the same assumption and a mismatch here throws the server's markup away.
- * The effect corrects it immediately afterwards.
+ * Starts at `DEFAULT_THEME` to match the server render; the effect corrects it.
  */
 export function useResolvedTheme(): Theme {
   const [theme, setTheme] = React.useState<Theme>(DEFAULT_THEME);
@@ -40,15 +32,8 @@ export function useResolvedTheme(): Theme {
 }
 
 /**
- * Whether the reader has asked for reduced motion.
- *
- * It is watched rather than read once: the preference can change while the page is open (a
- * system setting, or an assistive tool toggling it), and a map that keeps animating because
- * it sampled the preference at mount is a map that ignores it.
- *
- * The initial value is `false` so the server render and the first client render agree. On a
- * machine that does prefer reduced motion the effect corrects it before any animation is
- * possible, because nothing on this surface animates until the reader loads the map.
+ * `prefers-reduced-motion`, watched for changes while the page is open. Starts `false` to
+ * match the server render; nothing animates before the map is loaded anyway.
  */
 export function useReducedMotion(): boolean {
   const [reduced, setReduced] = React.useState(false);

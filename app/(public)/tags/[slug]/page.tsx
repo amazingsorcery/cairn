@@ -11,16 +11,11 @@ import { pageMetadata } from "@/lib/metadata";
 import { staticParamsOrEmpty } from "@/lib/static-params";
 
 /**
- * `/tags/[slug]` — every published entry carrying one tag.
+ * `/tags/[slug]`: published tools with one tag. ISR (1h); don't read `searchParams`,
+ * `cookies()` or `auth()`. Filtering links to `/directory`.
  *
- * **ISR:3600** (architecture HANDOFF §8). No `searchParams`, no `cookies()`, no `auth()`, so
- * the `revalidate` below actually means something. Refinement is a link into `/directory`,
- * which is the one route that owns query state.
- *
- * `generateStaticParams` uses `listTagSlugs()`, which returns only tags with at least one
- * **published** tool. That is not an optimisation: prerendering a slug that only draft rows
- * carry would publicly confirm that an unpublished entry exists. `dynamicParams` stays at its
- * default, so a tag that gains its first published tool is reachable without a redeploy.
+ * Static params only include tags with a published tool, so drafts aren't revealed.
+ * `dynamicParams` is left on so newly used tags work without a redeploy.
  */
 
 export const revalidate = 3600;
@@ -30,7 +25,7 @@ interface TagPageProps {
 }
 
 export async function generateStaticParams() {
-  // Tolerates a build with no database — see ADR 0018.
+  // Tolerates a build with no database.
   return staticParamsOrEmpty("/tags/[slug]", async () => {
     const slugs = await listTagSlugs();
     return slugs.map((slug) => ({ slug }));
@@ -93,11 +88,7 @@ export default async function TagPage({ params }: TagPageProps) {
             </ToolGrid>
           </div>
 
-          {/*
-            `listToolsByTag` returns the first page of the shared directory query, so a tag
-            carried by more entries than fit on one page is truncated here. Saying so is
-            cheaper than a silent cut, and the link goes where the rest actually are.
-          */}
+          {/* `listToolsByTag` returns one page only, so flag truncation and link to the rest. */}
           {tools.length === DIRECTORY_PAGE_SIZE ? (
             <p className="mt-8 text-sm text-foreground-secondary">
               Showing the first {DIRECTORY_PAGE_SIZE} by name.{" "}

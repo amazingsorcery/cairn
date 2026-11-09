@@ -12,12 +12,8 @@ import {
 } from "./refresh-policy";
 
 /**
- * HOW MANY UPSTREAM CALLS THE MAP CAN MAKE, as arithmetic rather than as a claim.
- *
- * ADR 0021 is the constraint these tests exist to hold: adsb.lol publishes no rate limit, was
- * measured refusing around ten requests a minute, and its registry row gives it a 60 s TTL and
- * a ceiling of six calls a minute — so three concurrent viewports is the real ceiling and one
- * reader dragging the map must not be able to spend it.
+ * Upstream call rate. adsb.lol (60 s TTL, 6 calls/minute ceiling, measured refusing ~10/min)
+ * supports about three concurrent viewports; one reader dragging must not spend it.
  */
 
 const TTL_SECONDS = 60;
@@ -63,12 +59,11 @@ afterEach(() => {
 
 describe("viewportGapMs", () => {
   it("is two requests per TTL, and never more than one every thirty seconds", () => {
-    // ADR 0021's own arithmetic for a 60 s TTL: 2/minute per viewport, three viewports inside
-    // the six-a-minute ceiling.
+    // 60 s TTL: 2/minute per viewport, three viewports inside the 6/minute ceiling.
     expect(viewportGapMs(60)).toBe(30_000);
-    // An operator raising the TTL under load raises this with it; a constant would ignore them.
+    // Scales with a raised TTL.
     expect(viewportGapMs(300)).toBe(150_000);
-    // And lowering the TTL cannot push our pan rate above what ADR 0021 measured as safe.
+    // A lowered TTL can't go below the floor.
     expect(viewportGapMs(10)).toBe(VIEWPORT_MIN_GAP_MS);
   });
 });
@@ -99,12 +94,7 @@ describe("a drag", () => {
       answeredKey = wantedKey;
     });
 
-    /*
-     * Twelve `moveend` events over five seconds — MapLibre emits one at the end of every
-     * sub-gesture of an inertial drag, and each one lands the reader in a different grid cell.
-     * Before the throttle this was twelve requests; the cache answering all of them from one
-     * entry was the only thing keeping it inside the ceiling, and that entry was the defect.
-     */
+    // Twelve `moveend`s over five seconds, each in a different grid cell.
     for (let step = 0; step < 12; step += 1) {
       wantedKey = `${step},50,${step + 1},51`;
       settler.notify();
@@ -126,8 +116,7 @@ describe("a drag", () => {
     const settler = createSettler(VIEWPORT_SETTLE_MS, () => {
       const reason = refreshReason({
         payload,
-        /* A pan inside one grid cell, or any pan at all on a global layer, asks the same
-           question — so there is nothing to ask. */
+        /* Same key: a pan within one cell, or any pan on a global layer. */
         wantedKey: "unscoped",
         heldKey: "unscoped",
         lastRequestedAt: Date.now() - 10 * 60_000,
@@ -172,7 +161,7 @@ describe("refreshReason", () => {
       }),
     ).toBeNull();
 
-    /* And the tick after the gap expires picks it up, without the reader touching anything. */
+    /* A tick after the gap expires picks it up. */
     expect(
       refreshReason({
         payload: fresh,
@@ -197,11 +186,7 @@ describe("refreshReason", () => {
   });
 
   it("does not re-request an ageing payload whose refresh just failed", () => {
-    /*
-     * A payload past its TTL whose refresh keeps failing keeps its old `observedAt`, so the
-     * age test stays true. Without the request clock this would fire on every five-second
-     * tick — twelve calls a minute at a source we are allowed six.
-     */
+    // Its `observedAt` stays old, so without the request clock this would fire every tick.
     const due = okPayload(new Date(now - 10 * 60_000));
     expect(
       refreshReason({
@@ -215,11 +200,6 @@ describe("refreshReason", () => {
   });
 
   it("recovers from a transient upstream failure instead of stopping forever", () => {
-    /*
-     * QV-15. The tick used to `continue` on every failure while its comment claimed it stopped
-     * only for `rateLimited`, so one 502 ended that layer's auto-refresh for the life of the
-     * page.
-     */
     const failed = failedPayload("upstreamError");
     expect(
       refreshReason({
@@ -231,7 +211,7 @@ describe("refreshReason", () => {
       }),
     ).toBe("recovery");
 
-    /* Paced at the source's own cadence, so a failing layer costs no more than a working one. */
+    /* Paced at the source TTL. */
     expect(
       refreshReason({
         payload: failed,

@@ -4,23 +4,9 @@ import type { SourceAdapter, SourceFeature, SourceResult } from "@/lib/sources/t
 import { STRESS_LAYER_ID } from "@/components/map/registry/stress";
 
 /**
- * Ten thousand synthetic points, for measuring the renderer's frame cost. **Development
- * only** — `resolveAdapter` in `sources.ts` will not return it in a production build, and
- * `MAP_LAYERS` drops its registry entry there too. Both gates are on `process.env.NODE_ENV`,
- * which the bundler inlines, so the branches are removed rather than merely unreachable.
- *
- * ## Why it exists
- *
- * The aircraft layer has to hold 10,000+ points without dropping frames. Without a way to
- * load the renderer before that source is wired, "deck.gl can do it" stays an assertion
- * until the layer that depends on it is already written. This makes it a measurement, and
- * `docs/frontend/HANDOFF-map.md` §5 records what it produced and on what hardware so a later
- * regression has a number to fail against.
- *
- * ## Why it is also the proof that the registry is data
- *
- * This layer was added by writing two files and one line in `registry/index.ts`. No map
- * component changed. That is the registry claim, exercised rather than asserted.
+ * 10,000 synthetic points for measuring renderer frame cost. Development only: both
+ * `resolveAdapter` and `MAP_LAYERS` gate on `process.env.NODE_ENV`, which the bundler
+ * inlines, so it's stripped from production builds.
  */
 
 const STRESS_POINTS = 10_000;
@@ -52,11 +38,7 @@ export const devStressSource: SourceAdapter<SourceFeature> = {
   },
 };
 
-/**
- * Deterministic rather than random: the same ten thousand points every time, so two
- * measurements are comparable and a screenshot can be reproduced. A plain linear congruential
- * generator, because this needs to be repeatable rather than unpredictable.
- */
+/** Seeded LCG so every run produces the same points and measurements are comparable. */
 function generate(): readonly SourceFeature[] {
   let seed = 20260831;
   const next = () => {

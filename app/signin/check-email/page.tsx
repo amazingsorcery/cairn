@@ -9,19 +9,11 @@ import { SIGNIN_ADDRESS_COOKIE } from "../signin-state";
 import { formatLinkLifetime } from "../link-lifetime";
 
 /**
- * `/signin/check-email` — the link was sent (`docs/design/states.md` §6.4).
+ * `/signin/check-email`. No polling or "waiting" UI: the link works in any browser.
  *
- * NO AUTO-REFRESH, NO POLLING, NO "waiting…" ANIMATION. Nothing is being waited for in this
- * tab: the link works in any browser, and an animation here would claim otherwise. This tab
- * is usually abandoned, which is why the copy says so out loud.
- *
- * DYNAMIC, NOT STATIC — a deliberate deviation from `sitemap.md` §6, recorded in
- * `docs/frontend/HANDOFF-workspaces.md` §7. The address is read from an httpOnly cookie set
- * by the sign-in action. The alternative was `?address=…`, which puts a reader's email in
- * their browser history and in every access log between them and us; for a shared machine
- * that is the same class of failure as writing a case note to `localStorage`
- * (`states.md` §7.4). When the cookie is absent — a different browser, a cleared jar — the
- * sentence drops the address rather than inventing one.
+ * Dynamic because the address comes from an httpOnly cookie set by the sign-in action
+ * (a query param would leak it to history and logs). Without the cookie, the address is
+ * omitted.
  */
 
 export const dynamic = "force-dynamic";
@@ -36,11 +28,7 @@ export const metadata = metadataUnlessPublicOnly(
 );
 
 export default async function CheckEmailPage() {
-  /*
-   * PUBLIC-ONLY MODE. With no provider configured this route cannot do its job, so it is not
-   * served at all rather than served broken — and the controls that lead here are not
-   * rendered either. See `lib/session-surface.ts` and ADR 0032.
-   */
+  /* Public-only mode (no provider configured): 404. See `lib/session-surface.ts`. */
   requireSignInEnabled();
 
   const address = (await cookies()).get(SIGNIN_ADDRESS_COOKIE)?.value ?? null;
@@ -61,11 +49,7 @@ export default async function CheckEmailPage() {
             "the address you gave"
           )}
           .{" "}
-          {/*
-            When the lifetime cannot be read, say what is true — the link is single-use and
-            short-lived — rather than printing a specific number we would be guessing at.
-            An overstated credential lifetime on a security page is worse than an absent one.
-          */}
+          {/* Unknown lifetime: don't guess a number. */}
           {lifetime === null
             ? "It works once and expires shortly."
             : `It works once and expires in ${lifetime}.`}{" "}

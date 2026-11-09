@@ -3,11 +3,7 @@
 import "maplibre-gl/dist/maplibre-gl.css";
 
 import * as React from "react";
-/*
- * NAMED IMPORTS, not a default. `maplibre-gl@6` ships an ESM build with no default export;
- * `import maplibregl from "maplibre-gl"` typechecks under some bundler settings and is
- * `undefined` at runtime under others.
- */
+/* Named imports: `maplibre-gl@6` ESM has no default export (undefined at runtime). */
 import { GeoJSONSource, Map as MapLibreMap, Marker, setWorkerUrl } from "maplibre-gl";
 import { Minus, Plus, TriangleAlert } from "lucide-react";
 
@@ -16,57 +12,21 @@ import { mapTiles } from "@/config/live";
 import { cn } from "@/lib/utils";
 
 /**
- * A single-point map preview for the coordinate converter and the GPS fix in the image
- * metadata inspector.
+ * Single-point map preview for the coordinate converter and the image metadata GPS fix.
  *
- * ── WHY THIS IS MAPLIBRE AND NO LONGER LEAFLET ─────────────────────────────
- * It was Leaflet, pointed at `mapTiles.urlTemplate` — a raster `{z}/{x}/{y}` template. When
- * the tile provider moved to OpenFreeMap that field kept its name but stopped being a raster
- * template, so Leaflet requested the same style JSON for every tile and drew nothing: a map
- * that compiled, ran, threw no error and rendered an empty grey box. `config/live.ts` now
- * exposes `styleUrl` and no `urlTemplate`, which turns that class of mistake into a type
- * error. OpenFreeMap is vector-only and publishes no raster endpoint, so the consumer has to
- * be a vector renderer. See `docs/frontend/HANDOFF-basemaps.md`.
+ * MapLibre because OpenFreeMap is vector-only (no raster endpoint for Leaflet). The CSP
+ * already allows the tile origin and `worker-src blob:` for the Live Map.
  *
- * The CSP objection that originally chose Leaflet (`HANDOFF-toolbench.md` §4.1: MapLibre
- * fetches tiles over XHR and needs `connect-src` widened) has since been answered elsewhere —
- * the Live Map runs on MapLibre, so the generated policy already carries `connect-src` and
- * `img-src` for the tile origin plus `worker-src blob:`. This costs no new policy.
- *
- * ── FIVE THINGS HERE ARE LOAD-BEARING ──────────────────────────────────────
- *
- * 1. **It is only ever reached through `next/dynamic(..., { ssr: false })`, after a click.**
- *    MapLibre is the largest dependency in the product; no route that does not draw a map may
- *    pay for it. And the privacy argument is sharper on this tool than anywhere else: a tile
- *    request tells the tile host which coordinate a reader is looking at, and on a coordinate
- *    tool that coordinate *is* the investigation. The click gate is in `map-preview.tsx`.
- *
- * 2. **The worker URL is set at module scope.** `maplibre-gl@6` locates its worker with a
- *    dynamic `new URL(...)` that webpack never emits, so it asks for a chunk that does not
- *    exist and — because vector tiles are parsed IN the worker — never issues a single tile
- *    request. No error, no failed image: a black rectangle with a correct marker on it, which
- *    reads as a styling bug and is not one. `scripts/copy-maplibre-assets.ts` copies the
- *    files into `public/maplibre/` at `prebuild`; this points at them, before the first
- *    `new MapLibreMap`, because MapLibre reads the value when it builds its worker pool.
- *
- * 3. **No marker image is ever requested.** The pin is an inline SVG built with
- *    `createElementNS`, and the accuracy ring is a GeoJSON polygon drawn by the style. The
- *    deployed CSP (`infra/csp.caddy`, ADR 0017) allows `'self'`, `data:`, `blob:` and named
- *    hosts; a default marker URL works in development and is blocked in production.
- *
- * 4. **The tile style comes from `config/live.ts` and nowhere else.** That file is the single
- *    declaration `scripts/generate-csp.ts` reads. A hardcoded URL here produces a map that
- *    works locally and is blocked in production. It declares one style per theme
- *    (`mapTiles.styleUrls`) and this picks by the document's `data-theme`: a black map inside
- *    a white card is a hard visual edge, and light is a preference this product respects
- *    rather than tolerates (`components/layout/theme.ts` — it is set for astigmatism, low
- *    vision and bright rooms). Both styles are the same origin, so the CSP is identical either
- *    way. `mapTiles.styleUrl` is the dark fallback for a caller that cannot read the theme;
- *    this one can, so it does not use it.
- *
- * 5. **The coordinate is written out under the map, always.** The number is the answer and
- *    the map is the illustration, so a dead tile host costs the reader the illustration and
- *    nothing else.
+ * 1. Only loaded via `next/dynamic` after a click (`map-preview.tsx`): MapLibre is large,
+ *    and tile requests reveal the coordinate.
+ * 2. Worker URL set at module scope: MapLibre's dynamic worker URL isn't emitted by webpack,
+ *    and without a worker no tiles load (silently). `scripts/copy-maplibre-assets.ts` copies
+ *    it to `public/maplibre/` on prebuild.
+ * 3. No marker image request: the pin is inline SVG and the accuracy ring is GeoJSON. A
+ *    default marker URL would be blocked by the production CSP.
+ * 4. Tile styles come only from `config/live.ts` (`mapTiles.styleUrls`, read by
+ *    `scripts/generate-csp.ts`), picked by `data-theme`.
+ * 5. The coordinate is always written out under the map, so a dead tile host loses nothing.
  */
 
 const WORKER_URL = "/maplibre/maplibre-gl-worker.mjs";
@@ -92,16 +52,8 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 const METRES_PER_DEGREE = 111_320;
 
 /**
- * The accuracy ring, as a polygon.
- *
- * MapLibre's `circle` layer measures its radius in screen pixels, which would grow and shrink
- * against the ground as the reader zooms — the opposite of what "this coordinate names an area
- * 60 m across" means. A polygon is in world coordinates, so it stays the size of the thing it
- * describes.
- *
- * Equirectangular, not geodesic: at the radii this tool deals in (metres to a few kilometres)
- * the difference is far below the width of the line, and a geodesic ring would be precision
- * the input does not have.
+ * Accuracy ring as a polygon (world units; a `circle` layer is in pixels and would change
+ * size with zoom). Equirectangular is accurate enough at these radii.
  */
 function ringExtent(latitude: number, radiusMetres: number): { lat: number; lon: number } {
   /* Guard the pole: `cos(90°)` is zero and would send the longitude offset to infinity. */
@@ -136,13 +88,8 @@ function accuracyRing(
 const NO_RING: GeoJSON.FeatureCollection = { type: "FeatureCollection", features: [] };
 
 /**
- * Add the accuracy ring to whichever style is currently loaded.
- *
- * Called on `load` and again after every `setStyle`. MapLibre discards every source and layer
- * when a style is replaced, so a theme switch that did not re-add them would leave a correctly
- * themed basemap with no ring on it — which reads as a coordinate that names a point when it
- * does not. The pin needs no such care: a `Marker` is DOM rather than style, and survives a
- * swap by itself.
+ * Add the accuracy ring to the current style. Called on `load` and after every `setStyle`,
+ * which discards sources and layers. The `Marker` is DOM and survives on its own.
  */
 function installAccuracy(map: MapLibreMap, data: GeoJSON.FeatureCollection): void {
   if (!map.getSource(ACCURACY_SOURCE)) {
@@ -167,12 +114,8 @@ function installAccuracy(map: MapLibreMap, data: GeoJSON.FeatureCollection): voi
 }
 
 /**
- * The marker, built as DOM rather than as JSX.
- *
- * MapLibre moves a marker's element into its own container, which is why this is not a React
- * node: React would later try to remove a child from a parent that is no longer its parent.
- * Built with `createElementNS` rather than `innerHTML` so there is no HTML string to escape
- * and nothing for a sanitiser rule to argue with.
+ * The marker as plain DOM, not JSX: MapLibre reparents the element, which would confuse
+ * React. `createElementNS` avoids any HTML string.
  */
 function createPinElement(): HTMLDivElement {
   const wrapper = document.createElement("div");
@@ -216,42 +159,19 @@ export default function PointMap({
   const mapRef = React.useRef<MapLibreMap | null>(null);
   const markerRef = React.useRef<Marker | null>(null);
   const [ready, setReady] = React.useState(false);
-  /*
-   * The basemap and the coordinate are separable failures. A dead tile host costs the reader
-   * the background and nothing else — the coordinate is stated in text below and is unaffected
-   * — but it must not fail silently, because a blank rectangle reads as a styling bug.
-   */
+  /* Show a notice on basemap failure rather than a silently blank map. */
   const [basemapFailed, setBasemapFailed] = React.useState(false);
 
-  /* Motion is a vestibular trigger, not a decoration, and a map is a large moving surface. */
   const reducedMotionRef = React.useRef(false);
 
-  /**
-   * `null` until the document's theme has been read, and the map is not created before then.
-   *
-   * MapLibre loads a whole style file rather than following a CSS custom property, so a map
-   * built against a guess would be a dark basemap on a light page until the reader toggled
-   * something — and the reader who chose light is frequently the one who cannot comfortably
-   * read the dark one.
-   */
+  /** `null` until the theme is read; the map waits for it so it starts with the right style. */
   const [theme, setTheme] = React.useState<Theme | null>(null);
   const themeRef = React.useRef<Theme | null>(null);
   themeRef.current = theme;
-  /**
-   * The style URL the map is actually showing.
-   *
-   * Without it the swap effect below fires once on the first theme resolution and calls
-   * `setStyle` with the URL the map was just built with — a second download of the same file
-   * and a needless teardown of its sources.
-   */
+  /** The style URL currently applied, so the swap effect doesn't re-apply the initial one. */
   const appliedStyleRef = React.useRef<string | null>(null);
 
-  /**
-   * The ring, recomputed only when the coordinate or the stated accuracy changes.
-   *
-   * Also held in a ref, so `installAccuracy` can seed a freshly swapped style with the ring
-   * that is on screen rather than with an empty collection followed by a frame of nothing.
-   */
+  /** The ring data; also in a ref so a freshly swapped style can be seeded with it. */
   const ringData = React.useMemo(
     () =>
       accuracyMetres !== undefined && accuracyMetres > 1
@@ -262,10 +182,7 @@ export default function PointMap({
   const ringDataRef = React.useRef(ringData);
   ringDataRef.current = ringData;
 
-  /*
-   * Read the theme once, then follow it. The toggle sets `data-theme` on the document element,
-   * which is the same signal `components/toolbench/osm-result-map.tsx` watches.
-   */
+  /* Read the theme, then follow `data-theme` changes. */
   React.useEffect(() => {
     setTheme(readTheme());
     const observer = new MutationObserver(() => setTheme(readTheme()));
@@ -277,10 +194,8 @@ export default function PointMap({
   }, []);
 
   /*
-   * `theme !== null`, not `theme`, in the create-once effect below. This flips false → true
-   * exactly once, when the theme is first read. A later theme CHANGE must not reach that
-   * effect: re-running it would tear the map down and rebuild it, losing the reader's pan and
-   * zoom. The swap is `setStyle` further down, which keeps the viewport.
+   * The create effect depends on `themeKnown`, not `theme`, so a theme change doesn't
+   * rebuild the map; the style swap is handled by `setStyle` below.
    */
   const themeKnown = theme !== null;
 
@@ -293,12 +208,7 @@ export default function PointMap({
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     reducedMotionRef.current = reducedMotion;
 
-    /*
-     * A coordinate that names an area is framed by that area, not by a fixed zoom. A 1 km
-     * MGRS square at zoom 15 fills the whole box and reads as a stray arc across the map,
-     * which tells the reader nothing about how coarse their input was — and how coarse the
-     * input was is the thing this preview exists to show.
-     */
+    /* Frame an area-sized coordinate by its ring, so e.g. a 1 km MGRS square is visible whole. */
     const ring = accuracyMetres !== undefined && accuracyMetres > 1 ? ringExtent(latitude, accuracyMetres) : null;
 
     const initialStyle = mapTiles.styleUrls[themeRef.current ?? "dark"];
@@ -318,12 +228,9 @@ export default function PointMap({
             fitBoundsOptions: { padding: 36, animate: false, maxZoom: zoom },
           }
         : {}),
-      /* Our own controls: MapLibre's are 29px and the floor here is 44 (HANDOFF-shell §10.4). */
+      /* Our own controls; MapLibre's are 29px and we need 44px touch targets. */
       attributionControl: false,
-      /*
-       * Rotation and pitch are two-finger gestures with no single-finger equivalent, and a
-       * rotated north is a map an investigator can misread. Drag pans, the buttons zoom.
-       */
+      /* No rotation or pitch: two-finger only, and a rotated north is easy to misread. */
       dragRotate: false,
       pitchWithRotate: false,
       touchPitch: false,
@@ -334,10 +241,7 @@ export default function PointMap({
 
     map.touchZoomRotate.disableRotation();
 
-    /*
-     * MapLibre reports style, worker and tile failures through `error` rather than by throwing,
-     * so without this handler they are swallowed and the map simply stays blank.
-     */
+    /* MapLibre reports style/worker/tile failures via `error` rather than throwing. */
     map.on("error", () => setBasemapFailed(true));
 
     const install = () => {
@@ -361,28 +265,13 @@ export default function PointMap({
       markerRef.current = null;
       setReady(false);
     };
-    /*
-     * The centre and zoom seed the initial view only; the guard at the top makes a re-run a
-     * no-op, so these can stay in the dependency list honestly rather than being suppressed.
-     * Once the map exists the reader owns the viewport, and the effect below moves the marker
-     * without tearing the map down.
-     */
+    // These only seed the view; the `mapRef` guard makes re-runs no-ops.
   }, [latitude, longitude, zoom, accuracyMetres, themeKnown]);
 
   /**
-   * Swap the basemap when the reader changes theme, keeping the map and their viewport.
-   *
-   * `setStyle` rather than a rebuild: rebuilding would lose the reader's pan and zoom.
-   *
-   * **The `once("styledata")` is not optional and not stylistic.** MapLibre discards every
-   * source and layer when a style is replaced, so the accuracy ring has to be re-added. The
-   * obvious form — `map.on("styledata", () => { if (map.isStyleLoaded()) install(); })` — is
-   * what `components/toolbench/osm-result-map.tsx` uses and it does **not** work here: on
-   * `maplibre-gl@6` every `styledata` that follows `setStyle` reports `isStyleLoaded()` false,
-   * so the guard never opens and the ring never comes back. Verified in a browser by toggling
-   * the theme with the map open: correct new basemap, marker still in place, ring gone —
-   * which reads as a coordinate that names a point when it names a 1 km square. The pin needs
-   * no help: a `Marker` is DOM rather than style and survives a swap by itself.
+   * Swap the basemap on theme change via `setStyle` (keeps the viewport), then re-add the
+   * ring with `once("styledata")`. An `on("styledata")` guarded by `isStyleLoaded()` doesn't
+   * work: on maplibre-gl@6 it's false for every `styledata` after `setStyle`.
    */
   React.useEffect(() => {
     const map = mapRef.current;
@@ -403,7 +292,7 @@ export default function PointMap({
     if (!map || !marker) return;
 
     marker.setLngLat([longitude, latitude]);
-    /* `easeTo` with a zero duration, never `flyTo`: no zoom-out-and-back swoop, ever. */
+    /* `easeTo`, not `flyTo`, to avoid the zoom-out swoop. */
     map.easeTo({ center: [longitude, latitude], duration: reducedMotionRef.current ? 0 : 400 });
   }, [latitude, longitude]);
 
@@ -458,11 +347,7 @@ export default function PointMap({
           </MapButton>
         </div>
 
-        {/*
-          ATTRIBUTION, ON THE MAP. Not in a page footer, not behind an "i" button: it is a
-          condition of use for both the tiles and the OpenStreetMap data underneath them, so a
-          missing credit is a licence breach and not a polish defect.
-        */}
+        {/* Attribution on the map itself (required by the tile and OSM data licences). */}
         <p className="absolute inset-x-0 bottom-0 rounded-b-lg bg-background/85 px-2 py-1 text-right text-[0.6875rem] leading-4 text-foreground-secondary">
           <a
             href={mapTiles.attributionUrl}
@@ -491,10 +376,7 @@ export default function PointMap({
   );
 }
 
-/**
- * Our own zoom controls rather than MapLibre's, for one reason: MapLibre's are 29px and the
- * accessibility floor in this product is 44 (`HANDOFF-shell.md` §10.4).
- */
+/** Our own zoom buttons: MapLibre's are 29px, below the 44px touch-target minimum. */
 function MapButton({
   label,
   onClick,

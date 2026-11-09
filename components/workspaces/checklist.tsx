@@ -14,24 +14,13 @@ import { NoteCard } from "./note-card";
 import { NoteComposer } from "./note-composer";
 
 /**
- * The checklist: the spine of a case.
+ * A case's checklist.
  *
- * TICKING IS OPTIMISTIC WITH A REAL FAILURE STATE (`docs/design/states.md` 7.3). The tick
- * applies immediately, because a checkbox that waits for a round trip feels broken. If the
- * server refuses, it REVERTS VISIBLY and says so in-row rather than leaving a tick that
- * will silently vanish on the next load — a checklist that lies about what is done is worse
- * than one that is slow. The row keeps its focus through the failure, so a keyboard user is
- * not thrown to the top of the page.
+ * Ticks are optimistic; on failure the row reverts and shows an in-row retry, keeping focus.
+ * If the source playbook step is gone, the item keeps its title and tick and just loses the
+ * link.
  *
- * A STEP WHOSE PLAYBOOK STEP IS GONE keeps its title, its position and its tick, and loses
- * only the link (ADR 0008, `states.md` 7.5). There is no warning colour and no icon: for a
- * long-running case this is the expected state, and a researcher opening a case after three
- * months must read it as bookkeeping, not as damage.
- *
- * The action is `toggleWorkspaceItem` from `lib/actions/workspaces.ts`, which re-checks the
- * session and re-checks ownership as a SQL predicate on `workspace_items.user_id`. This
- * component sends an id and a boolean; it does not send, and could not usefully forge, an
- * identity.
+ * `toggleWorkspaceItem` re-checks session and ownership server-side.
  */
 
 export interface ChecklistProps {
@@ -39,7 +28,7 @@ export interface ChecklistProps {
   items: readonly WorkspaceItemView[];
   /** Notes anchored to a checklist entry, keyed by `workspaceItemId`. */
   notesByItem: Readonly<Record<string, readonly NoteView[]>>;
-  /** Server-rendered note bodies, keyed by note id. See `note-card.tsx` (Q-12). */
+  /** Server-rendered note bodies, keyed by note id. See `note-card.tsx`. */
   renderedNoteBodies: Readonly<Record<string, React.ReactNode>>;
   playbookSlug: string | null;
 }
@@ -65,11 +54,8 @@ function ChecklistRow({
   const [composing, setComposing] = useState(false);
 
   /**
-   * Q-09 — WCAG 2.4.3. "add a note on this step" replaces itself with the composer, so
-   * without this focus lands on `<body>` and a keyboard user is thrown to the top of the
-   * document in the middle of the product's core loop. The composer focuses its own field on
-   * mount (`autoFocus`); this returns focus to the trigger when the composer goes away,
-   * whether it was cancelled or the note was saved.
+   * The "add a note" button is replaced by the composer, so return focus to it when the
+   * composer closes (otherwise focus drops to `<body>`).
    */
   const addNoteButtonRef = useRef<HTMLButtonElement>(null);
   const wasComposing = useRef(false);
@@ -91,8 +77,7 @@ function ChecklistRow({
 
     const result = await toggleWorkspaceItem({ id: item.id, checked: next });
     if (!result.ok) {
-      // Revert visibly. The alternative is a tick the reader trusts and the database
-      // does not have.
+      // Revert so the UI matches the database.
       setChecked(previous);
       setFailed(true);
       return;
@@ -105,12 +90,7 @@ function ChecklistRow({
   return (
     <li className="border-b border-border px-4 py-3 last:border-b-0">
       <div className="flex items-start gap-3">
-        {/*
-          `aria-labelledby`, NOT a `<label htmlFor>`. Radix renders the checkbox as a
-          `button[role="checkbox"]`, and a `<label for>` gives an accessible name only to a
-          labelable element — so the pairing that looks right leaves the control announced
-          as an unnamed checkbox. Caught in the accessibility tree, not by reading the code.
-        */}
+        {/* Radix renders a `button[role="checkbox"]`, which `<label for>` can't name. */}
         <Checkbox
           checked={checked}
           onCheckedChange={(value) => void apply(value === true)}
@@ -118,11 +98,7 @@ function ChecklistRow({
           className="mt-1"
         />
         <div className="min-w-0 flex-1">
-          {/*
-            A span with a pointer handler, not a label: it is a redundant affordance for
-            mouse users, and the checkbox above is the keyboard path. `aria-hidden` is not
-            set because this element IS the checkbox's accessible name.
-          */}
+          {/* Click target for mouse users; also the checkbox's accessible name. */}
           <span
             id={labelId}
             onClick={() => void apply(!checked)}

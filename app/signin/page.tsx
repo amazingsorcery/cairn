@@ -12,26 +12,11 @@ import { SignInForm } from "./signin-form";
 import { resolveCallbackUrl, signInContextLine } from "./callback";
 
 /**
- * `/signin` — two providers, no password (`docs/product-brief.md` §5, wireframe 10).
+ * `/signin`: email magic link and/or GitHub, whichever `authProviders` has configured.
+ * With neither (public-only mode) the route 404s.
  *
- * BOTH PROVIDERS ARE CONDITIONAL on what the environment actually configures
- * (`authProviders` in `lib/env.ts`). A button for an unconfigured provider is a button that
- * fails on click, and the env schema already refuses to boot on a half-set provider — this
- * is the second half of the same rule: what is not configured is not offered.
- *
- * WHEN NEITHER IS CONFIGURED THIS ROUTE IS NOT SERVED. The page used to render an
- * explanatory "no sign-in method is configured" panel; it could not, because the env schema
- * refused to boot production in that state, and it should not, because a sign-in page that
- * explains it cannot sign anyone in is still a sign-in page in the nav, the sitemap and the
- * reader's mental model. In public-only mode the whole signed-in surface is absent instead
- * (ADR 0032), so the only branch left here is one-provider versus two.
- *
- * Dynamic because it reads `searchParams` (sitemap.md §6). It is `noindex`: a sign-in page
- * in a search result is noise, and this one carries a `callbackUrl`.
- *
- * Email is visually primary and GitHub is offered without being pushed. Telling Microsoft
- * that you have an account here is a real consideration for a human-rights researcher, so
- * the page states it instead of deciding for them.
+ * Dynamic because it reads `searchParams`; `noindex`. Email is primary; the page notes that
+ * GitHub will learn about the sign-in.
  */
 
 export const dynamic = "force-dynamic";
@@ -51,11 +36,7 @@ export default async function SignInPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  /*
-   * PUBLIC-ONLY MODE. With no provider configured this route cannot do its job, so it is not
-   * served at all rather than served broken — and the controls that lead here are not
-   * rendered either. See `lib/session-surface.ts` and ADR 0032.
-   */
+  /* Public-only mode (no provider configured): 404. See `lib/session-surface.ts`. */
   requireSignInEnabled();
 
   const params = await searchParams;

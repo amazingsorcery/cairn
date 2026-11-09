@@ -3,11 +3,7 @@
 import "maplibre-gl/dist/maplibre-gl.css";
 
 import * as React from "react";
-/**
- * NAMED IMPORTS, not a default. `maplibre-gl@6` ships an ESM build with no default export;
- * `import maplibregl from "maplibre-gl"` typechecks under some bundler settings and is
- * `undefined` at runtime.
- */
+/** Named imports: `maplibre-gl@6` ESM has no default export (undefined at runtime). */
 import { AttributionControl, GeoJSONSource, Map as MapLibreMap, setWorkerUrl } from "maplibre-gl";
 import type { MapMouseEvent } from "maplibre-gl";
 
@@ -16,28 +12,15 @@ import { readTheme, type Theme } from "@/components/layout/theme";
 import { OSM_ATTRIBUTION, type BoundingBox, type OverpassFeature } from "@/lib/toolbench/overpass";
 
 /**
- * The Overpass results, on a map.
+ * Overpass results on a map. MapLibre here (other Toolbench maps use Leaflet) because the
+ * CSP already allows the OpenFreeMap origin in `connect-src`/`img-src` and `worker-src blob:`
+ * for the Live Map.
  *
- * ── WHY MAPLIBRE HERE AND LEAFLET ELSEWHERE IN THIS DIRECTORY ──────────────
- * The Toolbench's older preview maps use Leaflet because MapLibre needs `connect-src`
- * widened to the tile origin, and that was not the tools engineer's call to make
- * (`HANDOFF-toolbench.md` §4.1). It has since been made elsewhere: the Live Map runs on
- * MapLibre and the generated CSP already carries `connect-src 'self'
- * https://tiles.openfreemap.org`, `img-src` for the same origin, and `worker-src blob:`. So
- * this costs no new policy at all — and the basemap it needs IS OpenStreetMap, which is the
- * data the results came from.
+ * Worker: MapLibre's dynamic worker URL isn't emitted by webpack, and without a worker no
+ * tiles load (silently). `scripts/copy-maplibre-assets.ts` copies it to `public/maplibre/`
+ * on prebuild; set at module scope, before any map is created.
  *
- * ── THE WORKER, WHICH IS THE PART THAT FAILS SILENTLY ──────────────────────
- * `maplibre-gl@6` locates its worker with a dynamic `new URL(...)` that webpack never emits,
- * so it asks for a chunk that does not exist and — because vector tiles are parsed IN the
- * worker — never issues a single tile request. No error, no failed image: a blank rectangle
- * that reads as a styling bug. `scripts/copy-maplibre-assets.ts` copies the files into
- * `public/maplibre/` at `prebuild`; this points at them, at module scope, because MapLibre
- * reads the value when it builds its worker pool.
- *
- * ── CLICK TO LOAD ──────────────────────────────────────────────────────────
- * This module is only imported after the reader asks for the map, for the reason ADR 0015
- * gives and which is sharper here: the tiles requested are the search area.
+ * Only imported after the reader asks for the map, since the tiles reveal the search area.
  */
 const WORKER_URL = "/maplibre/maplibre-gl-worker.mjs";
 setWorkerUrl(WORKER_URL);
@@ -91,12 +74,8 @@ function boxCollection(box: BoundingBox): GeoJSON.FeatureCollection {
 }
 
 /**
- * Add the bounding box and the results to whichever style is currently loaded.
- *
- * Called on `load` and again after every `setStyle`. MapLibre discards all sources and
- * layers when a style is replaced, so a theme switch that did not re-add them would leave a
- * correctly themed basemap with no results on it — which looks exactly like a query that
- * returned nothing.
+ * Add the bbox and results to the current style. Called on `load` and after every
+ * `setStyle`, which discards all sources and layers.
  */
 function installOverlays(
   map: MapLibreMap,
@@ -158,15 +137,10 @@ export default function OsmResultMap({
   const mapRef = React.useRef<MapLibreMap | null>(null);
   const [ready, setReady] = React.useState(false);
   const [basemapFailed, setBasemapFailed] = React.useState(false);
-  /**
-   * `null` until the document's theme has been read. The map is not created before then:
-   * MapLibre loads a whole style file rather than following a CSS custom property, so a map
-   * built against the default theme would be a dark basemap on a light page until the reader
-   * toggled something.
-   */
+  /** `null` until the theme is read; the map waits for it so it starts with the right style. */
   const [theme, setTheme] = React.useState<Theme | null>(null);
 
-  /* Refs so that a changing callback does not tear the map down and lose the reader's pan. */
+  /* Refs so a changing callback doesn't rebuild the map and lose the pan. */
   const onSelectRef = React.useRef(onSelect);
   onSelectRef.current = onSelect;
   const onViewportChangeRef = React.useRef(onViewportChange);
@@ -195,9 +169,7 @@ export default function OsmResultMap({
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
     const initial = dataRef.current;
-    // Record what the map is actually built with, so the theme effect below does not
-    // immediately re-apply the same style — a wasted fetch and a needless overlay reinstall
-    // on every first render.
+    // Record the initial style so the theme effect doesn't immediately re-apply it.
     appliedStyleRef.current = basemapStyleUrl(theme === "light" ? "light" : "dark");
 
     const map = new MapLibreMap({
@@ -212,11 +184,7 @@ export default function OsmResultMap({
       attributionControl: false,
     });
 
-    /**
-     * Attribution ON THE MAP, never in a page footer. Two obligations are met here and both
-     * are licence conditions rather than politeness: OpenFreeMap and OpenMapTiles for the
-     * basemap, and ODbL for the OpenStreetMap data behind both the basemap and the results.
-     */
+    /* Attribution on the map (licence requirement): basemap credits plus ODbL for OSM data. */
     map.addControl(
       new AttributionControl({
         compact: false,
@@ -230,13 +198,10 @@ export default function OsmResultMap({
       "bottom-right",
     );
 
-    // Motion is a vestibular trigger, not a decoration, and a map is a large moving surface.
     if (reducedMotion) map.scrollZoom.disable();
 
     map.on("error", () => {
-      // A dead tile host costs the reader the background and nothing else — the results are
-      // still in the table below. What it must not do is fail silently: a blank rectangle
-      // reads as a styling bug rather than as missing geography.
+      // Show a notice rather than a silently blank basemap; results are still in the table.
       setBasemapFailed(true);
     });
 
@@ -279,18 +244,9 @@ export default function OsmResultMap({
   }, [theme]);
 
   /*
-   * Swap the basemap when the reader changes theme, keeping the map and its viewport.
-   *
-   * The overlays are re-added with `once("styledata")` immediately after `setStyle`, NOT with
-   * a persistent `on("styledata")` guarded by `isStyleLoaded()`. On maplibre-gl@6 every
-   * `styledata` event following a `setStyle` reports `isStyleLoaded()` false, so that guard
-   * never opens and the overlays are simply never restored.
-   *
-   * The failure is silent, which is why it needs the comment. The new basemap draws
-   * correctly, and the marker survives because markers are DOM rather than style — so the
-   * only thing missing is the bounding box and the result circles. An Overpass results map
-   * with no results on it reads as a query that matched nothing. No error, nothing in the
-   * console. Found by looking at a screenshot taken after a theme toggle.
+   * Swap the basemap on theme change, keeping the viewport. Overlays are re-added with
+   * `once("styledata")`: on maplibre-gl@6 `isStyleLoaded()` is false for every `styledata`
+   * after `setStyle`, so an `on` handler guarded by it never re-adds them.
    */
   React.useEffect(() => {
     const map = mapRef.current;
@@ -298,8 +254,7 @@ export default function OsmResultMap({
 
     const applied = appliedStyleRef.current;
     const next = basemapStyleUrl(theme === "light" ? "light" : "dark");
-    // Without this the effect fires on the first theme resolution and re-applies the style
-    // the map was built with one tick earlier — a wasted style fetch and a needless reinstall.
+    // Skip if this is the style the map was just built with.
     if (applied === next) return;
     appliedStyleRef.current = next;
 

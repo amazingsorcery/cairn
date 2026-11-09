@@ -14,19 +14,12 @@ import {
 } from "@/components/ui/sheet";
 
 /**
- * The 375px filter surface.
+ * Mobile filter sheet. Facets live in a full-height sheet so they don't push results below
+ * the fold.
  *
- * `docs/design/wireframes/02-directory.txt` puts the facets in a full-height sheet at mobile
- * width, because at 375px they cannot sit beside the results and collapsing them into an
- * accordion above the list pushes the results themselves below the fold.
- *
- * The panel inside is a Server Component passed as `children` — this component owns the
- * open/closed state and nothing else. Radix's Dialog gives the focus trap, the escape key,
- * the scroll lock and `aria-modal`.
- *
- * The footer count is live because the facets push the URL on change: the server re-renders
- * with a new `total` while the sheet stays open, so "show 47 tools" is the number of results
- * currently waiting behind the sheet rather than a promise about a pending selection.
+ * The panel is a Server Component passed as `children`; this only owns open state. The
+ * footer count is live: facets push the URL on change, so the server re-renders `total`
+ * while the sheet stays open.
  */
 export function FilterSheet({
   activeCount,

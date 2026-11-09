@@ -3,12 +3,9 @@ import { describe, expect, it } from "vitest";
 import { QUERY_GRID_DEGREES, normaliseSourceQuery, sourceQueryKey } from "./query";
 
 /**
- * The grid the map's cache key and the client's throttle both stand on.
- *
- * Two properties matter and they pull against each other: the key must never be **coarser**
- * than the question (that is QV-04 — one reader's bounding box served to the next as fresh
- * global data), and it must never be so **fine** that ordinary map noise gives every reader
- * their own upstream call. The tests below pin both ends.
+ * The query grid used by both the cache key and the client throttle. The key must not be
+ * coarser than the question (one reader's bbox served to another), nor so fine that map
+ * noise gives every reader their own upstream call.
  */
 
 const LONDON = { bbox: { west: -0.6, south: 51.2, east: 0.4, north: 51.7 } };
@@ -25,12 +22,7 @@ describe("normaliseSourceQuery", () => {
   });
 
   it("never collapses a box to zero area, however far the reader has zoomed in", () => {
-    /*
-     * Nearest-rounding turned a sub-degree viewport into a zero-area box, which
-     * `viewportFromBbox` turns into a 1 nm circle — an empty table that looks like an honest
-     * answer. Silent incompleteness is the failure this codebase keeps meeting; the
-     * normalisation must not be able to cause it.
-     */
+    // A zero-area box becomes a 1 nm circle in `viewportFromBbox`: a misleading empty table.
     const tight = normaliseSourceQuery({
       bbox: { west: 0.1, south: 51.1, east: 0.4, north: 51.4 },
     });

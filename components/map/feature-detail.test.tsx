@@ -13,16 +13,9 @@ import { radioLayer } from "./registry/radio";
 import type { LayerPayloadDto, MapLayerDefinition } from "./registry";
 
 /**
- * CLICK-TO-LOAD IS A PROMISE ABOUT NETWORK BEHAVIOUR, so it gets tests rather than a comment.
- *
- * ADR 0015: nothing connects to a camera operator or a broadcaster until the reader says so,
- * and the consequence is disclosed in plain words first, naming the host. The most valuable
- * assertion here is the negative one — that **no `<img>` and no `<audio>` exists in the DOM
- * before the press** — because that is the property a future "preload the thumbnail, it feels
- * faster" change would quietly break, and nothing else in this suite would notice.
- *
- * The layers are the real registry entries, so a layer that stops declaring `media`, or starts
- * declaring one whose host disagrees with its URL, fails here.
+ * Click-to-load: nothing connects to a camera operator or broadcaster until the reader asks,
+ * and the host is named first. The key assertion is that no `<img>`/`<audio>` exists before
+ * the press. Uses the real registry layers.
  */
 
 function payloadFor(layer: MapLayerDefinition): Extract<LayerPayloadDto, { ok: true }> {
@@ -97,7 +90,7 @@ describe("a camera's image", () => {
   it("makes no outbound request until the reader asks", () => {
     if (!camera) return;
     const { container } = renderDetail(camerasLayer, camera);
-    // The element that would issue the request does not exist yet. This is the assertion.
+    // The element that would issue the request doesn't exist yet.
     expect(container.querySelector("img")).toBeNull();
     expect(screen.getByRole("button", { name: /load the image/i })).toBeInTheDocument();
   });
@@ -120,7 +113,7 @@ describe("a camera's image", () => {
 
     const image = container.querySelector("img");
     expect(image).not.toBeNull();
-    // The operator's own host. If this ever became a path on our origin we would be relaying.
+    // The operator's own URL, not a path on our origin.
     expect(image?.getAttribute("src")).toBe(camera.properties.embedUrl);
     expect(image?.getAttribute("referrerpolicy")).toBe("no-referrer");
     // An image nobody here can see still needs a name a screen reader can use.
@@ -140,8 +133,7 @@ describe("a camera's image", () => {
     const user = userEvent.setup();
     renderDetail(camerasLayer, camera);
     await user.click(screen.getByRole("button", { name: /load the image/i }));
-    // Without this the focused button is removed from the DOM and a keyboard reader lands on
-    // <body> mid-panel, with nothing announced — which reads as the press having failed.
+    // Otherwise focus falls to <body> when the pressed button unmounts.
     expect(screen.getByRole("button", { name: /disconnect/i })).toHaveFocus();
     await user.click(screen.getByRole("button", { name: /disconnect/i }));
     expect(screen.getByRole("button", { name: /load the image/i })).toHaveFocus();
@@ -176,11 +168,7 @@ describe("a radio station's audio", () => {
   });
 
   it("links out instead of offering a play button that cannot work", () => {
-    /*
-     * About a fifth of the catalogue publishes plain http, which a browser blocks as mixed
-     * content on this page while reporting nothing. A play button there would be a control
-     * that silently does nothing; hiding the station would be worse still.
-     */
+    // Plain-http streams are blocked as mixed content, so a play button would silently fail.
     const { container } = renderDetail(
       radioLayer,
       radioStation({ streamUrl: "http://stream.example.org/live", isInsecureStream: true }),
@@ -197,8 +185,7 @@ describe("a radio station's audio", () => {
     const user = userEvent.setup();
     renderDetail(radioLayer, radioStation());
     await user.click(screen.getByRole("button", { name: /play/i }));
-    // Radio Browser dedicates the catalogue to the public domain. Inventing a credit line for
-    // the station's audio would assert a licence that dedication does not cover.
+    // Radio Browser's catalogue is public domain; no credit line should be invented.
     expect(screen.queryByText(/licensed under/i)).not.toBeInTheDocument();
   });
 });
@@ -222,21 +209,14 @@ describe("selecting a different feature", () => {
         signInEnabled
       />,
     );
-    // Without the key on the media block React would keep "open", and the reader's browser
-    // would contact the second operator without being asked.
+    // Without the key on the media block, "open" state would carry over to the next feature.
     expect(container.querySelector("img")).toBeNull();
   });
 });
 
 /**
- * QV-13: the map had no control leading into a case, so the Live pillar and the Workspaces
- * pillar were not joined. QV-14: the design that was written down would have carried the
- * attribution and licence through the browser.
- *
- * The load-bearing assertion is the negative one — that the form carries **only** the source
- * slug and the feature id. Everything else about the snapshot is resolved server-side from
- * the same cache the map was drawn from, and a future "just send the coordinates too, it
- * saves a lookup" change is exactly what this is here to fail.
+ * Save-to-case. The form must carry only the source slug and feature id; everything else
+ * (attribution, licence, coordinates) is resolved server-side from the cache.
  */
 describe("saving a feature into a case", () => {
   const camera = cameras[0];
@@ -246,15 +226,13 @@ describe("saving a feature into a case", () => {
     renderDetail(camerasLayer, camera);
     const control = screen.getByRole("button", { name: /save to a case/i });
     expect(control).toBeInTheDocument();
-    // The label names the feature, because a screen-reader user moving by controls hears it
-    // out of context and "save to a case" alone does not say which of them it saves.
+    // The label names the feature so it makes sense out of context.
     expect(control.textContent).toContain(camera.label);
   });
 
   it("is a native GET form to a session-gated route, not a scripted button", () => {
-    // HANDOFF-directory 1b: a click before hydration does nothing, and a Server Action
-    // submitted as a background fetch loses the save if the reader navigates away. A native
-    // form has neither window and works with the bundle removed.
+    // A native form works before hydration and survives navigation, unlike a Server Action
+    // fetch.
     if (!camera) return;
     const { container } = renderDetail(camerasLayer, camera);
     const form = container.querySelector<HTMLFormElement>('form[action="/map/save"]');
@@ -276,7 +254,7 @@ describe("saving a feature into a case", () => {
       ["feature", camera.id],
     ]);
 
-    // Explicitly: none of the fields a licence obligation could be blanked through.
+    // None of the fields that could be used to blank out attribution or licence.
     const names = fields.map(([name]) => name);
     expect(names).not.toContain("attribution");
     expect(names).not.toContain("licence");
@@ -286,9 +264,8 @@ describe("saving a feature into a case", () => {
   });
 
   it("offers nothing to save into when the deployment has no sign-in at all", () => {
-    // Public-only mode (ADR 0032): `/map/save` is not served, so the control that posts to it
-    // would be a dead button. This is NOT the signed-out state — a signed-out reader can sign
-    // in and come back, and still gets the control.
+    // Public-only mode: `/map/save` isn't served. Different from signed-out, which still
+    // gets the control.
     if (!camera) return;
     renderDetail(camerasLayer, camera, false);
     expect(screen.queryByRole("button", { name: /save to a case/i })).not.toBeInTheDocument();
@@ -296,8 +273,7 @@ describe("saving a feature into a case", () => {
   });
 
   it("does not offer to save a synthetic development layer", () => {
-    // The stress harness generates its points in this process. One of them in a case file
-    // would be fabricated content in the artefact the reader keeps (product-brief 6).
+    // Stress-harness points are synthetic and must not end up in a case.
     if (!camera) return;
     const devLayer: MapLayerDefinition = { ...camerasLayer, devOnly: true };
     render(

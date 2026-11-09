@@ -12,24 +12,13 @@ import { SIGNIN_ADDRESS_COOKIE } from "../signin-state";
 import { formatLinkLifetime } from "../link-lifetime";
 
 /**
- * `/signin/error` — five distinct outcomes, each with its own copy and its own next move
- * (`docs/design/states.md` §6.5–§6.9, wireframe 10).
+ * `/signin/error`: five outcomes, each with its own copy and next step.
  *
- * The distinctions are not cosmetic. A user whose mail scanner opened the link first is not
- * looking at an expiry, and a user who declined at GitHub did not fail at anything — the
- * copy for each has to say the true thing, because the wrong one sends them to the wrong
- * remedy.
+ * Auth.js reports both "expired" and "already used" as `error=Verification` (the token row
+ * is gone either way), so that maps to the expiry copy. `?error=linkUsed` is supported for
+ * when `lib/auth.ts` can tell them apart.
  *
- * WHAT AUTH.JS CAN AND CANNOT TELL US. Auth.js reports both "expired" and "already used" as
- * `error=Verification`: the token row is gone in both cases and nothing distinguishes them
- * at the point of failure. This page therefore maps `Verification` to the expiry copy — the
- * commoner cause — and keeps the "already used" state addressable as `?error=linkUsed` so it
- * is built, tested and ready. Splitting them properly needs a change in `lib/auth.ts` which
- * this engineer does not own; it is written up in
- * `docs/frontend/HANDOFF-workspaces.md` §7.
- *
- * EVERY VARIANT KEEPS `callbackUrl`. A reader who came here to start a case still starts
- * that case when they get in (wireframe 10).
+ * Every variant keeps `callbackUrl`.
  */
 
 export const dynamic = "force-dynamic";
@@ -64,7 +53,7 @@ function variantFor(raw: string | string[] | undefined): Variant {
       return "githubUnreachable";
     default:
       // `CallbackRouteError`, `SessionRequired`, `EmailSignInError` and anything unmapped:
-      // the link was accepted and no session came out of it, which is §6.7.
+      // the link was accepted but no session was created.
       return "notCreated";
   }
 }
@@ -74,11 +63,7 @@ export default async function SignInErrorPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  /*
-   * PUBLIC-ONLY MODE. With no provider configured this route cannot do its job, so it is not
-   * served at all rather than served broken — and the controls that lead here are not
-   * rendered either. See `lib/session-surface.ts` and ADR 0032.
-   */
+  /* Public-only mode (no provider configured): 404. See `lib/session-surface.ts`. */
   requireSignInEnabled();
 
   const params = await searchParams;
@@ -94,10 +79,7 @@ export default async function SignInErrorPage({
       title: "That sign-in link has expired",
       body: (
         <>
-          {/*
-            Omit the number when it cannot be read rather than guessing it. A specific wrong
-            duration on a security page is worse than no duration at all.
-          */}
+          {/* Unknown lifetime: don't guess a number. */}
           {lifetime === null
             ? "This link has expired."
             : `Links last ${lifetime}, and this one is older than that.`}{" "}
@@ -149,8 +131,7 @@ export default async function SignInErrorPage({
   return (
     <div className="mx-auto w-full max-w-[80rem] px-4 py-10 md:px-6 md:py-14">
       <div className="mx-auto w-full max-w-md md:rounded-lg md:border md:border-border md:bg-card md:p-8 md:shadow-md">
-        {/* Icon and words together. The icon never carries the meaning on its own
-            (`docs/brand/HANDOFF.md` §3). */}
+        {/* Decorative; the heading carries the meaning. */}
         <TriangleAlert className="size-8 text-warning" aria-hidden="true" />
 
         <h1 className="mt-5 text-2xl font-semibold tracking-tight">{content[variant].title}</h1>

@@ -9,8 +9,7 @@ const base = {
   DATABASE_URL: "postgresql://user:pass@db:5432/app",
 } satisfies NodeJS.ProcessEnv;
 
-// A fragment, not a whole environment — Next augments ProcessEnv to require NODE_ENV,
-// so this is typed as the plain record it is and spread onto `base` at the call site.
+// Plain record, since Next's ProcessEnv requires NODE_ENV. Spread onto `base`.
 const smtp: Record<string, string> = {
   SMTP_HOST: "smtp.example.test",
   SMTP_PORT: "587",
@@ -82,13 +81,7 @@ describe("parseEnv", () => {
     expect(parseEnv({ ...base, ...smtp }).SMTP_PORT).toBe(587);
   });
 
-  /**
-   * PUBLIC-ONLY MODE. Most of this product is readable with no account: the map, the
-   * Toolbench, the directory, the playbooks, search, live and the legal pages. Only case
-   * workspaces need a session. Refusing to boot the whole site because nobody can save a
-   * case stopped a working product from shipping, so the refusal is gone and the signed-in
-   * surface is withheld instead — see `lib/auth-mode.ts` and ADR 0032.
-   */
+  /** Booting with no sign-in provider is allowed (public-only mode, see `lib/auth-mode.ts`). */
   it("boots in production with no sign-in method at all", () => {
     expect(() => parseEnv({ ...base, NODE_ENV: "production" })).not.toThrow();
   });
@@ -105,12 +98,7 @@ describe("parseEnv", () => {
     ).not.toThrow();
   });
 
-  /**
-   * The half-configured checks are NOT relaxed by public-only mode, and this is the pair of
-   * assertions that says so. "No provider" is a deployment choice; "four of the five SMTP
-   * variables" is a mistake that silently drops every sign-in email, which is the failure
-   * the boot-time refusal exists for.
-   */
+  /** Half-configured providers are still rejected in public-only mode. */
   it("still refuses half-configured SMTP in production", () => {
     expect(() =>
       parseEnv({ ...base, NODE_ENV: "production", ...smtp, SMTP_PASSWORD: undefined }),

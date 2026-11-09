@@ -1,26 +1,11 @@
--- updated_at must be true however the row changed.
---
--- Drizzle maintains `updated_at` with `$onUpdate`, which is application-level. That is
--- correct for anything written through the app and silently wrong for anything written at a
--- console.
---
--- It matters here for one specific reason: `docs/frontend/HANDOFF-map.md` documents the
--- connector kill-switch as a psql `UPDATE`, and ADR 0012 made `enabled` a column precisely so
--- an operator can flip a source off under load without a deploy. So the most operationally
--- important write in this system is the one Drizzle never sees. After several kill-switch
--- flips during the build, `connectors.updated_at` still read seed time — meaning an operator
--- asking "when was this switched on, and is that recent?" gets an answer that is a month out
--- and looks authoritative.
---
--- A trigger makes the column true regardless of who wrote the row. It does not replace
--- `$onUpdate`; the two agree, and the trigger is the one that also covers `psql`, a migration,
--- and a restore.
+-- Maintain updated_at in the database too. Drizzle's `$onUpdate` only covers app writes;
+-- this also covers psql updates (e.g. flipping the connector kill-switch), migrations and
+-- restores.
 
 CREATE OR REPLACE FUNCTION set_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN
-    -- Only touch it when something actually changed. An UPDATE that sets a row to its own
-    -- values should not move the timestamp, or "last changed" becomes "last written".
+    -- Skip no-op updates.
     IF NEW IS DISTINCT FROM OLD THEN
         NEW.updated_at = now();
     END IF;
@@ -28,8 +13,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Every table carrying updated_at. Listed explicitly rather than discovered dynamically, so
--- adding a table is a deliberate line here rather than a silent inheritance.
+-- Tables with updated_at, listed explicitly.
 DO $$
 DECLARE
     t text;

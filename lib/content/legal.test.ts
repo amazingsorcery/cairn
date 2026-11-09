@@ -29,9 +29,7 @@ describe("substituteBrandTokens", () => {
   });
 
   it("renders an unestablished legal fact as a visible marker, never as prose", () => {
-    // Guards the decision in config/brand.ts: a policy must not state a governing law
-    // nobody has chosen. If someone fills these in without counsel, this test must be
-    // updated deliberately rather than drifting.
+    // Update this test when governing law is actually set in config/brand.ts.
     expect(brand.legal.governingLaw).toBeNull();
     expect(substituteBrandTokens("Governed by {{BRAND_GOVERNING_LAW}}.")).toContain(UNRESOLVED);
   });
@@ -48,14 +46,12 @@ describe("authored legal documents", () => {
 
   it.each(slugs)("renders %s with every token resolved", (slug) => {
     const { body } = readLegalDocument(slug);
-    // The whole point: no raw {{TOKEN}} may survive into something a user reads.
     expect(body).not.toMatch(/\{\{[A-Z0-9_]+\}\}/);
   });
 
   it.each(slugs)("never leaves the product name hardcoded in %s", (slug) => {
     const raw = readFileSync(join(process.cwd(), "content", "legal", `${slug}.md`), "utf8");
-    // Renaming must be a one-file change (product-brief §7). A literal name in authored
-    // content silently breaks that contract, and only a test catches it.
+    // Use {{BRAND_NAME}} so a rename is a one-file change.
     expect(raw).not.toContain(brand.name);
   });
 

@@ -10,21 +10,11 @@ import { mapTiles } from "@/config/live";
 import type { PointMapProps } from "./point-map";
 
 /**
- * The click gate in front of the map.
+ * Click gate in front of the map. The tiles requested reveal the coordinate being looked at,
+ * so nothing loads until the reader asks; the button label names the tile host (read from
+ * `config/live.ts` so it matches the CSP).
  *
- * ADR 0015 and the product brief's streaming rule land in the same place: an embed loads when
- * the reader asks for it, not before. On a coordinate tool the argument is sharper than usual
- * — the tiles are requested from a third party, and the tiles you request *are* the coordinate
- * you are investigating. A reader who converts a grid reference and never opens the map has
- * disclosed nothing to anyone.
- *
- * The consequence is IN the button label rather than only in the prose above it (ADR 0015 §2),
- * and the host is read from `config/live.ts` so it cannot drift away from the origin the CSP
- * and the map itself actually use.
- *
- * MapLibre is also by a wide margin the largest dependency in the product. `next/dynamic` with
- * `ssr: false`, rendered only once `shown` is true, puts it in an async chunk that is fetched
- * on the click and never enters the bundle of a route that draws no map.
+ * MapLibre is large, so it's loaded via `next/dynamic` (`ssr: false`) only after the click.
  */
 
 const PointMap = dynamic<PointMapProps>(() => import("./point-map"), {
@@ -47,11 +37,7 @@ export function MapPreview(props: PointMapProps) {
           IP address and the tiles you ask for — which is to say, the coordinate you are looking
           at. Everything above this box was computed in your browser and sent nowhere.
         </p>
-        {/*
-          `whitespace-normal` and `h-auto`: the label carries the consequence, so it is long,
-          and at 375px a nowrap button would push the page into a horizontal scroll. The label
-          is not shortened to fit — the consequence being in the label is the point.
-        */}
+        {/* The label is long; wrap it so it doesn't cause horizontal scroll on phones. */}
         <Button
           type="button"
           className="h-auto min-h-11 max-w-full whitespace-normal py-2"
@@ -70,10 +56,7 @@ export function MapPreview(props: PointMapProps) {
         <p className="text-xs text-muted-foreground">
           Tiles are being requested from {TILE_HOST}.
         </p>
-        {/*
-          Unmounting the map stops the requests without a page reload, which on these tools
-          would throw away the reader's input.
-        */}
+        {/* Unmounting stops tile requests without a reload (which would lose input). */}
         <Button variant="ghost" size="lg" onClick={() => setShown(false)}>
           hide the map
         </Button>

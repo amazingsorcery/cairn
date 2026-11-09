@@ -1,15 +1,7 @@
 # Local development stack.
 #
-# This file deliberately does NOT run the Next.js app by default. It provides the two
-# things that are painful to run natively — Postgres 16 and an SMTP sink — and you run the
-# app on the host with `pnpm dev`.
-#
-# Why not containerise the dev server too: bind-mounting a repo into a Linux container
-# from macOS or Windows makes the Next.js file watcher an order of magnitude slower, and
-# node_modules built for the host OS collides with node_modules built for the container.
-# The standard workarounds (anonymous volume over node_modules, polling watchers) are a
-# steady drip of confusing failures. Running the app on the host is the boring choice and
-# it is the same choice the CI workflow makes.
+# Runs Postgres 16 and an SMTP sink; run the app on the host with `pnpm dev` (bind-mounted
+# watchers are slow on macOS/Windows and node_modules would clash).
 #
 # Quick start:
 #   cp .env.example .env      # then fill in the values it tells you to
@@ -17,13 +9,6 @@
 #   pnpm db:migrate && pnpm db:seed
 #   pnpm dev                  # http://localhost:3000
 #   open http://localhost:8025  # Mailpit: every magic-link email lands here
-#
-# THERE IS NO redis SERVICE AND NO WORKER, and that is a decision rather than an omission
-# (ADR 0031). `pnpm worker` never existed, and nothing in the application ever opened a Redis
-# connection — `ioredis` was a production dependency with zero imports. The source cache is
-# the in-process map in `app/(public)/map/sources.ts`, which needs no service to be running.
-# Development matches production: three long-running containers there, two support services
-# here.
 #
 # To smoke-test the *production* image locally before deploying:
 #   docker compose --profile prodtest up -d --build web-prod
@@ -48,10 +33,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-app}
       TZ: ${TZ:-UTC}
     ports:
-      # Published in dev only, so `pnpm dev`, Drizzle Studio and psql on the host can
-      # reach it. Bound to 127.0.0.1 explicitly — a bare "5432:5432" would expose the
-      # development database to your entire local network, and on a laptop on a coffee
-      # shop wifi that is a real exposure.
+      # Loopback only, so the dev database isn't exposed to the local network.
       - "127.0.0.1:5432:5432"
     volumes:
       - db_data_dev:/var/lib/postgresql/data
@@ -67,9 +49,7 @@ services:
       start_period: 30s
 
   mailpit:
-    # Auth.js magic links are useless in development without somewhere for the mail to go.
-    # Mailpit accepts anything on 1025 and shows it in a web UI on 8025. Nothing leaves the
-    # machine, so no real inbox and no SMTP provider credentials are involved in dev.
+    # Catches magic-link mail: SMTP on 1025, web UI on 8025. Nothing leaves the machine.
     image: axllent/mailpit:latest
     restart: unless-stopped
     logging: *default-logging
@@ -81,9 +61,7 @@ services:
       MP_SMTP_AUTH_ACCEPT_ANY: 1
       MP_SMTP_AUTH_ALLOW_INSECURE: 1
 
-  # Optional: build and run the real production image against the dev database, to catch
-  # standalone-output and runtime-env problems before they reach the VPS.
-  # Not started by `docker compose up` — it is behind a profile.
+  # Optional: the production image against the dev database (profile-gated).
   web-prod:
     profiles: ["prodtest"]
     build:

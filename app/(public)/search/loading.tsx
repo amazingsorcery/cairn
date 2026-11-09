@@ -2,14 +2,8 @@ import { SearchSkeleton } from "@/components/directory/search-results";
 import { Skeleton } from "@/components/ui/skeleton";
 
 /**
- * `/search` while the query runs.
- *
- * The field is drawn as a bar rather than as a real input: a `loading.tsx` cannot read
- * `searchParams`, so a real field here would render empty and then be replaced by one holding
- * the query — a search box that appears to have lost what you typed.
- *
- * Each row placeholder reserves the confidence chip and the last-verified line, which are not
- * optional on a search result row either (architecture HANDOFF §9.1).
+ * `/search` loading state. The field is a skeleton bar because `loading.tsx` can't read
+ * `searchParams`, so a real input would flash empty.
  */
 export default function SearchLoading() {
   return (

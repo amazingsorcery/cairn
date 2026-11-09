@@ -10,20 +10,11 @@ import { SiteNav } from "./site-nav";
 import { ThemeToggle } from "./theme-toggle";
 
 /**
- * The header. Sticky at `--z-sticky`; `globals.css` already sets
- * `scroll-padding-top: 5rem` so an anchored playbook step or a `/methodology` anchor never
- * lands underneath it.
+ * Sticky site header (`globals.css` sets `scroll-padding-top` so anchors clear it). Server
+ * Component; only nav, mobile sheet, account and theme are client leaves.
  *
- * 56px tall at 375px (`docs/design/wireframes/01-home.txt`), 64px from `md` where the nav
- * moves inline. This component is a Server Component; only the four leaves that genuinely
- * need the browser — nav (current path), mobile sheet, account, theme — are clients.
- *
- * IT IS ALSO WHERE THE DEPLOYMENT MODE ENTERS THE CLIENT TREE. `isSignInEnabled()` reads the
- * environment, which only the server can do; the boolean is passed down as a prop rather than
- * read again in each leaf. In public-only mode (ADR 0032) there is no account, no
- * `/workspaces` and no `/signin`, so neither the session nav entry nor the account control
- * renders — and, because the leaves are split so that `useSession` is never called, the root
- * layout drops the session provider too.
+ * `isSignInEnabled()` is read here on the server and passed down. In public-only mode the
+ * session nav entry and account control don't render, so `useSession` is never called.
  */
 export function SiteHeader() {
   const signInEnabled = isSignInEnabled();
@@ -33,12 +24,7 @@ export function SiteHeader() {
       <div className="mx-auto flex h-14 w-full max-w-[80rem] items-center gap-2 px-4 md:h-16 md:gap-4 md:px-6">
         <MobileNav signInEnabled={signInEnabled} />
 
-        {/*
-          The lockup renders the product name as visible text, so the link already has an
-          accessible name. The tagline is appended for screen readers only, because "Cairn,
-          link" on its own does not say that this is the way home — the same reason a
-          sighted reader gets the lockup rather than a bare glyph.
-        */}
+        {/* Screen-reader suffix so the link announces itself as the way home. */}
         <Link href="/" className="inline-flex h-11 items-center rounded-md px-1 text-foreground">
           <BrandLockup />
           <span className="sr-only">{` — ${brand.tagline}. Home`}</span>
@@ -49,14 +35,7 @@ export function SiteHeader() {
         <div className="ml-auto flex items-center gap-1 md:gap-2">
           <HeaderSearch />
           <HeaderSearchLink />
-          {/*
-            The theme toggle stays in the header at every width — `01-home.txt` draws it in
-            the 375px bar, and it is the one control a reader may want before they have read
-            anything, which is a poor reason to make them open a menu first.
-
-            Sign-in does not: at 375px it lives in the sheet, which is where the wireframe
-            puts it and where there is room for a real 44px target beside a label.
-          */}
+          {/* Theme toggle shows at every width; on mobile sign-in moves into the sheet. */}
           <ThemeToggle />
           {signInEnabled ? (
             <div className="hidden md:block">

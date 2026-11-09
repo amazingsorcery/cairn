@@ -10,26 +10,12 @@ import {
 import { SOURCE_KINDS as ADAPTER_SOURCE_KINDS } from "@/lib/sources/types";
 
 /**
- * Structural guards on the schema's own vocabularies.
- *
- * These are cheap and they catch the failure mode ADR 0004 designs around: a closed
- * vocabulary is defined in two places by necessity — a TypeScript array and a database CHECK
- * constraint rendered from it — and the two drift silently. A drift is only loud once
- * something tries to write the new value, which in the worst case is a production seed.
- *
- * There is no database connection here on purpose. The assertions that need one — that the
- * CHECK constraints actually exist and actually reject — belong to `scripts/verify-db.ts`
- * and the QA suite (HANDOFF §11).
+ * Guards against drift between duplicated vocabularies (TS arrays vs. the CHECK constraints
+ * rendered from them). No DB connection; constraint checks live in `scripts/verify-db.ts`.
  */
 
 describe("source kind vocabulary", () => {
-  /**
-   * `db/schema.ts` deliberately does not import `SOURCE_KINDS` from `lib/sources/types.ts`,
-   * for the reason the comment above it gives: the CHECK constraint is a database object and
-   * cannot be changed by editing a TypeScript file elsewhere, so the schema's copy has to be
-   * the thing a migration is written against. This test is the other half of that bargain —
-   * it makes the duplication safe by making the drift impossible to commit.
-   */
+  /** The schema keeps its own copy of SOURCE_KINDS; this keeps the two in sync. */
   it("mirrors lib/sources/types.ts value for value, in order", () => {
     expect([...SOURCE_KINDS]).toEqual([...ADAPTER_SOURCE_KINDS]);
   });
@@ -41,10 +27,8 @@ describe("source kind vocabulary", () => {
   });
 
   /**
-   * `flights` is v1's spelling of `aircraft` and is retained only because live rows and code
-   * outside this file still use it (ADR 0024). If this ever fails because someone removed it,
-   * check that `db/seed.ts`, `lib/connectors/flights.ts` and `app/(public)/live/page.tsx`
-   * were migrated in the same change — and then delete this test with them.
+   * `flights` is the deprecated spelling of `aircraft`, still used by existing rows and code.
+   * Remove this test once those are migrated.
    */
   it("keeps `flights` as the one deprecated extra connector kind", () => {
     const extras = CONNECTOR_KINDS.filter(
@@ -59,11 +43,7 @@ describe("workspace feature snapshots", () => {
     expect(WORKSPACE_ITEM_KINDS).toContain("mapFeature");
   });
 
-  /**
-   * ADR 0025: a snapshot is a record of what an upstream said at one moment. An `updatedAt`
-   * column would invite editing it, and an edited observation is a different claim wearing
-   * the original's timestamp.
-   */
+  /** Snapshots are immutable records of what an upstream said at one moment. */
   it("has no updatedAt column", () => {
     expect(Object.keys(workspaceFeatureSnapshots)).not.toContain("updatedAt");
   });

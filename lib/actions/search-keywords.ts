@@ -4,40 +4,18 @@ import { categories, playbookSteps, playbooks, tags, toolTags, tools } from "@/d
 import type { Db } from "@/lib/db";
 
 /**
- * The `search_keywords` fan-out. `docs/architecture/HANDOFF.md` §4 and `search.md` §3.
+ * The `search_keywords` fan-out. The generated `search_vector` column can only use immutable
+ * same-row expressions, so the write path flattens category, tag names and facet arrays into
+ * `search_keywords` for it to read.
  *
- * WHY THIS EXISTS. `tools.search_vector` is a `tsvector GENERATED ALWAYS … STORED` column,
- * and a generated column's expression must be IMMUTABLE and may only reference columns of
- * the same row. Neither restriction can be worked around for the facets: tags live in
- * another table, and `array_to_string(anyarray, text)` is STABLE rather than IMMUTABLE. So
- * the write path flattens category name, tag names and the two facet arrays into the plain
- * `search_keywords` text column, and the generated column reads that.
- *
- * WHY IT MUST BE IN THE SAME TRANSACTION AS THE WRITE THAT TRIGGERS IT. Getting this wrong
- * degrades search silently, which is the worst failure mode available: the row is in the
- * catalogue, the page renders, the entry is simply unfindable by the facet that should find
- * it. Nothing errors. Nobody notices until a reader reports that searching for a tag name
- * returns nothing.
- *
- * Every function here therefore takes a `Db`, which is either the pool client or an open
- * transaction, and every caller passes the transaction it is already inside.
- *
- * Raw SQL through the `sql` tag: these are set-based `UPDATE … FROM` statements that touch
- * every affected row in one round trip, which Drizzle's builder cannot express. The only
- * interpolated values are bound parameter arrays of uuids.
+ * Callers pass the transaction of the triggering write; otherwise search silently drifts.
+ * Raw SQL for set-based `UPDATE ... FROM`; only uuid arrays are bound.
  */
 
 /**
- * Recompute `search_keywords` for the named tools.
- *
- * Derivation, exactly as HANDOFF §4 specifies: category name, then tag names ordered by
- * name, then `input_types`, then `output_types`, single-space joined and trimmed. The
- * ordering is what makes the value deterministic — an unordered `string_agg` would rewrite
- * the column (and therefore the tsvector, and therefore the GIN index) on every save even
- * when nothing changed.
- *
- * A no-op on an empty list rather than an `UPDATE … WHERE id = ANY('{}')`, so callers do not
- * have to remember to guard.
+ * Recompute `search_keywords` for the named tools: category, tags (by name), `input_types`,
+ * `output_types`. Ordered so the value is deterministic and unchanged rows don't churn the
+ * index. No-op on an empty list.
  */
 export async function recomputeToolSearchKeywords(
   client: Db,
@@ -80,11 +58,7 @@ export async function recomputePlaybookSearchKeywords(
   `);
 }
 
-/**
- * Every tool carrying one of these tags. Used when a TAG IS RENAMED: the rename changes the
- * text that belongs in `search_keywords` on every tool that carries it, and HANDOFF §11
- * assertion 6 requires the tool to be findable by the new tag name afterwards.
- */
+/** Every tool carrying one of these tags. Used when a tag is renamed. */
 export async function toolIdsForTags(client: Db, tagIds: readonly string[]): Promise<string[]> {
   if (tagIds.length === 0) return [];
   const rows = await client.execute<{ tool_id: string }>(sql`
@@ -93,7 +67,7 @@ export async function toolIdsForTags(client: Db, tagIds: readonly string[]): Pro
   return rows.rows.map((r) => r.tool_id);
 }
 
-/** Every tool in these categories. Used when a CATEGORY IS RENAMED. */
+/** Every tool in these categories. Used when a category is renamed. */
 export async function toolIdsForCategories(
   client: Db,
   categoryIds: readonly string[],
@@ -118,11 +92,8 @@ export async function playbookIdsForCategories(
 }
 
 /**
- * The playbooks that cite these tools, resolved BEFORE a delete cascades.
- *
- * HANDOFF §7 and caching.md §5.2: deleting a tool removes the `playbook_step_tools` rows by
- * cascade, so the slugs of the playbooks whose cached pages contain that tool's name must be
- * collected first. Afterwards there is nothing left to join.
+ * Slugs of playbooks citing these tools, for cache purging. Call before deleting: the
+ * cascade removes the `playbook_step_tools` rows.
  */
 export async function playbookSlugsCitingTools(
   client: Db,
@@ -139,7 +110,7 @@ export async function playbookSlugsCitingTools(
   return rows.rows.map((r) => r.slug);
 }
 
-/** The tag slugs a tool carries, for the per-tag cache purge (caching.md §5). */
+/** The tag slugs a tool carries, for the per-tag cache purge. */
 export async function tagSlugsForTool(client: Db, toolId: string): Promise<string[]> {
   const rows = await client.execute<{ slug: string }>(sql`
     select g.slug from ${toolTags} tt join ${tags} g on g.id = tt.tag_id

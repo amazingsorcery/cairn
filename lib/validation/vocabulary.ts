@@ -23,16 +23,9 @@ import {
 } from "@/lib/content/schema";
 
 /**
- * The vocabularies, in one place.
- *
- * CLOSED vocabularies come from `db/schema.ts` and carry a Postgres CHECK constraint. They
- * are imported, never retyped: a literal typed out here would drift from the constraint and
- * the drift would only surface as a 23514 at write time. HANDOFF §2.
- *
- * OPEN vocabularies — `tools.input_types` and `tools.output_types` — are plain `text[]` with
- * no constraint, so their canonical list lives in Zod. It is imported from
- * `lib/content/schema.ts` rather than restated, because the content-strategist authors
- * against that file and two lists would diverge on the first addition.
+ * Vocabularies. Closed ones are imported from `db/schema.ts` (CHECK-constrained) so they
+ * can't drift. Open ones (`input_types`, `output_types`: unconstrained `text[]`) are
+ * imported from `lib/content/schema.ts` and enforced here.
  */
 
 /* ------------------------------------------------------------------ *
@@ -49,14 +42,8 @@ export const workspaceItemKindSchema = z.enum(WORKSPACE_ITEM_KINDS);
 export const connectorKindSchema = z.enum(CONNECTOR_KINDS);
 
 /**
- * What a source's data is about. CHECK-constrained on both `connectors.kind` (as a subset —
- * that column also still accepts the deprecated `flights`, ADR 0024) and on
- * `workspace_feature_snapshots.source_kind`, where these eleven are the whole vocabulary.
- *
- * Imported rather than typed out for the reason at the top of this file, and the point is
- * sharper here than usual: a free-form string would pass validation and then be rejected by
- * `workspace_feature_snapshots_source_kind_check` as a 23514 at insert, which reaches the
- * user as a 500 on a save button rather than as a field error.
+ * What a source's data is about. CHECK-constrained on `workspace_feature_snapshots.source_kind`
+ * and on `connectors.kind` (which also accepts the deprecated `flights`).
  */
 export const sourceKindSchema = z.enum(SOURCE_KINDS);
 export const pollModeSchema = z.enum(POLL_MODES);
@@ -74,10 +61,8 @@ export const inputTypeSchema = z.enum(INPUT_TYPES);
 export const outputTypeSchema = z.enum(OUTPUT_TYPES);
 
 /**
- * Normalise a facet array before it is stored or used as a filter: lowercase, trimmed,
- * de-duplicated, sorted. Sorting is what makes two logically identical filter tuples hash
- * to the same `unstable_cache` key (caching.md §6) and what makes `search_keywords`
- * deterministic (HANDOFF §4).
+ * Normalise a facet array: lowercase, trimmed, de-duplicated, sorted. Sorting keeps cache
+ * keys and `search_keywords` deterministic.
  */
 function facetArray<T extends readonly [string, ...string[]]>(values: T) {
   return z
@@ -88,12 +73,7 @@ function facetArray<T extends readonly [string, ...string[]]>(values: T) {
     .pipe(z.array(z.enum(values)));
 }
 
-/**
- * Membership is enforced, not merely encouraged. An unrecognised facet value stored in
- * `input_types` is invisible to every filter in `/directory` — the entry is in the
- * catalogue and unreachable by the facet that should find it, which is the quietest
- * possible content bug.
- */
+/** Membership is enforced: an unknown facet value would be unreachable from `/directory` filters. */
 export const inputTypesSchema = facetArray(INPUT_TYPES).refine(
   (v) => v.length > 0,
   "At least one input type is required",
@@ -105,11 +85,8 @@ export const outputTypesSchema = facetArray(OUTPUT_TYPES).refine(
 );
 
 /**
- * The same normalisation without the membership check, for the `/directory` filter path.
- *
- * A filter is dropped, never rejected: sitemap.md §1 — "Anything that fails validation is
- * dropped, not rejected — a bad filter yields the unfiltered list, never a 500." A crafted
- * URL must not be able to produce an error page or a novel cache key.
+ * Same normalisation for `/directory` filters, but unknown values are dropped rather than
+ * rejected, so a crafted URL can't cause an error or a new cache key.
  */
 export const inputTypesFilterSchema = z
   .array(z.string())
@@ -140,26 +117,15 @@ export const outputTypesFilterSchema = z
   );
 
 /* ------------------------------------------------------------------ *
- * Cost model: one spelling, asserted rather than assumed
+ * Cost model
  * ------------------------------------------------------------------ */
 
 /**
- * `costModel` is spelled camelCase on BOTH sides — `freeWithRegistration` in
- * `db/schema.ts` COST_MODELS and in `lib/content/schema.ts` costModels. There is
- * deliberately no translation layer: product-brief §6.2's rule is one spelling, no
- * translation, and a map between two spellings is exactly the thing that goes stale.
+ * `costModel` is camelCase in both `db/schema.ts` and `lib/content/schema.ts`, with no
+ * translation layer. Convention: closed vocabularies are camelCase (`needsReview`), open
+ * `text[]` facets are kebab-case (`company-name`).
  *
- * The convention, settled by the architect:
- *   - CLOSED, CHECK-constrained vocabularies that code branches on are camelCase
- *     (`needsReview`, `freeWithRegistration`, `checklistStep`, `upstreamError`).
- *   - OPEN `text[]` vocabularies that content grows stay kebab-case (`company-name`,
- *     `raw-dataset`, `free-text`) — they are never TypeScript union members and kebab
- *     reads better as a facet value.
- *
- * What remains is the risk that the two arrays drift. `assertCostModelsAligned` is called
- * by the seed script before it writes anything and asserted in the unit tests, so a value
- * added to one array and not the other fails loudly at seed time rather than as a
- * `tools_cost_model_check` violation half-way through a load.
+ * Called by the seed script and unit tests so the two lists can't drift.
  */
 export function assertCostModelsAligned(): void {
   const contentSide = [...contentCostModels].sort();
@@ -173,15 +139,12 @@ export function assertCostModelsAligned(): void {
       "Cost-model vocabularies have diverged. " +
         `In lib/content/schema.ts but not db/schema.ts: [${missingFromDb.join(", ")}]. ` +
         `In db/schema.ts but not lib/content/schema.ts: [${missingFromContent.join(", ")}]. ` +
-        "They must be the same list, in the same spelling (product-brief §6.2).",
+        "They must be the same list, in the same spelling.",
     );
   }
 }
 
-/**
- * A content `costModel` narrowed to the database enum. It is a straight identity check
- * rather than a lookup, but it is the boundary where an unexpected value stops.
- */
+/** Narrow a content `costModel` to the database enum, throwing on unknown values. */
 export function toDbCostModel(value: ContentCostModel): CostModel {
   const parsed = costModelSchema.safeParse(value);
   if (!parsed.success) {

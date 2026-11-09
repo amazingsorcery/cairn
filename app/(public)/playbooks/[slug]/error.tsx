@@ -4,13 +4,7 @@ import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
 
-/**
- * Copy verbatim from `docs/design/states.md` §4.6, with both of the controls it names.
- *
- * Nothing from `error` is rendered — not the message, not the digest. Next.js has already
- * logged the real error server-side; a table name or a query fragment is not something to
- * hand a reader.
- */
+/** Doesn't render `error`: Next logs it server-side, and it may contain internals. */
 export default function PlaybookDetailError({
   reset,
 }: {

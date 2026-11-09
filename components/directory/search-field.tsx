@@ -8,28 +8,16 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 /**
- * The search field with type-ahead. `docs/design/wireframes/04-search.txt`.
+ * Search field with type-ahead. A plain GET form to `/search`, so it works without JS;
+ * suggestions are an enhancement.
  *
- * The field is a real `<input name="q">` inside a real `<form method="get" action="/search">`,
- * so search works with the bundle removed and every result page is a shareable URL. The
- * suggestion list is an enhancement layered on top; it never becomes the only way to search.
+ * `/api/search/suggest` is `private, no-store`: a shared cache of partial queries would leak
+ * what people search for. No prefetching; requests are debounced.
  *
- * PRIVACY, which is why this endpoint exists at all rather than a prefetched index:
- * `/api/search/suggest` is `private, no-store` at every layer (`caching.md` §7). A shared
- * cache of partial queries, keyed by prefix and warmed by whoever typed first, is a readable
- * log of what this audience is looking into — product-brief §3.2 constraint 4 covers our own
- * infrastructure, not only third-party trackers. Nothing here prefetches, and the request is
- * only made after the reader stops typing.
+ * On 429 the list shows a notice but the field stays enabled, since submitting still works.
  *
- * RATE LIMITING, `states.md` §2.7: when the limiter bites, the list is replaced by one row of
- * text and **the field is never disabled**. Submitting the query is a different endpoint and
- * it still works. Disabling the input would take away the thing that still functions.
- *
- * ACCESSIBILITY. ARIA 1.2 combobox: `role="combobox"` with `aria-expanded`, `aria-controls`
- * and `aria-activedescendant` on the input, `role="listbox"` on the list, `role="option"` on
- * the rows. Arrow keys move the active option without moving DOM focus, Enter opens the
- * active one, and Escape closes the list and leaves focus in the field — never on the page
- * body, which is where a naive `blur()` would strand a keyboard reader.
+ * ARIA 1.2 combobox pattern. Arrow keys move the active option without moving focus; Escape
+ * closes the list and keeps focus in the field.
  */
 
 interface Suggestion {
@@ -51,18 +39,10 @@ export function SearchField({ initialQuery }: { initialQuery: string }) {
   const [active, setActive] = React.useState(-1);
   /** Seconds until suggestions resume, from the endpoint's `Retry-After`. */
   const [pausedFor, setPausedFor] = React.useState<number | null>(null);
-  /**
-   * Has the reader actually typed in this field?
-   *
-   * Without this, arriving at `/search?q=certificate+transparency` fires the suggestion
-   * effect from the initial value and drops a listbox over the results the reader just asked
-   * for. Suggestions are a response to typing, not to landing on a page — so the effect still
-   * runs, but it may only OPEN the list once the field has been edited.
-   */
+  /** Whether the field was edited; stops the initial `?q=` value from opening the list. */
   const typed = React.useRef(false);
 
-  // Re-sync when the URL changes underneath us — a browser back, or a suggestion opened and
-  // then dismissed. Without this the field keeps text for a search that is no longer showing.
+  // Re-sync when the URL changes (e.g. browser back).
   React.useEffect(() => {
     setQuery(initialQuery);
     typed.current = false;
@@ -95,8 +75,7 @@ export function SearchField({ initialQuery }: { initialQuery: string }) {
           }
 
           if (!response.ok) {
-            // A failed suggestion is not an error the reader needs to see: the field still
-            // submits. Close the list and say nothing.
+            // Fail quietly; the form still submits.
             setSuggestions([]);
             setOpen(false);
             return;
@@ -122,7 +101,7 @@ export function SearchField({ initialQuery }: { initialQuery: string }) {
           setActive(-1);
           setOpen(typed.current && parsed.length > 0);
         } catch {
-          // Aborted or offline. Silence is correct: the form still works.
+          // Aborted or offline; the form still works.
         }
       })();
     }, DEBOUNCE_MS);
@@ -147,7 +126,7 @@ export function SearchField({ initialQuery }: { initialQuery: string }) {
 
   function onKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
     if (event.key === "Escape") {
-      // Close, and leave focus exactly where it was. The wireframe calls this out.
+      // Close and keep focus in the field.
       close();
       inputRef.current?.focus();
       return;
@@ -161,8 +140,7 @@ export function SearchField({ initialQuery }: { initialQuery: string }) {
       event.preventDefault();
       setActive((current) => (current <= 0 ? suggestions.length - 1 : current - 1));
     } else if (event.key === "Enter" && active >= 0) {
-      // Only intercept Enter when an option is actually highlighted. Otherwise the form
-      // submits and the reader gets the full result page, which is what Enter usually means.
+      // Only intercept Enter on a highlighted option; otherwise let the form submit.
       event.preventDefault();
       openSuggestion(active);
     }
@@ -200,8 +178,7 @@ export function SearchField({ initialQuery }: { initialQuery: string }) {
             }}
             onKeyDown={onKeyDown}
             onBlur={(event) => {
-              // Leaving the field for anything outside the listbox closes it. Clicking a row
-              // is handled by `onMouseDown` below, which fires first.
+              // Close when focus leaves; row clicks use `onMouseDown`, which fires first.
               if (!event.currentTarget.parentElement?.contains(event.relatedTarget)) close();
             }}
             className={cn(
@@ -245,18 +222,7 @@ export function SearchField({ initialQuery }: { initialQuery: string }) {
                   )}
                 >
                   <span className="truncate">{suggestion.name}</span>
-                  {/*
-                    `--foreground-secondary`, not `--muted-foreground`. On the ACTIVE row the
-                    background is `--accent`, and muted ink measures 4.02:1 there in the dark
-                    theme — below AA. axe cannot reach it: the row is only styled that way
-                    while a suggestion is highlighted, so a static page scan never sees it.
-                    Found by typing into the field and hovering.
-
-                    The tokens cannot fix this one. `--accent` cannot be darkened without
-                    vanishing against `--popover`, and no primitive exists between
-                    `--slate-400` and `--slate-300`, so on that surface the muted step
-                    genuinely does not exist. See `app/tokens.css` §4.4.
-                  */}
+                  {/* Not `--muted-foreground`: it's 4.02:1 on the active row's `--accent` in dark mode. */}
                   <span className="shrink-0 text-xs text-foreground-secondary">tool</span>
                 </li>
               ))

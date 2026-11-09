@@ -1,17 +1,11 @@
 /**
- * The validation layer. Zod at every boundary (product-brief §5).
+ * Zod validation for every boundary. Three kinds of rule:
  *
- * Three kinds of rule live here, and it is worth knowing which is which:
- *
- *   1. RESTATEMENTS of a Postgres CHECK constraint (`reliability` 1–5, the publish gate).
- *      The database is the enforcement; these exist so an editor gets a field and a
- *      sentence instead of a constraint name.
- *   2. INVARIANTS THE DATABASE DELIBERATELY DOES NOT ENFORCE (HANDOFF §3): the
- *      `kind`/`tool_id`/`step_id` pairing on `workspace_items`, contiguous 0-based step
- *      ordering, `input_types` / `output_types` membership, summary length. For these, Zod
- *      IS the enforcement — there is nothing behind it.
- *   3. NORMALISATION of untrusted query strings into a canonical, cacheable filter tuple
- *      (`filters.ts`), which is a cache-integrity control as much as a validation one.
+ *   1. Restatements of Postgres CHECK constraints, so editors get a readable message.
+ *   2. Invariants the database doesn't enforce (`workspace_items` kind pairing, contiguous
+ *      step ordering, `input_types`/`output_types` membership, summary length). Zod is the
+ *      only enforcement here.
+ *   3. Normalisation of query strings into a canonical, cacheable filter tuple (`filters.ts`).
  */
 export * from "./common";
 export * from "./vocabulary";

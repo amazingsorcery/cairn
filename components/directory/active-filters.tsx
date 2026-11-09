@@ -6,15 +6,8 @@ import { cn } from "@/lib/utils";
 import type { ActiveFilter } from "./filter-url";
 
 /**
- * The removable chip row.
- *
- * Each chip is a **link** to the same page with exactly one filter dropped, not a button
- * running client state. That is what makes `states.md` §2.1's promise — "getting back is
- * never more than one click, and the browser back button also works" — structurally true
- * rather than something an event handler has to remember.
- *
- * The whole chip is the hit area and it is 44px tall, so the small `×` glyph is not the
- * target (shell handoff §10.4).
+ * Removable filter chips. Each is a link with one filter dropped, so removal is one click
+ * and the back button works. The whole 44px chip is the hit area, not just the `×`.
  */
 export function ActiveFilterChips({
   filters,

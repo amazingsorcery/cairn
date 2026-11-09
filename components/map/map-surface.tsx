@@ -38,27 +38,14 @@ import { sortDescription } from "./sort";
 import { useReducedMotion, useResolvedTheme } from "./use-map-environment";
 
 /**
- * The map route's one interactive leaf. The page around it is a Server Component that does
- * the fetching, so every table is complete in the initial HTML.
+ * Client leaf for the map route; the page (a Server Component) fetches, so every table is in
+ * the initial HTML.
  *
- * ## What this component does NOT contain
+ * Layer-agnostic: everything comes from `MAP_LAYERS` (`registry.test.ts` checks no layer is
+ * named here). Controls, map, tables and detail share one state so counts and ages agree.
  *
- * The name of any layer. It iterates `MAP_LAYERS` and asks each definition for its deck.gl
- * layer, its columns, its detail rows and its empty sentence. `grep -n earthquake` in this
- * file returns nothing, and `registry.test.ts` fails the build if that stops being true.
- *
- * ## Why the interactive part is one leaf rather than five
- *
- * The controls, the map, the tables and the detail panel all read the same payloads and the
- * same observation instants. Split across five components with five copies of that state
- * they would drift, and the numbers that must never drift on a live surface are the counts
- * and the ages (ADR 0014 §1). One owner, one clock, one payload per layer.
- *
- * ## The map is opt-in and the tables are not
- *
- * WebGL is a fingerprinting surface and a tile server sees the patch of the world a reader
- * is looking at, so nothing loads until the reader asks (ADR 0019). The tables below carry
- * every feature either way — they are the equivalent, not the fallback.
+ * The map is opt-in (WebGL fingerprinting, tile server sees the viewport); the tables always
+ * render.
  */
 
 type MapState = "closed" | "loading" | "ready" | "failed";
@@ -70,13 +57,8 @@ type MapState = "closed" | "loading" | "ready" | "failed";
 const WORLD: MapViewport = { west: -180, south: -85, east: 180, north: 85 };
 
 /**
- * The question one layer asks about one viewport, as the server's cache key for it.
- *
- * `layerQuery` is the registry deciding what the viewport means to this layer — most layers
- * ignore it entirely — and `sourceQueryKey` is the same normalisation the server keys its
- * payload cache with. Composing them here means the client can tell whether a pan asks
- * something new without knowing which layers are viewport-scoped, and without a second copy of
- * the grid that could disagree with the server's.
+ * The server's cache key for one layer at one viewport. Lets the client tell whether a pan
+ * asks anything new, using the same normalisation as the server.
  */
 function queryKeyFor(layer: MapLayerDefinition, viewport: MapViewport): string {
   return sourceQueryKey(layerQuery(layer, viewport));
@@ -91,10 +73,8 @@ export interface MapSurfaceProps {
   initialVisible: readonly string[];
   initialView: { longitude: number; latitude: number; zoom: number };
   /**
-   * Whether this deployment has case workspaces at all. Passed in from the page because only
-   * the server can read the environment, and drilled to `FeatureDetail` rather than read from
-   * a context: one boolean, one owner, no provider to forget to mount. In public-only mode
-   * `/map/save` answers 404 (ADR 0032), so the control that posts to it must not render.
+   * Whether this deployment has case workspaces. From the server env; in public-only mode
+   * `/map/save` 404s, so the save control is hidden.
    */
   signInEnabled: boolean;
 }
@@ -119,14 +99,9 @@ export function MapSurface({
   );
   const [refreshing, setRefreshing] = React.useState<ReadonlySet<string>>(() => new Set());
   /*
-   * What the reader is looking at. The world until the map is open and moved, which is also
-   * what the server fetched for, so the two agree before any pan happens.
-   *
-   * IT IS STATE, BUT IT ONLY MOVES WHEN THE READER STOPS. It was a ref, on the reasoning that
-   * nothing renders differently because the viewport moved. That stopped being true with the
-   * throttle: a layer whose payload answers a different area than the map now shows has to say
-   * so, which is a render. The settler below means this changes at most once per gesture
-   * rather than on every `moveend`, so the map is not re-rendering under the reader's hand.
+   * Current viewport; the world (what the server fetched) until the reader pans. State
+   * because the "different area" note renders from it; the settler limits updates to once
+   * per gesture.
    */
   const [viewport, setViewport] = React.useState<MapViewport>(WORLD);
   /* The same value, readable synchronously by a fetch that a timer started. */
@@ -134,13 +109,8 @@ export function MapSurface({
   /* Where the last `moveend` left the map, before the settler has accepted it. */
   const pendingViewportRef = React.useRef<MapViewport | null>(null);
   /*
-   * THE QUESTION EACH LAYER'S PAYLOAD ANSWERS, as the server's own cache key.
-   *
-   * Not "where the reader was when we asked": two viewports a few hundred metres apart ask the
-   * same question, and a global feed asks the same question wherever the reader is. Comparing
-   * keys rather than positions is what lets the throttle skip a pan that needs no request, and
-   * it is computed by the same function the server keys its cache with, so the two cannot
-   * drift — the drift between key and question being QV-04 itself.
+   * The cache key each layer's current payload answers. Comparing keys rather than positions
+   * lets the throttle skip pans that don't change the query.
    */
   const [answeredKeys, setAnsweredKeys] = React.useState<Readonly<Record<string, string>>>(() =>
     Object.fromEntries(MAP_LAYERS.map((layer) => [layer.id, queryKeyFor(layer, WORLD)])),
@@ -148,15 +118,9 @@ export function MapSurface({
   /** When we last sent a request per layer, whatever came back. Paces every automatic path. */
   const requestedAtRef = React.useRef<Record<string, number>>({});
   /*
-   * The page render counts as a request for pacing purposes. Without it a layer whose
-   * server-side fetch failed would be re-requested by the first tick after hydration, which
-   * is a burst at exactly the moment an upstream is already in trouble.
-   *
-   * It is dated from the OBSERVATION, not from mount: the server may have rendered from a
-   * cache entry most of a TTL old, and pretending we had just asked would hold a payload that
-   * is already due for another whole TTL. `initialAges` is the age the server computed, which
-   * is the same number the status row shows, so the client's pacing and the reader's clock
-   * agree. A failed initial payload has no age and falls back to mount.
+   * The server render counts as a request for pacing, so a failed layer isn't re-requested
+   * on the first tick. Dated from the observation (mount minus `initialAges`), not mount,
+   * since the server may have served a cache entry that's nearly expired.
    */
   const mountedAtRef = React.useRef<number>(Date.now());
   const initialRequestedAt = React.useCallback(
@@ -179,11 +143,8 @@ export function MapSurface({
     requestedAtRef.current[layerId] = Date.now();
     try {
       /*
-       * The viewport travels with every refresh, and the registry decides per layer whether
-       * it means anything (`MapLayerDefinition.query`). It is quantised to a whole-degree grid
-       * on the server, once, where the cache key is built from the same value — so many
-       * readers looking at roughly the same place share one upstream call and one cache entry
-       * (ADR 0014 §4), and the coordinate an upstream sees is coarser than the reader's.
+       * The viewport is sent with every refresh; the server quantises it to a whole-degree
+       * grid so nearby readers share a cache entry and upstreams see a coarser coordinate.
        */
       const view = viewportRef.current;
       const layer = findLayer(layerId);
@@ -201,22 +162,12 @@ export function MapSurface({
       const body: unknown = await response.json();
       const parsed = parseLayerPayload(body, layerId);
       setPayloads((current) => ({ ...current, [layerId]: parsed }));
-      /*
-       * Recorded for the answer we actually received, success or failure — what is now on
-       * screen is the response to *this* question. It is deliberately not recorded when the
-       * request never completed (the catch below), because then the payload still on screen is
-       * still the answer to whatever it was before.
-       */
+      // Record the key for any completed response (success or failure), not for a thrown fetch.
       if (requestedKey !== null) {
         setAnsweredKeys((current) => ({ ...current, [layerId]: requestedKey }));
       }
     } catch {
-      /*
-       * A failed refresh changes nothing on screen. The payload already here keeps its own
-       * observation instant, so its age simply keeps counting up and the reader watches it
-       * get older — which is honest, and is the opposite of a spinner that keeps asserting
-       * that fresh data is arriving.
-       */
+      // A failed refresh changes nothing; the existing payload's age keeps counting up.
     } finally {
       setRefreshing((current) => {
         const next = new Set(current);
@@ -227,17 +178,9 @@ export function MapSurface({
   }, []);
 
   /**
-   * THE ONE PLACE AN AUTOMATIC REQUEST IS DECIDED, for every layer and every reason.
-   *
-   * Ageing out, recovering from a failure and following the reader's viewport used to be
-   * three code paths with three different opinions about when we may call a source. They are
-   * one call to `refreshReason` now, which is pure and tested (`refresh-policy.test.ts`), so
-   * "how many upstream calls can a five-second drag make" is a question with an answer that
-   * does not require reading a component.
-   *
-   * A layer is skipped when it is switched off and when the tab is hidden. The second is not
-   * an optimisation: a hidden tab is not a reader, and refreshing it spends a shared ceiling
-   * that exists to keep us inside somebody's fair-use policy.
+   * The single place automatic requests are decided (expiry, failure recovery, viewport),
+   * via the pure `refreshReason` in `refresh-policy.ts`. Hidden layers are skipped; hidden
+   * tabs are skipped by the timer.
    */
   const evaluate = React.useCallback(
     (now: number) => {
@@ -261,14 +204,8 @@ export function MapSurface({
   evaluateRef.current = evaluate;
 
   /*
-   * ONE TIMER FOR EVERY LAYER, not one per layer. It wakes on a fixed tick and asks the policy
-   * about each visible layer; most ticks decide nothing. The tick is a heartbeat rather than a
-   * cadence — the cadence is each source's own TTL, which is a registry column an operator can
-   * change under load, and never a number chosen in the UI.
-   *
-   * It is also what makes the throttle self-correcting: a pan that arrives inside a layer's
-   * minimum gap is not dropped, it is simply not due yet, and the next tick after the gap
-   * expires picks it up without the reader touching anything.
+   * One heartbeat timer for all layers; the actual cadence is each source's TTL. A pan that
+   * arrives inside the minimum gap is picked up by a later tick rather than dropped.
    */
   React.useEffect(() => {
     const timer = window.setInterval(() => {
@@ -278,7 +215,7 @@ export function MapSurface({
     return () => window.clearInterval(timer);
   }, []);
 
-  /* The reader stopped somewhere new: decide at once rather than waiting for the next tick. */
+  /* Evaluate immediately when the viewport settles. */
   React.useEffect(() => {
     evaluateRef.current(Date.now());
   }, [viewport]);
@@ -302,19 +239,9 @@ export function MapSurface({
   }, []);
 
   /**
-   * The reader panned. **Nothing is fetched here.**
-   *
-   * This used to call `refreshLayer` for every visible viewport-scoped layer on every
-   * `moveend`, with no throttle — harmless only for as long as the server cache answered any
-   * viewport from one entry, which is precisely the defect (QV-04) being fixed. Keying the
-   * cache on the query without also throttling the pan would have turned a drag into a burst
-   * of cold misses and ADR 0021's six-calls-a-minute ceiling into a `quotaExhausted` layer.
-   * The two are one change.
-   *
-   * So the gesture only records where the reader ended up. `moveend` fires at the end of each
-   * sub-gesture of a drag; the settler collapses them into one settled viewport, and the
-   * effect above it decides — per layer, through the policy — whether that viewport asks a
-   * question we have not already answered.
+   * Pans only record the viewport; nothing is fetched here. The settler collapses a drag's
+   * `moveend`s into one update, and the policy decides per layer whether to fetch. Fetching
+   * per `moveend` would burn through upstream limits (adsb.lol's ceiling is 6 calls/minute).
    */
   const settleViewport = React.useCallback(() => {
     const next = pendingViewportRef.current;
@@ -354,7 +281,7 @@ export function MapSurface({
 
   const closeDetail = React.useCallback(() => {
     setSelected(null);
-    /* Focus goes back where it came from. A reader who opened a row lands on that row. */
+    /* Return focus to whatever opened the panel. */
     const trigger = detailTriggerRef.current;
     if (trigger && document.contains(trigger)) trigger.focus();
   }, []);
@@ -380,16 +307,8 @@ export function MapSurface({
   );
 
   /**
-   * THE SENTENCE A THROTTLED LAYER OWES THE READER, or null when it owes none.
-   *
-   * The throttle buys the upstream's fair-use ceiling with a window in which the payload on
-   * screen answers the area the reader was looking at a moment ago rather than the one they
-   * are looking at now. That window is short and bounded, but a table captioned "58 features,
-   * observed 03:39" over an empty map is the exact shape of QV-04 — so for as long as it
-   * lasts, the layer says so, in the caption the screen reader hears and in the announcement.
-   *
-   * It is derived from the registry rather than from a list of layer names: a layer with no
-   * `query` can never be in this state, because its key does not move when the reader does.
+   * Note shown while a throttled layer's payload answers a different area than the one on
+   * screen, or null. Layers without a `query` never hit this.
    */
   const areaNoteFor = React.useCallback(
     (layer: MapLayerDefinition): string | null => {
@@ -415,20 +334,9 @@ export function MapSurface({
       : null;
 
   /**
-   * The age of a payload, WITHOUT a ticking clock.
-   *
-   * TWO REASONS IT DOES NOT TICK, and both are load-bearing.
-   *
-   * First, hydration. Calling `Date.now()` during the first client render produces a
-   * different number from the one the server rendered, and React discards the whole tree as
-   * a mismatch. The server already computed each layer's age once and passed it in, so while
-   * a payload is still the one the server sent, its age is the number the server sent.
-   *
-   * Second, and more important: this feeds the polite live region. A live region whose text
-   * changes every second makes a screen reader announce the page once a second, which is not
-   * an age indicator, it is an alarm. The visible age in each layer's status row is the one
-   * that ticks (`useLiveAge`), because a sighted reader glances at it and a screen reader
-   * does not have it read aloud on a timer.
+   * A payload's age, deliberately not ticking: it uses the server's age for the initial
+   * payload (avoids a hydration mismatch), and it feeds the live region, which would
+   * otherwise announce every second. The status rows have the ticking age.
    */
   const ageAt = React.useCallback(
     (layerId: string, payload: Extract<LayerPayloadDto, { ok: true }>): number =>
@@ -438,25 +346,14 @@ export function MapSurface({
     [initialPayloads, initialAges],
   );
 
-  /**
-   * THE ROUTE'S ONE POLITE LIVE REGION (`HANDOFF-shell.md` §10.1).
-   *
-   * It is in the DOM before the content it describes, it is never duplicated, and it carries
-   * what a reader who cannot see the screen needs after any change: which layers are on, how
-   * many features each has, how old they are, and how the tables are ordered.
-   */
+  /** Text for the route's single polite live region: layers, counts, ages, sort order. */
   const announcement = visibleLayers
     .map((layer) => {
       const payload = payloads[layer.id];
       if (!payload) return `${layer.label}: not loaded.`;
       if (!payload.ok) return `${layer.unavailableTitle}.`;
       const sort = sorts[layer.id];
-      /*
-       * A registry is announced by the day it was checked, not by an age. `observedAt` for a
-       * hand-verified list is a verification date, and reading "26 hours ago" aloud states
-       * decay where there is none. The vocabulary is `layer-status.tsx`'s, imported rather
-       * than restated, so the announcement and the visible row cannot drift apart.
-       */
+      /* Registries are announced by check date, not age (same wording as `layer-status.tsx`). */
       const freshness =
         layer.cadence === "registry"
           ? `checked ${formatCheckedDate(payload.observedAt)}`
@@ -482,7 +379,7 @@ export function MapSurface({
           ) : mapState === "loading" ? (
             <div>
               <Skeleton className="h-[55vh] min-h-[18rem] w-full md:h-[65vh]" aria-hidden="true" />
-              {/* A word, not a spinner. ADR 0014 §8. */}
+              {/* A word, not a spinner. */}
               <p className="mt-2 text-sm text-foreground-secondary">Loading the map…</p>
             </div>
           ) : mapState === "failed" ? (
@@ -522,10 +419,7 @@ export function MapSurface({
           ) : null}
         </div>
 
-        {/*
-          On a phone this is the second element and sits directly under the map, in the lower
-          half of the screen and inside thumb reach. At `md` it moves to a right rail.
-        */}
+        {/* Under the map on phones, right rail from `md`. */}
         <LayerControls
           className="order-2 self-start"
           layers={MAP_LAYERS}
@@ -588,12 +482,7 @@ export function MapSurface({
   );
 }
 
-/**
- * One layer's section: its state, its source, and its table.
- *
- * Registry-driven throughout. The only thing this function knows about the layer is that it
- * has a label, a payload and columns.
- */
+/** One layer's section: status, source and table. */
 function LayerSection({
   layer,
   payload,
@@ -631,8 +520,7 @@ function LayerSection({
           label={layer.label}
           unavailableTitle={layer.unavailableTitle}
           payload={payload}
-          /* A registry says when it was checked; a feed says how old it is. Registry field,
-             not a branch on which layer this is. */
+          /* Registry: check date; feed: age. */
           cadence={layer.cadence ?? "live"}
           refreshing={refreshing}
           initialAgeSeconds={initialAgeSeconds}
@@ -640,11 +528,7 @@ function LayerSection({
         />
       ) : null}
 
-      {/*
-        Visible as well as in the caption. A sighted reader watching the map move needs the
-        same qualification a screen-reader user gets from the caption, and neither should have
-        to infer it from a count that has not changed.
-      */}
+      {/* Shown visibly as well as in the table caption. */}
       {areaNote ? (
         <p className="max-w-[68ch] rounded-lg border border-border bg-card px-4 py-3 text-sm leading-relaxed text-foreground-secondary">
           {areaNote}
@@ -678,13 +562,7 @@ function LayerSection({
   );
 }
 
-/**
- * The opt-in card.
- *
- * The consequence is IN the button's label, not only in the paragraph above it — the pattern
- * ADR 0015 established for camera embeds, applied to the tile provider. A reader who reads
- * only the control still learns what pressing it does.
- */
+/** Map opt-in card. The button label itself names the tile host it connects to. */
 function MapOptIn({ onOpen }: { onOpen: () => void }) {
   const host = new URL(basemap.origin).host;
   return (

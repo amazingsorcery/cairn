@@ -19,27 +19,13 @@ import {
 import { setConnectorEnabled } from "@/lib/actions/connectors";
 
 /**
- * The kill-switch. ADR 0011 rule 6, ADR 0012 §1, `states.md` §11.6.
+ * Connector kill-switch: disables a source without a deploy.
  *
- * "A source that changes its terms can be disabled without a deploy." This is the control
- * that makes that true, and three things about it are deliberate.
+ * - Switching off is confirmed (it's immediately visible to every viewer); switching on isn't.
+ * - Only touches `enabled`, so it can't fail validation on unrelated fields.
+ * - Doesn't touch `status`, so re-publishing can't re-enable a switched-off connector.
  *
- * 1. **Switching OFF is confirmed; switching ON is not.** Off is the safe direction and its
- *    consequence is immediate and public — every viewer of the surface sees the switched-off
- *    state — so the operator is told exactly that before they do it. On is the direction that
- *    starts outbound traffic, but it is also the direction an operator only reaches after
- *    having deliberately come here; the asymmetry that matters is that off must be FAST at
- *    3am, and a dialog that explains the blast radius does not slow it meaningfully.
- *
- * 2. **It touches one boolean and nothing else.** `setConnectorEnabled` takes `{ id, enabled }`
- *    and no other field, so turning a source off cannot fail validation on some unrelated
- *    field nobody has filled in. That is the whole point of a kill-switch.
- *
- * 3. **It does not touch `status`.** Operational and editorial are separate axes (ADR 0012 §1),
- *    so re-publishing cannot silently re-enable something an operator switched off.
- *
- * The switch takes effect on the very next request: `getLiveConnector` is deliberately
- * uncached, so there is no TTL between this click and the calls stopping.
+ * Takes effect on the next request; `getLiveConnector` is uncached.
  */
 
 export interface KillSwitchProps {

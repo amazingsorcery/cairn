@@ -15,78 +15,25 @@ import type { ConnectorDriver } from "./types";
 /**
  * `/toolbench/certificate-transparency` — subdomain discovery from public CT logs, via crt.sh.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * WHAT WAS CONFIRMED, AND HOW — 2026-09-01
- * ─────────────────────────────────────────────────────────────────────────────
- * 1. **Endpoint.** `https://crt.sh/?q=<identity>&output=json`. The JSON, CSV and Atom output
- *    modes are linked from crt.sh's own results page (`json?q=`, `csv?q=`, `atom?q=`), which
- *    is how the service publishes them — there is no separate API document. Exercised live
- *    against `ripe.net`, `sectigo.com` and `bbc.co.uk`.
+ * Notes (verified 2026-09-01):
+ * - Endpoint `https://crt.sh/?q=<identity>&output=json`; output modes are only documented via
+ *   links on the results page.
+ * - `exclude=expired` cuts a large query from ~58s/1.35 MB to ~4s, so it's the default.
+ * - The search is SQL `ILIKE`, not a suffix match; `lib/toolbench/ct.ts` separates in-scope
+ *   names from lookalikes.
+ * - A 404 is NOT an empty result: crt.sh also returns 404 when the backend query fails under
+ *   load. We treat it as an upstream failure; only a 200 with `[]` means "nothing found".
+ * - 502s are routine under load. Generous timeout, no retries.
+ * - No published terms, AUP or rate limit; robots.txt returned 502. CT logs themselves are
+ *   public (RFC 6962). Weakest basis of the Toolbench sources, so it seeds disabled; SSLMate's
+ *   Cert Spotter API (explicit terms, needs a key) is the alternative.
  *
- * 2. **`exclude=expired` is supported and matters enormously.** `sectigo.com` unfiltered took
- *    58 s and returned 1.35 MB; with `exclude=expired` it took 4 s and returned 287 kB. The
- *    tool defaults to excluding expired certificates and says so, because the alternative is
- *    a timeout the reader cannot diagnose.
- *
- * 3. **The identity search is a SQL `ILIKE`, not a suffix match.** `q=example.com` also
- *    returns `notexample.com` and `example.com.attacker.example`. `lib/toolbench/ct.ts`
- *    separates in-scope names from the rest rather than presenting all of them as subdomains.
- *
- * 4. **A 404 IS NOT AN EMPTY RESULT, and treating it as one was a real bug.** crt.sh answers
- *    an identity search that matched nothing with HTTP 404 — and it *also* answers 404 from
- *    its Apache front end when the query fails behind it. During verification a search for
- *    `ripe.net`, a domain with over four thousand logged certificates, returned 404 while the
- *    service was under load; the tool rendered "no logged certificates mention ripe.net",
- *    which is the exact false negative this product exists not to produce.
- *
- *    CONFIRMED BY MEASUREMENT, 2026-09-01 05:16: the identical query for `ripe.net` returned
- *    **404 in 2.6 s and then 502 within seconds**, and had returned 200 with 4,375 rows
- *    earlier the same hour. A 404 from this service is a failure mode, not a negative result,
- *    and nothing in the response distinguishes it from one that is.
- *
- *    So a 404 is now an upstream failure. The cost is a domain genuinely absent from the logs
- *    reading as "the source did not answer" rather than as "nothing found" — a wrong status,
- *    which the reader can retry and check. The alternative was a wrong finding, which they
- *    cannot. The empty-result path remains for a 200 carrying an empty array, which is the
- *    unambiguous form.
- *
- * 5. **502 is routine.** Ten consecutive requests during verification all returned 502 Bad
- *    Gateway, the first after a 60-second hang. crt.sh is a single free service under heavy
- *    load. The timeout is generous, the failure copy names overload specifically, and nothing
- *    retries — retrying into an overloaded service is how you become part of the problem.
- *
- * 6. **Terms: none are published, and that is recorded rather than smoothed over.** crt.sh
- *    carries no terms of service, no acceptable-use policy and no published rate limit;
- *    `https://crt.sh/robots.txt` returned 502 on every attempt on 2026-09-01, so no crawl
- *    directive could be read either way. The page footer reads "© Sectigo Limited 2015-2026.
- *    All rights reserved."
- *
- *    The underlying data is not Sectigo's: Certificate Transparency logs are public,
- *    append-only and designed to be read by anyone (RFC 6962), and the certificates in them
- *    are published by the CAs that issued them. What we consume from Sectigo is the *service*
- *    of having indexed them.
- *
- *    **This is the weakest legal basis of the four**, and the connector row therefore seeds
- *    disabled and draft like the rest, with the gap stated in `legal_basis` so an operator
- *    decides deliberately. `docs/sources/crt-sh.md` records the check and names
- *    SSLMate's Cert Spotter API — which publishes explicit terms and a free tier of 10
- *    full-domain queries an hour, at the cost of requiring a key — as the alternative if the
- *    absence of terms is judged unacceptable.
- *
- * NONE OF THIS IS A LEGAL OPINION. See `docs/content/legal-review.md`.
- * ─────────────────────────────────────────────────────────────────────────────
+ * Not a legal opinion.
  */
 
 export const CRTSH_CONNECTOR_SLUG = "crt-sh";
 
-/**
- * The most certificate rows we will read into memory for one lookup.
- *
- * `ripe.net` returns 4,375 rows even with expired certificates excluded, and a large hosting
- * provider's domain returns far more. The cap bounds the cache entry and the fold; the result
- * is marked `truncated` so the UI can say the list is incomplete instead of implying it is
- * the whole answer.
- */
+/** Max rows read per lookup (large domains return thousands). Result is marked `truncated`. */
 const MAX_ROWS = 3000;
 
 export const crtShParamsSchema = z.object({
@@ -101,12 +48,7 @@ export const crtShDriver: ConnectorDriver<CrtShParams, CertificateSummary> = {
   kind: "infrastructure",
   slug: CRTSH_CONNECTOR_SLUG,
 
-  /**
-   * The cache key, and the clamp. `normaliseHostname` is applied here as well as in the
-   * Server Action, because this is the last point before a value reaches a query string and
-   * "the action already checked" is exactly the assumption that stops being true after a
-   * refactor.
-   */
+  /** Re-validates the hostname even though the Server Action does too; last stop before the URL. */
   normalise(raw: unknown): CrtShParams {
     const parsed = crtShParamsSchema.parse(raw);
     const domain = normaliseHostname(parsed.domain);
@@ -114,7 +56,7 @@ export const crtShDriver: ConnectorDriver<CrtShParams, CertificateSummary> = {
     return { domain: domain.value, excludeExpired: parsed.excludeExpired };
   },
 
-  /** The cache key is the domain the reader typed — a private query. See QV-02. */
+  /** The domain the reader typed is a private query; quota is charged before cache reads. */
   cacheKey: (params) => `${params.domain}|${params.excludeExpired ? "unexpired" : "all"}`,
 
   async fetch(connector: Connector, params, signal) {
@@ -122,14 +64,7 @@ export const crtShDriver: ConnectorDriver<CrtShParams, CertificateSummary> = {
     const query = new URLSearchParams({ q: params.domain, output: "json" });
     if (params.excludeExpired) query.set("exclude", "expired");
 
-    /**
-     * NOTHING catches a 404 here, deliberately. See point 4 in the header: crt.sh returns
-     * 404 both for a search that matched nothing and for a search that failed behind its
-     * front end, and the two are indistinguishable from the response. Letting it degrade to
-     * the honest "this source did not answer" state is the only safe reading — a reader who
-     * sees that will retry, and a reader shown "no certificates" for a domain with four
-     * thousand of them will publish it.
-     */
+    // A 404 is not caught: it may be a backend failure, so it degrades to "unavailable".
     const response = await upstreamGet({
       url: `${base}/?${query.toString()}`,
       pinnedHost: connectorHost(connector.baseUrl),
@@ -138,8 +73,7 @@ export const crtShDriver: ConnectorDriver<CrtShParams, CertificateSummary> = {
 
     const parsed = crtShResponseSchema.safeParse(decodeJson(response.text));
     if (!parsed.success) {
-      // A shape change disables this tool and nothing else. The parse error is not logged:
-      // it would quote the upstream body, which contains the reader's query.
+      // Parse error isn't logged: it would quote the body, which contains the query.
       throw new UpstreamStatusError(502);
     }
 
@@ -151,13 +85,7 @@ export const crtShDriver: ConnectorDriver<CrtShParams, CertificateSummary> = {
   },
 };
 
-/**
- * The registry row this driver expects.
- *
- * `enabled: false, status: "draft"` — ADR 0012 §1, fail closed. An operator reads the recorded
- * basis and turns it on. For this source in particular that review is not a formality: see
- * point 6 above.
- */
+/** Registry row. Seeds disabled/draft; review the terms gap above before enabling. */
 export const CRTSH_CONNECTOR_SEED = {
   slug: CRTSH_CONNECTOR_SLUG,
   name: "crt.sh",
@@ -187,33 +115,18 @@ export const CRTSH_CONNECTOR_SEED = {
     "under load, so the tool defaults to exclude=expired, makes exactly one request per " +
     "lookup, never retries, and caches for 15 minutes across all readers. " +
     "ALTERNATIVE ON FILE: SSLMate's Cert Spotter API publishes explicit terms and a free tier " +
-    "(10 full-domain queries/hour) but requires an API key. See docs/sources/crt-sh.md. " +
-    "NOT A LEGAL OPINION - see docs/content/legal-review.md.",
+    "(10 full-domain queries/hour) but requires an API key. " +
+    "NOT A LEGAL OPINION.",
   baseUrl: "https://crt.sh",
   requiresApiKey: false,
   apiKeyEnvVar: null,
-  /**
-   * Deliberately tight. One lookup is one upstream request, but that request can occupy
-   * crt.sh for a minute, so the cost to them is measured in seconds of database time rather
-   * than in request count. Five a minute across the whole site is a ceiling well inside
-   * anything a single interactive user of crt.sh's own web form would generate.
-   */
+  /** Tight: one request can occupy crt.sh's database for up to a minute. */
   perUserQuota: 3,
   globalCeiling: 5,
   windowSeconds: 60,
   /**
-   * 40s, raised from 25s on measurement rather than preference, and matching the Wayback row
-   * for the same reason.
-   *
-   * Measured 2026-09-01 05:22-05:24, with the service oscillating on a scale of tens of
-   * seconds: `curl` completed the filtered `ripe.net` query inside 40s at 05:23:45, while our
-   * 25s attempt seconds later aborted. A shorter timeout does not make crt.sh faster; it turns
-   * a slow success into a failure the reader cannot distinguish from an empty result, which is
-   * the same trap point 4 above exists to close.
-   *
-   * Still bounded, and still shorter than the ~60s hang that precedes its 502, so a reader
-   * gets "this source did not respond in time" rather than a minute of nothing. Nothing
-   * retries.
+   * 40s: slow queries under load often complete in 25-40s. Still shorter than the ~60s hang
+   * that precedes a 502. No retries.
    */
   timeoutMs: 40_000,
   /** CT logs are append-only and a new certificate is not urgent; 15 minutes is generous. */
@@ -223,6 +136,5 @@ export const CRTSH_CONNECTOR_SEED = {
   status: "draft" as const,
   notes:
     "Endpoint and behaviour verified 2026-09-01 against live requests. NO TERMS ARE " +
-    "PUBLISHED for crt.sh; read legal_basis in full before setting enabled = true. See " +
-    "docs/sources/crt-sh.md.",
+    "PUBLISHED for crt.sh; read legal_basis in full before setting enabled = true.",
 };

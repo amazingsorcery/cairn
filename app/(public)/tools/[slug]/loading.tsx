@@ -1,14 +1,8 @@
 import { Skeleton } from "@/components/ui/skeleton";
 
 /**
- * The detail page's skeleton.
- *
- * `states.md` §0 and the "confidence and last-verified are not optional anywhere" rule: "A
- * skeleton for an entry reserves their space." The two blocks below the summary are the
- * confidence chip and the last-verified line, so the header does not reflow when the entry
- * arrives — and so that neither ever appears, even for a frame, to be absent.
- *
- * One `aria-live` region; everything else is `aria-hidden` via `Skeleton`.
+ * Detail page skeleton. Reserves space for the confidence chip and last-verified line so
+ * the header doesn't reflow when the entry arrives.
  */
 export default function ToolLoading() {
   return (

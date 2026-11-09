@@ -15,17 +15,10 @@ import {
 } from "./live-format";
 
 /**
- * One aircraft, in detail. `wireframes/08-live-flights.txt`.
+ * Detail panel for one aircraft. Intentionally a panel, not a route: a per-aircraft URL
+ * would be a linkable record of a specific aircraft, which we don't keep.
  *
- * A PANEL, NOT A ROUTE. There is no `/live/flights/[hex]` and there must not be one: a URL
- * for an aircraft is a shareable, indexable, linkable record of a specific aircraft, which
- * is the beginning of exactly the history ADR 0011 rule 8 forbids.
- *
- * WHAT IS NOT HERE, deliberately: no owner lookup, no registration lookup, no operator
- * database, no track history, no "where has it been". Every field below is telemetry the
- * aircraft broadcast in the clear a moment ago. We add no identity resolution on top of it
- * and we keep none of it (ADR 0011 rule 8; sitemap.md §9 — "there is no table for it and
- * there must not be one").
+ * Only broadcast telemetry is shown. No owner/registration lookup, no track history.
  */
 
 export interface AircraftPanelProps {

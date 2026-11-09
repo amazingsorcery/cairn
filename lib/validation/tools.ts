@@ -18,12 +18,8 @@ import {
 } from "./vocabulary";
 
 /**
- * Write-side validation for `tools`.
- *
- * The database already refuses a bad row (HANDOFF §3), and that is the enforcement of last
- * resort — the seed script, a migration and a hand-typed `psql` statement all bypass Zod.
- * What these schemas add is a violation the *editor* can act on: a named field and a
- * sentence, instead of a 23514 quoting a constraint name.
+ * Write-side validation for `tools`. The database constraints are the real enforcement;
+ * these give editors a field name and message instead of a 23514.
  */
 
 const toolBase = z.object({
@@ -47,13 +43,8 @@ const toolBase = z.object({
 });
 
 /**
- * A draft may be half-finished. `lastVerifiedAt` and `reliability` are nullable precisely so
- * an editor can save work in progress — ADR 0007 §2.
- *
- * `lastVerifiedAt` and `status` are absent from this schema on purpose. A save must never
- * move a verification date (ADR 0007 §8: coupling them would let a typo fix silently assert
- * that every claim on the page was re-checked), and publication is its own action with its
- * own authorisation.
+ * Drafts may be incomplete, hence nullable `reliability`. `lastVerifiedAt` and `status` are
+ * excluded: a save must not move the verification date, and publishing is a separate action.
  */
 export const createToolSchema = toolBase;
 export type CreateToolInput = z.infer<typeof createToolSchema>;
@@ -61,12 +52,7 @@ export type CreateToolInput = z.infer<typeof createToolSchema>;
 export const updateToolSchema = toolBase.extend({ id: uuidSchema });
 export type UpdateToolInput = z.infer<typeof updateToolSchema>;
 
-/**
- * The publish gate, mirrored from `tools_published_requires_verification_check`.
- *
- * Checked here as well as in the database so the editor is told *which* field is missing.
- * The constraint is what makes it true; this is what makes it usable.
- */
+/** Publish gate, mirroring `tools_published_requires_verification_check` with field-level errors. */
 export const publishToolSchema = z
   .object({
     id: uuidSchema,
@@ -79,23 +65,22 @@ export const publishToolSchema = z
         code: z.ZodIssueCode.custom,
         path: ["lastVerifiedAt"],
         message:
-          "Confirm the entry against its primary source before publishing. Nothing reaches the public catalogue without a verification date (ADR 0007).",
+          "Confirm the entry against its primary source before publishing. Nothing reaches the public catalogue without a verification date.",
       });
     }
     if (tool.reliability === null) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["reliability"],
-        message: "Assign a reliability rating of 1–5 before publishing (ADR 0007).",
+        message: "Assign a reliability rating of 1–5 before publishing.",
       });
     }
   });
 export type PublishToolInput = z.infer<typeof publishToolSchema>;
 
 /**
- * "Confirm still accurate" — the only action that moves `lastVerifiedAt` (ADR 0007 §8).
- * It takes no date from the caller: the date is `now()`, because the claim is that a human
- * looked *now*. Accepting a date would make back-dating a form field.
+ * "Confirm still accurate": the only action that moves `lastVerifiedAt`. Takes no date; the
+ * server uses `now()` so it can't be back-dated.
  */
 export const reverifyToolSchema = z.object({ id: uuidSchema });
 export type ReverifyToolInput = z.infer<typeof reverifyToolSchema>;

@@ -1,38 +1,16 @@
 import { fail, ok, type ToolResult } from "./result";
 
 /**
- * Validation and normalisation for every user-supplied network target on the Toolbench.
+ * Validation and normalisation of user-supplied network targets. This is the SSRF boundary.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * THIS IS THE SSRF BOUNDARY. READ BEFORE CHANGING ANYTHING IN IT.
- * ─────────────────────────────────────────────────────────────────────────────
- * Four Toolbench tools take a domain, an IP or a URL from a stranger and cause our server
- * to make an outbound request. ADR 0019 names server-side request forgery the top security
- * risk of v2, and the first thing anyone attacking this product will try.
+ *  1. The main defence: connectors build URLs from the operator-controlled `baseUrl` and put
+ *     user input in an encoded query parameter. Nothing calls `fetch(userSuppliedUrl)`. The
+ *     Wayback snapshot fetch pins the host to `web.archive.org` and re-checks every redirect.
+ *  2. Defence in depth (this file): reject private, special-use and malformed targets, with
+ *     an explanation rather than an empty result.
  *
- * The defence is architectural rather than a filter, and it has two halves. Only the second
- * half lives here.
- *
- *  1. **THE UPSTREAM HOST IS ALWAYS OURS, NEVER THE USER'S INPUT.** Every connector in
- *     `lib/connectors/` builds its URL from `connector.baseUrl` — a column an operator
- *     controls — and puts the user's value in a *query parameter*, encoded. There is no code
- *     path anywhere in the Toolbench that calls `fetch(userSuppliedUrl)`. The one place a
- *     user value influences a path at all is the Wayback snapshot fetch, and that pins the
- *     host to `web.archive.org` and re-checks it on every redirect hop.
- *
- *     This is what actually stops SSRF. A DNS rebind cannot help an attacker who never gets
- *     to choose the host, and neither can a redirect, a decimal-encoded IP, or a userinfo
- *     trick like `https://crt.sh@169.254.169.254/`.
- *
- *  2. **THE INPUT IS STILL NARROWED, HERE.** Defence in depth, plus two honest non-security
- *     reasons: an upstream should not be asked to look up `127.0.0.1` on a stranger's behalf,
- *     and a reader who types `localhost` deserves a sentence explaining why that is not a
- *     question this tool can answer rather than an empty result.
- *
- * WHAT IS DELIBERATELY *NOT* HERE: DNS resolution of the user's hostname before use. We
- * never connect to the user's host, so resolving it would buy no safety — and it would leak
- * the reader's query to a resolver on a code path where nothing else does. Resolution is a
- * *feature* of the DNS tool, performed through a governed connector, not a guard.
+ * No DNS resolution here: we never connect to the user's host, and resolving would leak the
+ * query.
  */
 
 /* ------------------------------------------------------------------ *
@@ -43,12 +21,8 @@ import { fail, ok, type ToolResult } from "./result";
 const LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 /**
- * Names that are not questions about the public internet.
- *
- * `.local` is mDNS (RFC 6762), `.internal` is the ICANN-reserved private-use TLD, and the
- * rest are RFC 6761/8375 special-use names. None of them can be answered by a public
- * certificate log, a public resolver or a routing registry, so accepting them would produce
- * a confidently empty result rather than an explanation.
+ * Non-public names: `.local` (mDNS, RFC 6762), `.internal` (ICANN private-use) and RFC
+ * 6761/8375 special-use names. Public sources can't answer these.
  */
 const SPECIAL_USE_SUFFIXES = [
   "localhost",
@@ -70,22 +44,14 @@ const SPECIAL_USE_SUFFIXES = [
 const MAX_NAME_LENGTH = 253;
 
 /**
- * IDNA conversion, using the platform's own implementation.
- *
- * `new URL()` applies the WHATWG host parser, which performs IDNA and lowercases. Doing it
- * by hand would mean shipping a Unicode table and getting it subtly wrong; the failure mode
- * of getting it wrong is that `аpple.com` (Cyrillic а) and `apple.com` compare unequal
- * somewhere they should not, which for this audience is the whole point of the lookup.
- *
- * Returns null when the platform rejects the host outright.
+ * IDNA conversion via the WHATWG host parser in `new URL()` (handles punycode and lowercasing).
+ * Returns null when the host is rejected.
  */
 function toAsciiHost(raw: string): string | null {
   try {
-    // A dummy scheme, because the host parser is only reachable through a URL. The value
-    // never leaves this function and is never fetched.
+    // Dummy scheme to reach the host parser; never fetched.
     const url = new URL(`https://${raw}`);
-    // Reject anything the parser found beyond the host: a path, a port, credentials, a
-    // query. `new URL("https://a.com/b")` would otherwise silently accept "a.com".
+    // Reject anything beyond the host (path, port, credentials, query).
     if (url.pathname !== "/" || url.search !== "" || url.hash !== "") return null;
     if (url.port !== "" || url.username !== "" || url.password !== "") return null;
     return url.hostname.toLowerCase();
@@ -116,8 +82,7 @@ export function normaliseHostname(raw: string): ToolResult<string> {
   const ascii = toAsciiHost(trimmed);
   if (ascii === null) return fail("That is not a valid domain name.");
 
-  // An IP literal reaching the hostname parser means the reader wanted the IP tool. Say so
-  // rather than sending "192.168.1.1" to a certificate log.
+  // IP literals belong in the IP tool.
   if (ascii.startsWith("[") || parseIpAddress(ascii).ok) {
     return fail("That is an IP address. Use the IP intelligence tool for addresses.");
   }
@@ -166,12 +131,8 @@ export interface ParsedIp {
 }
 
 /**
- * Strict dotted-quad only. Four decimal octets, no leading zeros, nothing else.
- *
- * DELIBERATELY REFUSES the alternative forms `inet_aton` accepts — `2130706433`,
- * `0x7f000001`, `0177.0.0.1`, `127.1`. Every one of them is a classic filter bypass, and
- * none of them is a form a person investigating an address would type. A refusal here sends
- * the value on to the hostname parser, which rejects it too (numeric or non-existent TLD).
+ * Strict dotted-quad: four decimal octets, no leading zeros. Rejects `inet_aton` forms
+ * (`2130706433`, `0x7f000001`, `0177.0.0.1`, `127.1`), which are classic filter bypasses.
  */
 function parseIpv4(raw: string): readonly number[] | null {
   const parts = raw.split(".");
@@ -247,14 +208,9 @@ export function parseIpAddress(raw: string): ToolResult<ParsedIp> {
 }
 
 /**
- * Why an address is not a question about the public internet, or null when it is.
- *
- * The list is the one every SSRF checklist names, plus the ones people forget: 0.0.0.0/8,
- * carrier-grade NAT, the IPv4-mapped and 6to4 and Teredo IPv6 forms that smuggle a v4
- * address inside a v6 literal, and 169.254.169.254 — the cloud instance-metadata endpoint,
- * which is the single most valuable target of an SSRF and is *inside* link-local, so it is
- * covered by the range rather than by naming it. It is named anyway, because a reader who
- * pasted it should be told what it is.
+ * Why an address isn't public, or null if it is. Covers the usual SSRF ranges plus 0.0.0.0/8,
+ * CGNAT, and IPv4-embedding IPv6 forms (mapped, 6to4, Teredo). 169.254.169.254 (cloud
+ * metadata) is in link-local but named explicitly for a clearer message.
  */
 export function blockedIpReason(ip: ParsedIp): string | null {
   const b = ip.bytes;
@@ -350,11 +306,8 @@ export function normalisePublicIp(raw: string): ToolResult<ParsedIp> {
 }
 
 /**
- * A target that is either a public hostname or a public IP address.
- *
- * The IP branch is tried first, so `127.0.0.1` produces "that is loopback" rather than
- * "that is not a valid domain name" — which is the difference between a tool that teaches
- * and a tool that stonewalls.
+ * A public hostname or public IP. IP is tried first so `127.0.0.1` gets "loopback" rather than
+ * "invalid domain".
  */
 export type NetworkTarget =
   | { readonly kind: "hostname"; readonly value: string }
@@ -381,13 +334,8 @@ export interface NormalisedUrl {
 }
 
 /**
- * A URL the reader wants looked up in an archive.
- *
- * Note what this does *not* authorise: nothing anywhere fetches this URL. It is passed to
- * the Wayback CDX index as a `url=` query parameter, encoded. The narrowing below exists so
- * that a reader who pastes `file:///etc/passwd` or `http://admin:hunter2@10.0.0.5/` gets an
- * explanation, and so that a future refactor which *did* fetch it would already be inside a
- * guard rather than needing one written under time pressure.
+ * A URL to look up in the archive. Never fetched; passed encoded as the CDX `url=` param.
+ * Still narrowed so e.g. `file:` or credentialed private URLs get an explanation.
  */
 export function normaliseLookupUrl(raw: string): ToolResult<NormalisedUrl> {
   const trimmed = raw.trim();
@@ -436,16 +384,9 @@ export function normaliseLookupUrl(raw: string): ToolResult<NormalisedUrl> {
  * ------------------------------------------------------------------ */
 
 /**
- * Assert that a URL we are about to fetch is on the host we intended.
- *
- * Called on the URL built from `connector.base_url`, and again on every redirect hop the
- * Wayback snapshot fetch follows. The second call is the one that matters: `redirect:
- * "follow"` would happily walk a 302 from web.archive.org to anywhere, and the archive
- * genuinely does redirect between snapshot timestamps, so we cannot simply forbid redirects.
- *
- * Exact host equality, not a suffix test. `endsWith(".archive.org")` is satisfied by
- * `evil-archive.org` in the hands of anyone who reads the code, and by
- * `web.archive.org.attacker.example` in the hands of anyone who does not.
+ * Assert a URL is on the intended host. Checked on the built URL and every Wayback redirect
+ * hop (the archive redirects between snapshots, so redirects can't just be forbidden).
+ * Exact host equality, not a suffix match.
  */
 export function isPinnedHost(url: string, expectedHost: string): boolean {
   try {

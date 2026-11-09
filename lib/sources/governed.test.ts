@@ -18,12 +18,9 @@ import fixture from "./__fixtures__/adsb-lol.json";
 import { jsonResponse, testContext } from "./__fixtures__/context";
 
 /**
- * The governed path. These tests are the proof for the two claims that matter:
- *
- *   1. **A disabled connector makes no outbound call.** A kill-switch that does not kill is
- *      worse than none, because the operator believes the traffic stopped.
- *   2. **A poll writes exactly one audit row, with a hashed actor.** QA finding Q-02 was found
- *      by reading that table; six adapters calling out unaudited is the same blindness rebuilt.
+ * The governed path:
+ *   1. A disabled connector makes no outbound call.
+ *   2. A poll writes exactly one audit row, with a hashed actor.
  */
 
 /** A minimal live row. Only the columns the governed path reads are meaningful. */
@@ -92,7 +89,6 @@ describe("the kill-switch actually kills", () => {
 
     const poll = await pollSource(adsbLol, {}, testContext(), deps);
 
-    // The whole point. Not "returned a cached value", not "returned an error after calling".
     expect(spy).not.toHaveBeenCalled();
     expect(poll.result.ok).toBe(false);
     if (poll.result.ok) return;
@@ -100,8 +96,7 @@ describe("the kill-switch actually kills", () => {
     if (poll.result.failure.kind !== "disabled") return;
     expect(poll.result.failure.reason).toContain("switched this source off");
 
-    // The refusal is still audited: a control denying traffic is the most useful thing this
-    // table can show, and it is invisible if only successful calls are recorded (ADR 0013 §4).
+    // Refusals are audited too.
     expect(rows).toHaveLength(1);
     expect(rows[0]?.outcome).toBe("disabled");
     expect(rows[0]?.durationMs).toBe(0);
@@ -118,8 +113,7 @@ describe("the kill-switch actually kills", () => {
   });
 
   it("makes no call for a connector with no recorded legal basis", async () => {
-    // ADR 0012's CHECK constraints exist to make this unstorable; re-checking here means the
-    // governed path cannot be the place that slips.
+    // DB constraints already forbid this; checked here as well.
     const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(fixture));
     const { deps } = harness({ connector: connectorRow({ legalBasis: null }) });
 
@@ -134,8 +128,7 @@ describe("the kill-switch actually kills", () => {
     const poll = await pollSource(adsbLol, {}, testContext(), deps);
     expect(spy).not.toHaveBeenCalled();
     expect(poll.result.ok).toBe(false);
-    // No row means no connector id to reference, so there is nothing to audit against —
-    // failing closed is the behaviour, and the log line is in the application log instead.
+    // No row, no connector id to audit against; fails closed and logs instead.
     expect(rows).toHaveLength(0);
   });
 
@@ -146,7 +139,6 @@ describe("the kill-switch actually kills", () => {
       audit: () => Promise.resolve(),
     });
 
-    // We could not prove we are allowed to call, so we do not call.
     expect(spy).not.toHaveBeenCalled();
     expect(poll.result.ok).toBe(false);
   });
@@ -169,12 +161,7 @@ describe("the audit row", () => {
   });
 
   it("hashes the actor to something that cannot contain an identity", () => {
-    /**
-     * `recordConnectorRequest` hashes `subject` before it reaches the database, and
-     * `connector_requests_actor_key_check` requires 64 hex characters — so an email, a dotted
-     * quad or a uuid is structurally impossible to store. Asserted here on the construction
-     * this module feeds it.
-     */
+    // The DB requires 64 hex chars, so an email, IP or uuid can't be stored.
     const actorKey = hashSubject(WORKER_ACTOR_SUBJECT);
     expect(actorKey).toMatch(/^[0-9a-f]{64}$/);
     expect(actorKey).not.toContain("@");
@@ -183,7 +170,7 @@ describe("the audit row", () => {
   });
 
   it("records a 429 as rateLimited carrying the real status, not as a generic error", async () => {
-    // The distinction Q-02 turned on: being told to slow down is not the source being broken.
+    // Being told to slow down isn't the source being broken.
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("slow down", { status: 429 }));
     const { rows, deps } = harness();
 
@@ -204,8 +191,7 @@ describe("the audit row", () => {
   });
 
   it("records a shape change as an upstream error that answered 200", async () => {
-    // Both facts are true and both are useful on the board: the call succeeded, the payload
-    // did not. Recording it as `ok` would hide a dead layer behind a green row.
+    // The call succeeded but the payload didn't; `ok` would hide a dead layer.
     vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ error: "unavailable" }));
     const { rows, deps } = harness();
 
@@ -227,16 +213,14 @@ describe("the global ceiling", () => {
 
     expect(spy).not.toHaveBeenCalled();
     expect(poll.result.ok).toBe(false);
-    // `quotaDenied`, not `rateLimited`: we refused ourselves against a ceiling we chose. An
-    // operator reading this goes and tunes our quota, which is the right move here.
+    // `quotaDenied`, not `rateLimited`: our own ceiling refused.
     expect(rows).toHaveLength(1);
     expect(rows[0]?.outcome).toBe("quotaDenied");
     expect(rows[0]?.durationMs).toBe(0);
   });
 
   it("fails closed when the ceiling cannot be evaluated", async () => {
-    // An uncounted call against somebody else's fair-use limit is a call we had no right to
-    // make, so a broken limiter stops us rather than waving us through.
+    // A broken limiter must stop us, not wave us through.
     const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(fixture));
     const rows: AuditEntry[] = [];
 
@@ -278,8 +262,7 @@ describe("the row is authoritative for the TTL", () => {
 
     const poll = await pollSource(adsbLol, {}, testContext(), deps);
 
-    // ADR 0024 recorded these two disagreeing — 60s on the row, 30s in the adapter. The row
-    // wins: it is what an operator can change under load without a deploy.
+    // The row wins over the adapter constant; operators can change it without a deploy.
     expect(adsbLol.ttlSeconds).toBe(30);
     expect(poll.ttlSeconds).toBe(60);
   });
@@ -301,13 +284,7 @@ describe("the row is authoritative for the TTL", () => {
     expect(poll.connectorSlug).toBe("adsb-lol");
   });
 
-  /**
-   * QA finding QV-17: two files claimed the row was authoritative for the credit and every
-   * branch returned the adapter's module constant, so editing `connectors.attribution` did
-   * nothing. The strings agreed for every source, so nothing was mis-credited — but
-   * attribution is exactly the field that has to be changeable without a deploy when a licence
-   * changes its required wording.
-   */
+  /** Attribution must be editable via the row, without a deploy, if a licence's wording changes. */
   it("renders the credit the registry row carries, not the adapter's constant", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(fixture));
     const { deps } = harness({
@@ -316,7 +293,7 @@ describe("the row is authoritative for the TTL", () => {
 
     const poll = await pollSource(adsbLol, {}, testContext(), deps);
     expect(poll.attribution.text).toBe("Aircraft data from adsb.lol — revised wording");
-    /* Only the text is the row's: there is no licence or href column to carry the rest. */
+    /* Only text comes from the row; there's no licence or href column. */
     expect(poll.attribution.licence).toBe(adsbLol.attribution.licence);
     expect(poll.attribution.href).toBe(adsbLol.attribution.href);
   });
@@ -365,15 +342,9 @@ describe("healthcheckSource", () => {
 });
 
 /**
- * QA finding QV-05. `/map` renders six layers per request and every one of them polled a
- * source that is switched off, so twenty anonymous page views wrote 120 `connector_requests`
- * rows and drove 120 `SELECT`s against `connectors` — on the one table `lib/rate-limit.ts`
- * calls "the only one in the schema with no natural bound", on a box where Postgres shares
- * the hardware with the app.
- *
- * The refusal is now remembered for a bounded window. THE ASYMMETRY IS THE WHOLE POINT and is
- * asserted below: only a REFUSAL is remembered, so switching a source OFF still takes effect
- * on the very next poll, and only switching one ON waits out the window.
+ * `/map` polls every layer per request, so a disabled source's refusal is remembered for a
+ * bounded window instead of re-reading the registry and writing a row each time. Only
+ * refusals are remembered: switching off is immediate, switching on waits out the window.
  */
 describe("a refusal is remembered, so a page view does not re-ask and re-record it", () => {
   function countingHarness(connector: Connector | null) {
@@ -399,14 +370,12 @@ describe("a refusal is remembered, so a page view does not re-ask and re-record 
 
     for (let i = 0; i < 20; i += 1) {
       const poll = await pollSource(adsbLol, {}, testContext(), harnessed.deps);
-      // Every caller still gets the same honest refusal, not a silent success.
       expect(poll.result.ok).toBe(false);
       if (poll.result.ok) return;
       expect(poll.result.failure.kind).toBe("disabled");
     }
 
     expect(spy).not.toHaveBeenCalled();
-    // Twenty page views used to be twenty lookups and twenty rows.
     expect(harnessed.lookups()).toBe(1);
     expect(harnessed.rows).toHaveLength(1);
     expect(harnessed.rows[0]?.outcome).toBe("disabled");
@@ -440,12 +409,12 @@ describe("a refusal is remembered, so a page view does not re-ask and re-record 
     expect(first.result.ok).toBe(true);
     expect(spy).toHaveBeenCalledTimes(1);
 
-    // 3am, an incident, the kill-switch goes over.
+    // Kill switch flipped.
     row = connectorRow({ enabled: false });
 
     const second = await pollSource(adsbLol, {}, testContext(), deps);
     expect(second.result.ok).toBe(false);
-    // No TTL between the flip and the traffic stopping. Nothing is cached on the way in.
+    // Live rows aren't memoised, so it stops immediately.
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
@@ -463,7 +432,7 @@ describe("a refusal is remembered, so a page view does not re-ask and re-record 
     await pollSource(adsbLol, {}, testContext(), deps);
     row = connectorRow({ enabled: true });
 
-    // Inside the window the memo still answers, which is the trade: re-enabling waits.
+    // Inside the window, re-enabling waits.
     const during = await pollSource(adsbLol, {}, testContext(), deps);
     expect(during.result.ok).toBe(false);
     expect(spy).not.toHaveBeenCalled();
@@ -480,9 +449,7 @@ describe("a refusal is remembered, so a page view does not re-ask and re-record 
     const first = await pollSource(adsbLol, {}, testContext(), harnessed.deps);
     const second = await pollSource(adsbLol, {}, testContext(), harnessed.deps);
 
-    // A remembered refusal must be indistinguishable from a freshly computed one, or a
-    // caller would render a layer without its credit on the second request and with it on
-    // the first.
+    // A remembered refusal must match a fresh one.
     expect(second.ttlSeconds).toBe(first.ttlSeconds);
     expect(second.ttlSeconds).toBe(45);
     expect(second.attribution).toEqual(first.attribution);

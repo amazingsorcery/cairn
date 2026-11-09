@@ -13,21 +13,10 @@ import { cn } from "@/lib/utils";
 import { PlaybookCardItem } from "./playbook-card";
 
 /**
- * `/playbooks` — the whole published listing, filtered in the browser.
+ * `/playbooks` listing, filtered client-side. The set is small enough to prerender whole,
+ * and reading `searchParams` would opt the route out of the Full Route Cache.
  *
- * WHY THE FILTER IS CLIENT-SIDE (`docs/architecture/sitemap.md` §2, wireframe 05): the
- * playbook count is two orders of magnitude below the tool count, so the entire payload is
- * prerendered and filtering hides rows. Reading `searchParams` here would opt the route out
- * of the Full Route Cache and buy nothing.
- *
- * This is the ONLY client component on the route, and it is a leaf: the page heading, the
- * lead paragraph and the metadata are all rendered on the server.
- *
- * Consequences that follow from filtering never leaving the route:
- *   - there is no loading state after first paint and no error state at all here, because
- *     there is no round trip to fail (wireframe 05);
- *   - focus is never moved on a filter change. The reader is still in the filter bar; the
- *     new count is announced in the route's one live region instead (HANDOFF-shell §10.1).
+ * Focus stays in the filter bar on change; the new count goes to the live region.
  */
 
 const ANY = "any";
@@ -77,12 +66,7 @@ export function PlaybookIndex({ playbooks, categories }: PlaybookIndexProps) {
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={queryId}>filter by title</Label>
           <div className="relative">
-            {/*
-              `type="text"`, not `type="search"`. A search input renders the browser's own
-              clear affordance, which has no accessible name and is not reliably reachable
-              by keyboard — so the page would show two X buttons, one of them unusable.
-              The one below is labelled and is a 44x44 target.
-            */}
+            {/* `type="text"` avoids the browser's unlabelled clear button; ours is below. */}
             <Input
               id={queryId}
               type="text"
@@ -146,11 +130,7 @@ export function PlaybookIndex({ playbooks, categories }: PlaybookIndexProps) {
         </p>
       </div>
 
-      {/*
-        The route's single polite live region. It is in the DOM before any filtering
-        happens, because a live region created at the same moment as its content announces
-        nothing (HANDOFF-shell §10.1).
-      */}
+      {/* Rendered up front: a live region created with its content announces nothing. */}
       <p aria-live="polite" className="sr-only">
         {filtered.length === 1
           ? "1 playbook matches these filters"

@@ -3,27 +3,15 @@ import type { DirectoryFilters } from "@/lib/validation/filters";
 import { FACET_CHIP_PREFIX, confidenceValueLabel, costLabel, typeLabel } from "./facets";
 
 /**
- * The URL is the filter state. Nothing else is.
+ * Builds directory URLs. All filter state lives in the URL so views are shareable and back
+ * works. Pure (no React), so the server can compute every href.
  *
- * `docs/design/wireframes/02-directory.txt`: "All filter state is in the URL: q, category,
- * tag, cost, input, output, confidence, sort, page. No hidden component state, so browser
- * back restores the previous filter set exactly." That is not a nicety for this audience —
- * an investigator cites what they searched, and a filtered view that cannot be pasted into
- * a note is a view that cannot be cited.
- *
- * This module is the single place a directory URL is built. It is pure and has no React and
- * no `next/navigation` import, so the server can compute every href and the client leaf only
- * has to push a string it was handed.
- *
- * Round-tripping rule: `parseDirectoryFilters(serialise(f))` must equal `f`. The tests in
- * `components/directory/filter-url.test.ts` assert it, because a serialiser that disagrees
- * with the parser produces a "clear all" button that does not clear.
+ * `parseDirectoryFilters(serialiseFilters(f))` must equal `f`; see `filter-url.test.ts`.
  */
 
 /**
- * `parseDirectoryFilters` defaults `sort` to `relevance` when a query is present and to
- * `name` when it is not. Omitting the default from the URL keeps a shareable link short and
- * keeps one `unstable_cache` entry rather than two for the same result set.
+ * Default sort: `relevance` with a query, `name` without. Omitted from URLs to keep links
+ * short and avoid duplicate `unstable_cache` entries.
  */
 export function defaultSort(q: string): string {
   return q ? "relevance" : "name";
@@ -51,11 +39,7 @@ export function filtersHref(basePath: string, filters: DirectoryFilters): string
   return query ? `${basePath}?${query}` : basePath;
 }
 
-/**
- * Any change to *what* is being asked for returns the reader to page 1. Keeping the page
- * number across a filter change lands them on an empty page 4 of a 2-page result set, which
- * looks exactly like a broken filter.
- */
+/** Filter changes reset to page 1 to avoid landing past the end of the results. */
 function resetPage(filters: DirectoryFilters): DirectoryFilters {
   return { ...filters, page: 1 };
 }
@@ -85,8 +69,7 @@ export function withoutCategory(filters: DirectoryFilters): DirectoryFilters {
 
 export function withoutQuery(filters: DirectoryFilters): DirectoryFilters {
   const next = resetPage({ ...filters, q: "" });
-  // `sort: relevance` is meaningless with no query and `parseDirectoryFilters` would drop it
-  // back to `name` anyway. Doing it here keeps the serialised URL and the parsed tuple equal.
+  // The parser drops `relevance` without a query; match it so the round trip holds.
   return next.sort === "relevance" ? { ...next, sort: "name" } : next;
 }
 
@@ -94,7 +77,7 @@ export function withPage(filters: DirectoryFilters, page: number): DirectoryFilt
   return { ...filters, page };
 }
 
-/** Every filter cleared. `docs/design/states.md` §2.1: this returns to a bare `/directory`. */
+/** Every filter cleared; serialises to a bare `/directory`. */
 export function clearedFilters(): DirectoryFilters {
   return {
     q: "",
@@ -110,11 +93,8 @@ export function clearedFilters(): DirectoryFilters {
 }
 
 /**
- * One active filter, as the chip row and the zero-result state need it.
- *
- * `without` is the whole filter tuple with this one value dropped — the empty state calls
- * `listTools()` with each of these to find which single removal widens the result set most,
- * so the sentence in `states.md` §2.1 names a computed filter and never a guessed one.
+ * One active filter for the chip row and empty state. `without` is the filters with this
+ * value removed; the empty state queries each to find the widest single removal.
  */
 export interface ActiveFilter {
   /** Stable key for React and for the `remove` button's accessible name. */
@@ -130,10 +110,8 @@ export interface FilterLabelMaps {
 }
 
 /**
- * The active filters, in the order the wireframe draws them. `q` is included: it restricts
- * the result set exactly as a facet does, and on a zero-result page it is frequently the
- * single removal that widens things most. Leaving it out of this list would make the
- * "removing X widens this the most" sentence wrong whenever the query was the culprit.
+ * Active filters in display order. Includes `q`, since removing the query is often the
+ * widest removal.
  */
 export function activeFilters(
   filters: DirectoryFilters,
@@ -207,10 +185,8 @@ export function facetParamName(facet: ArrayFacet): string {
 }
 
 /**
- * Every filter as `[name, value]` pairs, for mirroring the current state into a form that
- * only owns part of it. The toolbar form owns `q` and `sort`; the facet form owns the
- * checkboxes; each must carry the other's values or submitting one would silently discard
- * the other.
+ * Filters as name/value pairs for hidden inputs. The toolbar form (`q`, `sort`) and facet
+ * form each mirror the other's values so submitting one doesn't drop the other.
  */
 export function hiddenPairs(
   filters: DirectoryFilters,

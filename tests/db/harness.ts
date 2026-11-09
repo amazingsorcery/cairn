@@ -18,17 +18,10 @@ import {
 import { db } from "@/lib/db";
 
 /**
- * The shared fixtures for the database-backed suites.
+ * Shared fixtures for the database-backed suites.
  *
- * NOTHING HERE IS TRUNCATED BETWEEN TESTS. Every fixture is created fresh with a random
- * identifier, so tests are isolated by construction rather than by a global reset — which is
- * what lets Vitest keep running files in parallel workers against one database. It also means
- * a test can never pass because a previous test happened to leave the right rows behind.
- *
- * FIXTURE CONTENT IS DELIBERATELY SYNTHETIC. The catalogue this product ships describes real
- * tools and is authored in `content/` (product-brief §6). These rows are not catalogue: they
- * exist to give an ownership check something to own, they never reach a shipped path, and
- * naming a real tool here would put an unverified claim about it in the repository.
+ * Nothing is truncated between tests: every fixture uses random identifiers, so files can run
+ * in parallel against one database. Fixture content is synthetic, never real tools.
  */
 
 const availability = inject("postgres");
@@ -38,26 +31,14 @@ export const postgresAvailable = availability.available;
 export const postgresUnavailableReason = availability.available ? "" : availability.reason;
 
 /**
- * `describe` for a suite that needs Postgres.
- *
- * It SKIPS on a machine with no database and FAILS in CI, via `assertPostgresInCI` below.
- * Silent skipping is how a security suite comes to report green while testing nothing, which
- * is the failure mode QA has already found twice in this repository.
+ * `describe` for a suite that needs Postgres. Skips locally without a database; CI fails
+ * instead via `requireDatabaseOrFailInCI`.
  */
 export const describeWithDatabase = postgresAvailable ? describe : describe.skip;
 
 /**
- * CALL THIS AT THE TOP LEVEL OF THE TEST FILE, NOT INSIDE `describeWithDatabase`.
- *
- * That is not a style preference, it is the whole point, and the first version of this
- * function got it wrong. Registered inside the suite, it is skipped along with the suite —
- * so on a run with no database, the check that a database is mandatory in CI was itself
- * skipped, and 44 authorisation tests reported as a clean skip in a pipeline that should have
- * gone red. A guard inside the thing it guards is not a guard. Caught by running the suite
- * with `CI=true` and an unreachable `DATABASE_URL` and watching it pass.
- *
- * It registers its own never-skipped `describe`, so the assertion runs whatever happens to
- * the suite beside it.
+ * Call at the top level of the test file, not inside `describeWithDatabase`, or it gets
+ * skipped along with the suite. Registers its own never-skipped `describe`.
  */
 export function requireDatabaseOrFailInCI(suiteName: string): void {
   describe(`${suiteName} — preconditions`, () => {
@@ -65,8 +46,7 @@ export function requireDatabaseOrFailInCI(suiteName: string): void {
       if (process.env.CI) {
         expect(postgresAvailable, postgresUnavailableReason).toBe(true);
       }
-      // Locally an absent database is tolerated, but the reason must be a real sentence
-      // rather than an empty string, so the output says why the suite skipped.
+      // Locally, require a real reason so the output says why the suite skipped.
       expect(postgresAvailable || postgresUnavailableReason.length > 10).toBe(true);
     });
   });
@@ -78,10 +58,7 @@ export function requireDatabaseOrFailInCI(suiteName: string): void {
 
 export type Actor = { readonly id: string; readonly email: string; readonly role: UserRole };
 
-/**
- * A signed-in person. Addresses are random and use the reserved `.invalid` TLD, so nothing
- * here can ever be delivered to or confused with a real address.
- */
+/** A signed-in user with a random `.invalid` address. */
 export async function createActor(role: UserRole = "user"): Promise<Actor> {
   const email = `case-owner-${randomUUID()}@example.invalid`;
   const inserted = await db.insert(users).values({ email, role }).returning({ id: users.id });
@@ -100,11 +77,7 @@ export type Catalogue = {
   readonly toolId: string;
   readonly toolName: string;
   readonly toolSlug: string;
-  /**
-   * A second published tool. `workspace_items_tool_unique_idx` allows one save per tool per
-   * workspace, so a fixture whose case has already saved `toolId` needs a different tool to
-   * exercise a *successful* save.
-   */
+  /** A second published tool, for a successful save into a case that already has `toolId`. */
   readonly secondToolId: string;
   readonly secondToolName: string;
   /** Draft: must NOT be saveable, or a guessed uuid pulls unpublished work into a case. */
@@ -133,8 +106,7 @@ async function insertPlaybook(
       difficulty: "beginner",
       estimatedMinutes: 30,
       status,
-      // The published CHECK constraint requires a verification date. `new Date()` is honest
-      // here: this row was created by this test run, at this instant.
+      // Required by the published CHECK.
       lastVerifiedAt: status === "published" ? new Date() : null,
       confidence: "needsReview",
     })
@@ -189,7 +161,7 @@ export async function createCatalogue(): Promise<Catalogue> {
         categoryId: category.id,
         costModel: "free",
         status,
-        // The published CHECK constraint requires both of these (ADR 0007).
+        // Both required by the published CHECK.
         lastVerifiedAt: status === "published" ? new Date() : null,
         reliability: status === "published" ? 3 : null,
         confidence: "needsReview",
@@ -248,8 +220,7 @@ export type CaseFile = {
  * A populated case file belonging to `ownerId`: a checklist derived from the playbook, a
  * saved tool, a saved map feature with its snapshot, and one note.
  *
- * Written with direct inserts rather than by calling the actions, so a broken action cannot
- * quietly produce a fixture that makes the next assertion vacuous.
+ * Direct inserts, so a broken action can't produce a fixture that makes tests vacuous.
  */
 export async function createCaseFile(
   ownerId: string,
@@ -375,18 +346,9 @@ export type CaseDump = {
 };
 
 /**
- * Everything these users own, in a stable order.
- *
- * A refused mutation is asserted by comparing this before and after. Checking only the field
- * the action would have written is weaker than it looks: `reorderWorkspaceItems` rewrites a
- * whole list, `deleteWorkspace` cascades to items, notes and snapshots, and
- * `addWorkspaceItem` writes two tables in one transaction. Comparing the whole picture
- * catches a refusal that still left something behind — including in the *other* user's rows,
- * which is where a partially-applied cross-tenant write would land.
- *
- * Timestamps are excluded deliberately: `$onUpdate` moves `updated_at` on any write, so
- * including it would make this assert "no write happened" twice over while making a legitimate
- * unrelated write look like a breach.
+ * Everything these users own, in a stable order. Compare before/after a refused mutation to
+ * catch partial writes, including into the other user's rows. Timestamps are excluded since
+ * `$onUpdate` moves them on any write.
  */
 export async function dumpCases(userIds: readonly string[]): Promise<CaseDump> {
   const [workspaceRows, itemRows, noteRows, snapshotRows] = await Promise.all([

@@ -4,16 +4,9 @@ import { SORT_OPTIONS } from "./facets";
 import { FilterForm, FilterTextInput, SortSelect } from "./filter-controls";
 
 /**
- * The row above the results: filter-by-name and sort.
- *
- * It is a second `<form method="get">`, separate from the facet panel, so each can be
- * submitted on its own. That means each must mirror the other's state as hidden inputs — a
- * GET form submits only what it contains, so a toolbar without the facet mirror would clear
- * every checkbox the moment the reader pressed Enter in the name field.
- *
- * The name field submits on Enter, not on every keystroke. Debounced search-as-you-type here
- * would push a history entry per character, which would make the back button — the control
- * this route is built around — useless.
+ * Name filter and sort, as a GET form separate from the facet panel; `hidden` mirrors the
+ * facet state so submitting here doesn't clear it. Submits on Enter, not per keystroke,
+ * to avoid a history entry per character.
  */
 export function DirectoryToolbar({
   action,
@@ -53,18 +46,8 @@ export function DirectoryToolbar({
       </div>
 
       {/*
-        THE FORM NEEDS A SUBMIT BUTTON, and not only for the no-JavaScript path.
-
-        HTML implicit submission — pressing Enter in a text field — only fires when the form
-        has a submit button, or when it has exactly one field that blocks implicit submission.
-        This form has the name field, a `type="button"` sheet trigger and a `<select>`, and
-        Chrome declines to submit it. Without this button, Enter in the name field did nothing
-        at all: the filter looked broken to anyone who did not think to click elsewhere, and
-        there was no keyboard route to submitting it with the bundle removed.
-
-        `sr-only` until focused, because the wireframe draws no visible button beside the field
-        at either width — but a control nobody can reach is the same as no control at all, so
-        it becomes visible the moment it is tabbed to.
+        Required for Enter to submit: implicit submission needs a submit button when the form
+        has more than one field. Visually hidden until focused.
       */}
       <button
         type="submit"

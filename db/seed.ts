@@ -1,35 +1,15 @@
 /**
- * Seed loader. `pnpm db:seed`.
+ * Seed loader (`pnpm db:seed`). Validates everything in `content/` through
+ * `lib/content/schema.ts` and upserts it. Every field comes from content or a rule here.
  *
- * Reads `content/` — authored by the content-strategist — validates every record through
- * `lib/content/schema.ts`, and upserts it. It invents nothing: every field written here
- * comes from an authored file or is derived from one by a rule stated in this file.
- *
- * FOUR PROPERTIES, each of which is a requirement rather than a nicety:
- *
- * 1. **Validate everything before writing anything.** A half-loaded catalogue is worse than
- *    an unloaded one: it looks complete and is not. Every file is parsed and every
- *    cross-file integrity rule is checked before the first INSERT.
- *
- * 2. **Fail loudly, never skip.** product-brief §6: "a single fabricated entry destroys the
- *    product's credibility on day one", and a silently dropped entry is a catalogue that
- *    quietly disagrees with its own verification log. A bad record aborts the run with the
- *    file, the slug and the reason.
- *
- * 3. **Idempotent.** Safe to run twice. Everything upserts by slug, so a second run changes
- *    nothing but `updated_at`. docs/deploy/HANDOFF.md A#10: `deploy.sh` never runs this —
- *    seeding is a manual first-deploy step precisely so a redeploy cannot overwrite
+ * 1. Validates all files and cross-file rules before the first write.
+ * 2. Fails on any bad record (file, slug, reason); never skips.
+ * 3. Idempotent: upserts by slug. deploy.sh never runs it, so redeploys can't overwrite
  *    editorial changes.
+ * 4. Recomputes `search_keywords` with the same helpers the Server Actions use, in the same
+ *    transaction.
  *
- * 4. **`search_keywords` is computed here too.** The seed bypasses the Server Actions, so it
- *    calls the same fan-out helpers they do (`lib/actions/search-keywords.ts`), in the same
- *    transaction as the write. A seeded catalogue with empty `search_keywords` is a
- *    catalogue where no facet search works, and nothing errors.
- *
- * WHAT IT DELIBERATELY DOES NOT DO: it never sets `last_verified_at` to anything other than
- * the authored date, and it never marks an entry more confident than the content says.
- * ADR 0007's consequences: "a reviewer should treat a seed file full of `verified` as a red
- * flag" — so this script copies the authored value and nothing else.
+ * `last_verified_at` and confidence are copied from content as authored, never raised.
  */
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -79,7 +59,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const contentDir = join(here, "..", "content");
 
 /* ================================================================== *
- * Load and validate — nothing is written until all of this succeeds
+ * Load and validate (nothing is written until this succeeds)
  * ================================================================== */
 
 class SeedError extends Error {
@@ -125,11 +105,8 @@ function loadToolFiles(): CategoryFile[] {
 }
 
 /**
- * Playbook front matter is YAML between the first pair of `---` fences; everything after the
- * closing fence is the Markdown OVERVIEW — the lead-in shown above the step list.
- *
- * The step BODIES are in the front matter (as YAML block scalars), not in the Markdown, so
- * this split loses nothing.
+ * YAML front matter between the first `---` fences; the rest is the Markdown overview.
+ * Step bodies live in the front matter.
  */
 function splitFrontMatter(source: string, path: string): { frontMatter: string; body: string } {
   const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(source);
@@ -174,14 +151,8 @@ function loadPlaybooks(): LoadedPlaybook[] {
 }
 
 /**
- * The camera provider block carries more than `cameraProviderFileSchema` validates — it also
- * describes the CONNECTOR that gives us the legal basis for embedding its feeds. Zod strips
- * unknown keys, so those fields are parsed separately here rather than by widening the
- * content contract, which belongs to the content-strategist.
- *
- * `connectorKind: null` means link-out only: the reader's browser goes to the operator
- * directly, we make no call, and no connector is needed
- * (`cameras_embed_requires_connector_check` only bites when `embed_permitted` is true).
+ * Connector fields in the camera provider block, which `cameraProviderFileSchema` strips.
+ * `connectorKind: null` means link-out only, so no connector is needed.
  */
 const providerConnectorSchema = z.object({
   slug: slugSchema,
@@ -240,20 +211,12 @@ function loadCameras(): LoadedCameraFile[] {
 }
 
 /* ================================================================== *
- * Derivations — every one of these is a stated rule, not a guess
+ * Derivations
  * ================================================================== */
 
 /**
- * THE ONE TRANSLATION THAT MATTERS.
- *
- * Content numbers playbook steps from **1** (`order: 1`, checked by
- * `checkCatalogueIntegrity`, which requires exactly `1..n` in order). The schema stores
- * `order_index` **0-based and contiguous** (db/schema.ts, HANDOFF §3), and the DEFERRABLE
- * unique constraint plus `playbook_steps_order_index_check` both key off that.
- *
- * Off-by-one here does not error. It produces a playbook whose steps are numbered 2..n+1 in
- * the UI, or one whose first step sorts last. Exported and unit-tested for exactly that
- * reason.
+ * Content step order is 1-based; `order_index` is 0-based and contiguous. An off-by-one
+ * here wouldn't error, so it's exported and unit-tested.
  */
 export function toOrderIndex(contentOrder: number): number {
   if (!Number.isInteger(contentOrder) || contentOrder < 1) {
@@ -265,11 +228,7 @@ export function toOrderIndex(contentOrder: number): number {
   return contentOrder - 1;
 }
 
-/**
- * The same translation applied to a whole step list, with the contiguity invariant asserted
- * on the OUTPUT rather than assumed from the input. `checkCatalogueIntegrity` already checks
- * the 1-based side; this checks what we are about to write.
- */
+/** `toOrderIndex` over a list, asserting the output is contiguous from 0. */
 export function toOrderIndexes(contentOrders: readonly number[]): number[] {
   const indexes = contentOrders.map(toOrderIndex);
   const sorted = [...indexes].sort((a, b) => a - b);
@@ -284,28 +243,15 @@ export function toOrderIndexes(contentOrders: readonly number[]): number[] {
 }
 
 /**
- * A display name for a tag, from its authored slug.
- *
- * Content authors tags as slugs only (`["certificates", "attack-surface"]`) and `tags.name`
- * is NOT NULL, so a label has to come from somewhere. Deriving it — hyphens to spaces, first
- * letter capitalised — is a presentational rule, not a claim about the world, so it does not
- * cross product-brief §6's prohibition on inventing facts.
- *
- * Known-acronym casing is deliberately NOT special-cased: a list of exceptions here would
- * drift from the content and be invisible when it did. An editor can rename any tag in
- * `/admin/taxonomy`, and the rename fans out to `search_keywords` correctly.
+ * Tag label from its slug (content only has slugs). No acronym handling; editors can rename
+ * tags in `/admin/taxonomy`.
  */
 export function tagNameFromSlug(slug: string): string {
   const words = slug.split("-").join(" ");
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
-/**
- * An authored `YYYY-MM-DD` becomes midnight UTC.
- *
- * UTC rather than local: the container's `TZ` must not be able to move a verification date
- * across a day boundary. product-brief §6.3 — it is never back-dated or forward-dated.
- */
+/** `YYYY-MM-DD` to midnight UTC, so the container TZ can't shift the date. */
 export function toUtcDate(iso: string): Date {
   const date = new Date(`${iso}T00:00:00.000Z`);
   if (Number.isNaN(date.getTime())) throw new SeedError(`"${iso}" is not a calendar date`);
@@ -318,11 +264,7 @@ export function toUtcDate(iso: string): Date {
 
 type Counts = Record<string, number>;
 
-/**
- * Upsert one category and return its id. `onConflictDoUpdate` on the slug is what makes the
- * whole script re-runnable: a second run finds the row and updates it in place, so ids are
- * stable and every FK that points at them survives.
- */
+/** Upsert categories by slug, keeping ids stable across runs. Returns slug -> id. */
 async function upsertCategories(tx: Db, files: CategoryFile[]): Promise<Map<string, string>> {
   const ids = new Map<string, string>();
 
@@ -333,9 +275,7 @@ async function upsertCategories(tx: Db, files: CategoryFile[]): Promise<Map<stri
         slug: file.category.slug,
         name: file.category.name,
         description: file.category.description,
-        // Files are read in sorted order, so the ordering is stable across runs. An editor
-        // can reorder them afterwards in /admin/taxonomy; a re-seed will reset it, which is
-        // why the seed is a manual first-deploy step and not part of deploy.sh.
+        // Files are sorted, so this is stable. A re-seed resets admin reordering.
         sortOrder: index,
       })
       .onConflictDoUpdate({
@@ -364,8 +304,7 @@ async function upsertTags(tx: Db, slugs: readonly string[]): Promise<Map<string,
       .values({ slug, name: tagNameFromSlug(slug) })
       .onConflictDoUpdate({
         target: tags.slug,
-        // The NAME is not overwritten on conflict: an editor may have corrected the derived
-        // label (e.g. "Tls" to "TLS"), and a re-seed must not undo editorial work.
+        // Keep the name: an editor may have fixed the derived label ("Tls" -> "TLS").
         set: { updatedAt: new Date() },
       })
       .returning({ id: tags.id });
@@ -392,13 +331,8 @@ async function upsertTools(
 
     for (const tool of file.tools) {
       /**
-       * PUBLISHED, deliberately. `tools_published_requires_verification_check` requires
-       * `last_verified_at` AND `reliability`, and the content contract makes both mandatory
-       * on every authored tool — so every seeded tool clears the ADR 0007 gate honestly,
-       * with the editor's own date and rating rather than a value invented here.
-       *
-       * `confidence` is copied verbatim. It is never upgraded to get past anything, because
-       * nothing here needs upgrading to pass.
+       * Published: content requires both `lastVerifiedAt` and `reliability`, so the publish
+       * CHECK passes with authored values. `confidence` is copied verbatim.
        */
       const lastVerifiedAt = toUtcDate(tool.lastVerifiedAt);
 
@@ -443,9 +377,7 @@ async function upsertTools(
             reliabilityNotes: tool.reliabilityNotes,
             confidence: tool.confidence,
             updatedAt: new Date(),
-            // `status` and `published_at` are NOT reset on conflict. An editor who
-            // unpublished an entry did so for a reason, and a re-seed must not quietly
-            // republish it.
+            // Don't reset status/published_at, so unpublished entries stay unpublished.
           },
         })
         .returning({ id: tools.id });
@@ -453,8 +385,7 @@ async function upsertTools(
       if (!row) throw new SeedError(`Upsert returned no row for tool ${tool.slug}`);
       toolIds.push(row.id);
 
-      // Replace the tag set wholesale, so a tag removed from the content file is removed
-      // from the row rather than accumulating forever.
+      // Replace the tag set so removed tags don't linger.
       await tx.delete(toolTags).where(eq(toolTags.toolId, row.id));
       if (tool.tags.length > 0) {
         const links = tool.tags.map((slug) => {
@@ -488,13 +419,8 @@ async function upsertPlaybooks(
     }
 
     /**
-     * `confidence` is left at the column default `needsReview`.
-     *
-     * The playbook front-matter contract has no `confidence` field, and product-brief §6
-     * forbids inventing one. `needsReview` is the honest value for "no editorial judgement
-     * has been recorded", and it errs toward the reader's scepticism rather than away from
-     * it. This is flagged in the run summary and in docs/backend/HANDOFF.md: if playbooks
-     * should carry a confidence, it belongs in the front matter, not here.
+     * `confidence` stays at the default `needsReview`: playbook front matter has no
+     * confidence field and we don't invent one. Add it to the front matter if needed.
      */
     const lastVerifiedAt = toUtcDate(frontMatter.lastReviewedAt);
 
@@ -531,16 +457,9 @@ async function upsertPlaybooks(
     playbookIds.push(row.id);
 
     /**
-     * Steps are replaced wholesale rather than upserted.
-     *
-     * There is no natural key for a step — content identifies it by position, and position
-     * is exactly what an edit changes — so a diff would be guesswork. Deleting and
-     * reinserting is correct and safe: `workspace_items.step_id` is ON DELETE SET NULL, so
-     * every user's checklist keeps its snapshot title and checked state (ADR 0008).
-     *
-     * `playbook_steps_playbook_order_uniq` is DEFERRABLE INITIALLY DEFERRED, so the delete
-     * and the insert can both happen inside this transaction without a transient duplicate
-     * aborting it.
+     * Steps are replaced, not upserted: they have no natural key. Safe because
+     * `workspace_items.step_id` is ON DELETE SET NULL (checklists keep their snapshot), and
+     * the order uniqueness constraint is deferred.
      */
     await tx.delete(playbookSteps).where(eq(playbookSteps.playbookId, row.id));
 
@@ -594,21 +513,9 @@ async function upsertPlaybooks(
 }
 
 /**
- * Camera providers become connector rows.
- *
- * ADR 0012 §4: publishing a camera that EMBEDS requires a connector, because rendering a
- * third party's feed inside our page relies on a permission and a recorded permission lives
- * on a connector. The provider block in `content/cameras/*.json` carries exactly what that
- * row needs — operator, terms URL, licence, attribution, rate-limit notes and a check date.
- *
- * `enabled` is FALSE for every camera connector, and that is correct rather than cautious:
- * nothing ever calls them. `/live/cameras` makes zero outbound requests on load (sitemap.md
- * §3) and embeds are click-to-load from the reader's own browser straight to the operator
- * (ADR 0015). The row exists to hold the legal basis, not to be called.
- *
- * `status` is `published` because `status` is the EDITORIAL axis — is this connector part of
- * the shipped product — and it is: it is the recorded basis behind published camera entries.
- * ADR 0012 §1 keeps the two axes separate for exactly this kind of case.
+ * Camera providers become connector rows, which hold the legal basis embedding requires.
+ * `enabled` is false because nothing calls them (embeds load in the reader's browser);
+ * `status` is published because they back published cameras.
  */
 async function upsertCameraConnectors(
   tx: Db,
@@ -631,22 +538,17 @@ async function upsertCameraConnectors(
       legalBasis:
         `Licence: ${connector.licence}. ${connector.rateLimitNotes} ` +
         `Terms read ${connector.lastVerifiedAt}. Camera feeds are click-to-load from the ` +
-        `reader's own browser to the operator (ADR 0015); we make no outbound call and ` +
-        `retain no imagery. NOT A LEGAL OPINION — see docs/content/legal-review.md.`,
+        `reader's own browser to the operator; we make no outbound call and ` +
+        `retain no imagery. NOT A LEGAL OPINION.`,
       baseUrl: connector.apiUrl ?? connector.termsUrl ?? "https://example.invalid",
       requiresApiKey: false,
       apiKeyEnvVar: null,
-      /**
-       * Quota columns are NOT NULL and CHECK-constrained positive even for a connector
-       * nothing calls, so they carry deliberately small values rather than a pretend-large
-       * number: if a future code path ever does call one, it should be throttled, not
-       * unlimited.
-       */
+      /** Required positive; kept small so any future caller is throttled. */
       perUserQuota: 10,
       globalCeiling: 30,
       windowSeconds: 60,
       timeoutMs: 5000,
-      /** ADR 0014 §2 starting values for a camera REGISTRY: slow-moving, not per-frame. */
+      /** Registry metadata is slow-moving. */
       cacheTtlSeconds: 900,
       staleWhileRevalidateSeconds: 3600,
       enabled: false,
@@ -671,8 +573,7 @@ async function upsertCameraConnectors(
           lastCheckedAt: values.lastCheckedAt,
           notes: values.notes,
           updatedAt: new Date(),
-          // `enabled` and `status` are NOT reset. An operator who hit the kill-switch did so
-          // for a reason and a re-seed must not undo it (ADR 0011 rule 6).
+          // `enabled` and `status` are operator-owned; not reset.
         },
       })
       .returning({ id: connectors.id });
@@ -685,15 +586,8 @@ async function upsertCameraConnectors(
 }
 
 /**
- * The flights connector. Its registry values live beside its driver in
- * `lib/connectors/flights.ts`, where the endpoint, licence and quota envelope are reviewed
- * together, and are written here as data because ADR 0012 is explicit that a kill-switch
- * requiring a deploy is not a kill-switch.
- *
- * Seeded `draft` and `enabled: false` — fail closed (ADR 0012 §1). Unlike the camera
- * connectors, this one really does make outbound calls, so an operator must read the
- * recorded legal basis and turn it on deliberately. `/live/flights` renders its `disabled`
- * state until they do, which is honest rather than broken.
+ * Flights connector, with values from `lib/connectors/flights.ts`. Seeded draft and
+ * disabled; an operator enables it after reviewing the legal basis.
  */
 async function upsertFlightsConnector(tx: Db): Promise<void> {
   const seed = FLIGHTS_CONNECTOR_SEED;
@@ -719,26 +613,11 @@ async function upsertFlightsConnector(tx: Db): Promise<void> {
 }
 
 /**
- * Registry rows for every wired live source.
- *
- * Without these `pollSource` refuses each adapter before any request — correctly, since
- * §3.3 requires a recorded basis — and `/map` ships with every layer permanently
- * unavailable on a fresh database. The map engineer found that exactly this had happened to
- * earthquakes and weather.
- *
- * Seeded `draft` and `enabled: false` like the flights connector, for the same reason: these
- * make real outbound calls, so an operator reads the recorded legal basis and turns each one
- * on deliberately. A re-seed never resets `enabled`, `status` or `lastCheckedAt` — those are
- * the operator's, not ours.
+ * Registry rows for map sources and Toolbench connectors. Without a row the governed path
+ * refuses every call. Seeded draft and disabled; a re-seed never resets `enabled`,
+ * `status` or `lastCheckedAt`.
  */
 async function upsertSourceConnectors(tx: Db): Promise<number> {
-  /*
-   * Map sources AND Toolbench connectors. Both are rows in one registry (ADR 0024), and both
-   * were missing here — a connector with no row is refused by the governed path with "no
-   * recorded basis to call it", which is correct behaviour producing a permanently dead
-   * feature. It happened once to the map's earthquake and weather layers; these five would
-   * have been the same bug in the Toolbench.
-   */
   const seeds = [...SOURCE_CONNECTOR_SEEDS, ...TOOLBENCH_CONNECTOR_SEEDS];
   for (const seed of seeds) {
     await tx
@@ -783,16 +662,12 @@ async function upsertCameras(
     const connectorId = connector ? (connectorIds.get(connector.slug) ?? null) : null;
 
     for (const camera of file.cameras) {
-      /**
-       * `cameras_embed_requires_connector_check` refuses a published, embedding camera with
-       * no connector. Catching it here names the provider file instead of quoting a
-       * constraint at whoever ran the seed.
-       */
+      /** Same rule as `cameras_embed_requires_connector_check`, with a clearer error. */
       if (camera.embedPermitted && !connectorId) {
         throw new SeedError(
           `Camera "${camera.slug}" permits embedding but its provider ` +
             `"${file.provider.slug}" declares no connector. Embedding needs a recorded legal ` +
-            `basis, and a recorded basis lives on a connector (ADR 0012 §4).`,
+            `basis, and a recorded basis lives on a connector.`,
         );
       }
 
@@ -857,8 +732,7 @@ async function upsertCameras(
 async function main(): Promise<void> {
   const started = Date.now();
 
-  // Cheap invariants first: a vocabulary that has drifted would otherwise surface as a
-  // CHECK violation half-way through a load, with a constraint name instead of a cause.
+  // Vocabulary drift would otherwise surface as a CHECK violation mid-load.
   assertCostModelsAligned();
   assertCameraSubjectsMapped();
 
@@ -867,9 +741,7 @@ async function main(): Promise<void> {
   const playbookFiles = loadPlaybooks();
   const cameraFiles = loadCameras();
 
-  // Cross-file integrity, before anything is written. A duplicated slug or a playbook
-  // pointing at a tool that was omitted during verification are exactly the failures that
-  // reach users as broken links.
+  // Cross-file integrity (duplicate slugs, links to missing tools) before any write.
   const problems = [
     ...checkCatalogueIntegrity(
       toolFiles,
@@ -894,19 +766,14 @@ async function main(): Promise<void> {
 
   const now = new Date();
 
-  /**
-   * ONE transaction for the whole seed. Either the catalogue loads or the database is
-   * untouched — there is no half-seeded state to reason about, and a failure at camera 14 of
-   * 16 does not leave a catalogue that looks complete.
-   */
+  /** One transaction: the catalogue loads fully or not at all. */
   let liveSourceConnectors = 0;
   const counts: Counts = await db.transaction(async (tx) => {
     const categoryIds = await upsertCategories(tx, toolFiles);
     const tagIds = await upsertTags(tx, [...tagSlugs]);
     const toolIds = await upsertTools(tx, toolFiles, categoryIds, tagIds, now);
 
-    // Resolve slugs to ids once, for the playbook step links. The alternative is a lookup
-    // per link — 109 extra round trips inside an open transaction.
+    // Resolve slugs once instead of per link.
     const toolRows = await tx.select({ id: tools.id, slug: tools.slug }).from(tools);
     const toolIdBySlug = new Map(toolRows.map((t) => [t.slug, t.id]));
 
@@ -917,11 +784,7 @@ async function main(): Promise<void> {
     liveSourceConnectors = await upsertSourceConnectors(tx);
     const camerasWritten = await upsertCameras(tx, cameraFiles, connectorIds, now);
 
-    /**
-     * The fan-out, in the SAME transaction as the writes that made it stale (HANDOFF §4).
-     * The seed bypasses the Server Actions, so it calls the identical helpers they do rather
-     * than a second implementation that could drift.
-     */
+    /** Same helpers as the Server Actions, in the same transaction as the writes. */
     await recomputeToolSearchKeywords(tx, toolIds);
     await recomputePlaybookSearchKeywords(tx, playbookIds);
 
@@ -935,11 +798,7 @@ async function main(): Promise<void> {
     };
   });
 
-  /**
-   * Post-write assertion. `search_keywords` is the one thing here whose failure is
-   * completely silent — an empty column means no facet search works and nothing errors — so
-   * it is read back rather than assumed.
-   */
+  /** Empty `search_keywords` would fail silently, so read it back. */
   const [emptyKeywords] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(tools)
@@ -966,7 +825,7 @@ async function main(): Promise<void> {
       "    should carry a confidence, add it to content and to lib/content/schema.ts.",
   );
   console.log(
-    "  - The flights connector is seeded status=draft, enabled=false (ADR 0012 §1, fail\n" +
+    "  - The flights connector is seeded status=draft, enabled=false (fail\n" +
       "    closed). /live/flights renders its disabled state until an operator reads the\n" +
       "    recorded legal_basis and turns it on.",
   );
@@ -976,14 +835,7 @@ async function main(): Promise<void> {
   );
 }
 
-/**
- * Only run when this file is the process entry point.
- *
- * Without the guard, `import { toOrderIndex } from "./seed"` in a unit test would execute the
- * whole load — which is both a surprise and, against a configured DATABASE_URL, a write.
- * The translation helpers above are exported precisely so they can be tested, so the guard
- * is what makes that safe.
- */
+/** Only run as the entry point, so tests can import the helpers without seeding. */
 const invokedDirectly =
   process.argv[1] !== undefined &&
   fileURLToPath(import.meta.url) === resolve(process.argv[1]);
@@ -991,11 +843,8 @@ const invokedDirectly =
 if (invokedDirectly) {
   main()
     .then(async () => {
-      // Close the pool and let the process exit naturally. NOT `process.exit(0)`: an explicit
-      // exit can cut the socket before the connection's terminate packet is flushed, which
-      // leaves a single-connection server (the local PGlite harness) holding a dead handler
-      // and refusing the next client. `pool.end()` already waits for every connection to
-      // close, so there is nothing left to hurry.
+      // No process.exit(0): it can cut the socket before the terminate packet is flushed,
+      // which wedges single-connection servers like the local PGlite harness.
       await closeDb();
     })
     .catch(async (error: unknown) => {
@@ -1006,7 +855,7 @@ if (invokedDirectly) {
       try {
         await closeDb();
       } catch {
-        // A pool that never opened is not the failure worth reporting.
+        // Pool may never have opened.
       }
       process.exit(1);
     });

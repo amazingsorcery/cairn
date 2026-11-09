@@ -11,18 +11,11 @@ import { listToolsForAdmin } from "@/lib/queries/admin";
 import { formatDate } from "@/lib/utils";
 
 /**
- * `/admin/tools` — every tool, drafts included, newest edit first. sitemap.md §8.
+ * `/admin/tools`: every tool, drafts included, newest edit first. No editing yet
+ * (`/admin/tools/[id]` and `/new` aren't built, so aren't linked).
  *
- * WHAT THIS PAGE DOES NOT DO: it does not edit. `/admin/tools/[id]` and `/admin/tools/new` are
- * in `sitemap.md` §8 and are NOT built in this pass — so, per product-brief §8, they are not
- * linked either. The controls here are the three that already have actions behind them
- * (publish, unpublish, confirm still accurate), and the gap is recorded in
- * `docs/frontend/HANDOFF-live.md` rather than papered over with a link to a 404.
- *
- * Publishing can be REFUSED by the database: `tools_published_requires_verification_check`
- * needs a verification date and a reliability rating. The refusal is surfaced next to the
- * button as the sentence `guard()` mapped it to; the constraint name never reaches the screen
- * (states.md §11.3).
+ * Publishing needs a verification date and reliability rating
+ * (`tools_published_requires_verification_check`); `guard()` maps the refusal to a sentence.
  */
 
 export const dynamic = "force-dynamic";

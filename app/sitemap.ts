@@ -7,23 +7,11 @@ import { listPublishedToolSlugs } from "@/lib/queries/tools";
 import { TOOLBENCH_ENTRIES } from "@/lib/toolbench/registry";
 
 /**
- * `sitemap.xml`. ISR:3600, matching the caching contract in architecture HANDOFF §8.
+ * `sitemap.xml`, revalidated hourly. Only public, indexable routes. Excluded: `/search`,
+ * `/signin*`, `/workspaces`, `/admin`, `/api`, and `/legal/*` (drafts, `noindex` for now).
  *
- * Only publicly readable, indexable routes appear. Deliberately absent:
- *
- *   - `/search` — no content of its own; every useful URL under it is a query string.
- *   - `/signin`, `/signin/*` — a sign-in form is not a search result.
- *   - `/workspaces/**`, `/admin/**`, `/api/**` — disallowed in `app/robots.ts` and
- *     `noindex` at the edge.
- *   - `/legal/*` — the policies are pre-launch drafts and their pages carry `noindex`
- *     until counsel signs them off. Listing a draft policy in a sitemap invites a crawler
- *     to treat it as settled, which is the opposite of what the draft banner says.
- *
- * DEGRADATION. The catalogue entries come from the database. If it is unreachable this
- * returns the static routes and logs, rather than throwing: a sitemap missing its detail
- * URLs for one revalidation window costs a little crawl freshness, while a 500 on
- * `/sitemap.xml` is what actually gets a site dropped. The failure is logged at `warn` so
- * it is visible rather than silent.
+ * If the database is unreachable, returns the static routes and logs a warning rather than
+ * a 500.
  */
 export const revalidate = 3600;
 
@@ -40,21 +28,10 @@ function staticRoutes(now: Date): MetadataRoute.Sitemap {
     { url: absoluteUrl("/methodology"), changeFrequency: "monthly", priority: 0.8 },
     { url: absoluteUrl("/about"), changeFrequency: "monthly", priority: 0.5 },
 
-    /*
-     * Every Toolbench route, driven from the registry rather than listed by hand.
-     *
-     * `TOOLBENCH_ENTRIES` is a static array with no database dependency, which is why this
-     * belongs in the static block, and `lib/toolbench/registry.test.ts` already asserts that
-     * the registry and the route directory contain exactly the same slugs. So a tool cannot
-     * appear here without a page behind it, and — the failure that actually happens — a tool
-     * cannot be added without appearing here. A hand-maintained list would have shipped four
-     * of fifteen.
-     */
+    // Toolbench routes from the static registry (registry.test.ts keeps it in sync with routes).
     ...TOOLBENCH_ENTRIES.map((entry) => ({
       url: absoluteUrl(`/toolbench/${entry.slug}`),
       lastModified: now,
-      // Each page is prose plus a client- or server-side utility; the content changes when
-      // somebody edits it, not on a schedule.
       changeFrequency: "monthly" as const,
       priority: 0.7,
     })),
@@ -66,10 +43,8 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const entries = staticRoutes(now);
 
   try {
-    // Sequential, not `Promise.all`. This route regenerates in the background once an hour
-    // and competes with live requests for a pool of ten connections on a 2 GB box; taking
-    // one at a time costs a few milliseconds nobody is waiting for. It is also what makes
-    // the route work against the single-connection local dev harness.
+    // Sequential to avoid hogging the small connection pool (and for the single-connection
+    // dev harness).
     const tools = await listPublishedToolSlugs();
     const categories = await listCategorySlugs();
     const tags = await listTagSlugs();
@@ -100,22 +75,8 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     }
 
     /*
-     * INTEGRATION POINT — playbooks and cameras.
-     *
-     * `/playbooks/[slug]` and `/live/cameras/[slug]` are public, indexable detail routes and
-     * belong here. `lib/queries/` has no published-slug export for either yet: there is no
-     * `lib/queries/playbooks.ts` and no `lib/queries/cameras.ts` at the time this file was
-     * written, and importing a function that does not exist is worse than omitting the URLs.
-     *
-     * When the backend adds them, mirror the `tools` block above:
-     *
-     *   for (const playbook of await listPublishedPlaybookSlugs()) {
-     *     entries.push({ url: absoluteUrl(`/playbooks/${playbook.slug}`), … });
-     *   }
-     *
-     * Whatever those exports are called, they must return **published rows only**. A draft
-     * slug in the sitemap is a public confirmation that an unpublished entry exists, which is
-     * exactly what the 404 behaviour in `docs/design/states.md` §1.2 exists to prevent.
+     * TODO: add `/playbooks/[slug]` and `/live/cameras/[slug]` once published-slug queries
+     * exist. They must return published rows only, or the sitemap leaks drafts.
      */
   } catch (error) {
     logger.warn(

@@ -5,14 +5,8 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 
 /**
- * The route-level boundary for `/search`.
- *
- * It should rarely render: the page already catches a failing `search()` and reports it
- * in-region (`states.md` §8.4) so the field stays usable, which is the difference between "the
- * index didn't answer" and "the page is gone". This covers a throw during render.
- *
- * Copy verbatim from `states.md` §8.4, including both controls — retry, and browse the
- * directory by category. Nothing from `error` is rendered.
+ * Route boundary for `/search`. A failing `search()` is reported in-region by the page so
+ * the field stays usable; this only catches render throws. `error` is never shown.
  */
 export default function SearchError({ reset }: { error: Error; reset: () => void }) {
   return (

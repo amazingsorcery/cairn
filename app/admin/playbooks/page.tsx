@@ -9,13 +9,8 @@ import { listPlaybooksForAdmin } from "@/lib/queries/admin";
 import { formatDate } from "@/lib/utils";
 
 /**
- * `/admin/playbooks`. sitemap.md §8.
- *
- * Step editing and reordering live at `/admin/playbooks/[id]`, which is NOT built in this
- * pass and is therefore not linked (product-brief §8). Reordering is not a list-page control
- * in any case: it rewrites every `order_index` in one transaction against a
- * `DEFERRABLE INITIALLY DEFERRED` unique constraint, and half of that behaviour is the
- * rollback (`states.md` §11.4).
+ * `/admin/playbooks`. Step editing and reordering (`/admin/playbooks/[id]`) isn't built
+ * yet, so it isn't linked.
  */
 
 export const dynamic = "force-dynamic";

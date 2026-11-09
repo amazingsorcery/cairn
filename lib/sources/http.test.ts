@@ -19,13 +19,7 @@ import {
 } from "./http";
 import { SOURCE_ADAPTERS, findAdapter, unconfiguredAdapters } from "./index";
 
-/**
- * These tests exist because of QA finding Q-02.
- *
- * The connector layer once logged 57 HTTP 429s and one 420 against a free community service —
- * 29% of every outbound call refused — because the TTL was treated as the limit and nothing
- * backed off when the upstream said stop. Everything below is that lesson, asserted.
- */
+/** Backoff, failure typing, byte caps and redirect pinning for the shared source fetcher. */
 
 const signal = () => new AbortController().signal;
 
@@ -83,7 +77,7 @@ describe("cooldown", () => {
     expect(first.failure.kind).toBe("rateLimited");
     expect(cooldownRemaining("test")).toBeGreaterThan(0);
 
-    // The point of Q-02: after a refusal we must not call again at all.
+    // After a refusal, no further calls.
     const callsAfterRefusal = vi.mocked(globalThis.fetch).mock.calls.length;
     const second = await fetchUpstream({ slug: "test", url: "https://example.com/a", signal: signal() });
     expect(second.ok).toBe(false);
@@ -91,7 +85,7 @@ describe("cooldown", () => {
   });
 
   it("falls back to a default cooldown when the upstream sends no Retry-After", async () => {
-    // Measured 2026-08-31: adsb.lol sends no Retry-After on a 429. This is that case.
+    // e.g. adsb.lol sends no Retry-After on a 429.
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("no", { status: 429 }));
 
     const result = await fetchUpstream({ slug: "silent", url: "https://example.com", signal: signal() });
@@ -152,12 +146,7 @@ describe("fetchUpstream failure typing", () => {
     expect(result.ok).toBe(false);
   });
 
-  /**
-   * QV-03. The cap has to bite while the body is arriving. The map's six adapters share this
-   * one path with the Toolbench's four connectors, and the finding's own note is that
-   * maintaining the two separately "is how one of them ends up with QV-03 fixed and the
-   * other not" — so both are asserted, in their own suites, against the same helper.
-   */
+  /** The cap must apply while streaming (same helper as the Toolbench connectors). */
   it("stops pulling a chunked oversize body instead of buffering it whole", async () => {
     const CAP = 4096;
     const CHUNK = 512;
@@ -174,7 +163,7 @@ describe("fetchUpstream failure typing", () => {
             controller.enqueue(new Uint8Array(CHUNK).fill(97));
           },
         }),
-        // No content-length: the gate that used to be the only one never fires here.
+        // No content-length, so only the streaming cap can catch it.
         { status: 200 },
       ),
     );
@@ -192,7 +181,7 @@ describe("fetchUpstream failure typing", () => {
   });
 
   /* ---------------------------------------------------------------- *
-   * QV-18 — the redirect pin
+   * Redirect pin
    * ---------------------------------------------------------------- */
 
   it("sends redirect: manual, so a 302 is a decision rather than a request", async () => {
@@ -212,20 +201,11 @@ describe("fetchUpstream failure typing", () => {
     const result = await fetchUpstream({ slug: "hop", url: "https://example.com/a", signal: signal() });
 
     expect(result.ok).toBe(true);
-    // Resolved against the current URL, so a relative Location behaves as a browser would.
+    // Relative Location resolved against the current URL.
     expect(spy.mock.calls[1]?.[0]).toBe("https://example.com/moved");
   });
 
-  /**
-   * QA finding QV-18. `fetchUpstream` sent `redirect: "follow"` with no pin at all, in a
-   * codebase whose connector primitive four files away says why that is wrong:
-   * "'the upstream is trustworthy' is exactly the assumption an SSRF exploits — an open
-   * redirect on an otherwise honest service is enough."
-   *
-   * The exposure was one hop of unearned trust in six named operators, which is small; the
-   * reason it is closed rather than argued away is that the cloud metadata endpoint is one
-   * `Location:` header from any of them, and the whole deployment is one VPS.
-   */
+  /** Off-host redirects are refused: one `Location:` header could point at cloud metadata. */
   const OFF_HOST = [
     "https://169.254.169.254/latest/meta-data/",
     "http://[fd00:ec2::254]/latest/meta-data/",
@@ -250,24 +230,14 @@ describe("fetchUpstream failure typing", () => {
       expect(result.ok).toBe(false);
       // One request: the hop was refused rather than followed.
       expect(spy).toHaveBeenCalledTimes(1);
-      // And it is its OWN failure kind, not a generic upstream error. See below.
+      // Its own failure kind, not a generic upstream error.
       expect(result.ok === false && result.failure.kind).toBe("redirected");
     });
   }
 
   /**
-   * A LAYER GOING DARK MUST NAME ITS REASON — the maintainer's ruling on this fix.
-   *
-   * The first version of the pin returned `upstreamError`, which is what `fetchUpstream`
-   * returns when a source is *down*. `failureSentence` renders that as "<source> could not be
-   * reached", and `auditOutcome` records `upstreamError` on the board. So an operator looking
-   * at a source that had simply **moved** would have been told it was broken, and would have
-   * gone looking for an outage that was not there. Several of this build's findings started
-   * exactly that way: a surface that reads as authoritative while describing something else.
-   *
-   * `redirected` is therefore its own kind, all the way through: the typed failure, the
-   * operator sentence in `describeFailure`, the reader sentence in `failureSentence`, and the
-   * `upstream_status` on the audit row, which carries the real 3xx.
+   * `redirected` is distinct from `upstreamError` everywhere (failure kind, operator and reader
+   * sentences, audit status), so a source that moved isn't reported as down.
    */
   it("names the redirect as its own failure, distinguishable from an outage", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
@@ -283,7 +253,7 @@ describe("fetchUpstream failure typing", () => {
     expect(sentence).toMatch(/redirect/i);
     expect(sentence).not.toMatch(/could not be reached|did not respond/i);
 
-    // The reader's sentence, from the map's own copy, says the same thing in its own voice.
+    // So does the reader's sentence.
     const reader = failureSentence(result.failure, "USGS earthquakes");
     expect(reader).toMatch(/redirect|another host|somewhere else/i);
     expect(reader).not.toMatch(/could not be reached/i);
@@ -307,9 +277,7 @@ describe("fetchUpstream failure typing", () => {
     );
     const result = await fetchUpstream({ slug: "quiet", url: "https://example.com/a", signal: signal() });
     if (result.ok) throw new Error("expected a failure");
-    // The host is upstream-controlled text. It goes to the structured log, where an operator
-    // can find it, and never into a sentence we render. `describeFailure`'s own contract:
-    // "Never an upstream body, stack or URL."
+    // Upstream-controlled host goes to the structured log only, never rendered text.
     expect(JSON.stringify(result.failure)).not.toContain("attacker-chosen-name");
     expect(describeFailure(result.failure)).not.toContain("attacker-chosen-name");
     expect(failureSentence(result.failure, "A source")).not.toContain("attacker-chosen-name");
@@ -343,11 +311,9 @@ describe("fetchUpstream failure typing", () => {
 
     const init = spy.mock.calls[0]?.[1];
     const headers = init?.headers as Record<string, string> | undefined;
-    // NWS returns 403 to a default agent, so this is a requirement, not a courtesy.
+    // NWS returns 403 to a default agent.
     expect(headers?.["user-agent"]).toBe(sourceUserAgent());
-    // From `config/brand.ts`, not the literal. A test that hardcodes the product name is one
-    // of the places the conventions §4 names explicitly: a rename would leave this green while the
-    // header it guards had changed, which is worse than no assertion.
+    // Compare against `config/brand.ts`, not a hardcoded name.
     expect(sourceUserAgent()).toContain(brand.nameLower);
   });
 });
@@ -377,8 +343,7 @@ describe("the registry", () => {
   });
 
   it("gives every adapter an attribution with a licence, so the UI cannot forget one", () => {
-    // Several of these licences make attribution a CONDITION OF USE. A missing credit is a
-    // licence breach, not a polish defect — which is why it is data on the adapter.
+    // Several licences make attribution a condition of use.
     for (const adapter of SOURCE_ADAPTERS) {
       expect(adapter.attribution.text.length).toBeGreaterThan(0);
       expect(adapter.attribution.licence.length).toBeGreaterThan(0);
@@ -387,7 +352,7 @@ describe("the registry", () => {
   });
 
   it("gives every adapter a TTL of at least ten seconds", () => {
-    // product-brief §2b's floor. Anything below it is a poll loop, not a cache.
+    // Below this it's a poll loop, not a cache.
     for (const adapter of SOURCE_ADAPTERS) {
       expect(adapter.ttlSeconds).toBeGreaterThanOrEqual(10);
     }

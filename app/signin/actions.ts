@@ -12,24 +12,13 @@ import { consumeSafely, RATE_LIMIT_POLICIES, windowEnd, windowStart } from "@/li
 import { SIGNIN_ADDRESS_COOKIE, type SignInFormState } from "./signin-state";
 
 /**
- * The sign-in write path.
+ * Sign-in actions. Must not reveal whether an address has an account: every valid address
+ * gets the same "check your email" outcome.
  *
- * THIS FILE MUST NOT LEAK WHETHER AN ADDRESS HAS AN ACCOUNT. Every branch below returns the
- * same shape whether the address is known or unknown: a valid address always produces the
- * "check your email" outcome. An enumeration oracle here is not a theoretical weakness —
- * "does this journalist have an account on the OSINT site" is exactly the question this
- * product's audience is targeted with (`docs/design/states.md` §6, ADR 0009).
+ * The rate-limit reset is computed from the clock (fixed, epoch-aligned windows) because
+ * calling the limiter again would burn a slot; it's already consumed in the `signIn` callback.
  *
- * That is also why the rate-limit reset is COMPUTED rather than read from the limiter.
- * `consumeSafely` is called inside the Auth.js `signIn` callback (`lib/auth.ts`), and
- * calling it a second time here to learn the reset time would burn a slot from the user's
- * own budget. The windows are fixed and aligned to the epoch (ADR 0009), so the boundary is
- * derivable from the clock alone — no read, no side effect, same answer.
- *
- * The address is carried to `/signin/check-email` in an httpOnly cookie, NEVER in the query
- * string. A URL lands in browser history and in every access log on the path; for a shared
- * machine that is the same class of failure as writing a case note to `localStorage`
- * (`states.md` §7.4). The cookie is httpOnly, `sameSite=lax`, and expires with the link.
+ * The address goes to `/signin/check-email` in an httpOnly cookie, never the query string.
  */
 
 const emailSchema = z
@@ -58,9 +47,7 @@ export async function requestMagicLink(
   _previous: SignInFormState,
   formData: FormData,
 ): Promise<SignInFormState> {
-  // A button for an unconfigured provider is never rendered, so reaching this action with
-  // the provider absent means the request did not come from our form. Refuse it the same
-  // way a misconfigured send would be refused, and say nothing more.
+  // No email provider means this didn't come from our form; refuse like a failed send.
   if (!authProviders.email) return { status: "sendFailed", email: "" };
 
   const raw = formData.get("email");
@@ -79,19 +66,11 @@ export async function requestMagicLink(
   const callbackUrl = safeCallbackUrl(formData.get("callbackUrl"));
 
   /*
-   * Two limits, and they defend different things.
+   * Per-client limit. The per-recipient limit in the `signIn` callback stops mailbombing one
+   * address, but not one client sending to many addresses.
    *
-   * The per-recipient limit lives in the `signIn` callback and stops one address being
-   * mailbombed. It cannot stop the other abuse: keyed on the address, a client requesting
-   * links for a thousand different addresses gets a thousand fresh buckets and sends a
-   * thousand emails from our domain. That is the open-relay reputation risk the policy
-   * comment already named, and an end-to-end test found it by looping with a fresh address
-   * each time and watching the limiter never fire.
-   *
-   * The subject is HMAC-hashed before it becomes a key (ADR 0009), so this adds no record of
-   * who visited. `x-forwarded-for` is only trustworthy because Caddy sets it and nothing else
-   * is reachable; the first hop is the client. A missing header means a direct connection in
-   * development, where one bucket for everyone is the right answer anyway.
+   * The subject is HMAC-hashed before use. `x-forwarded-for` is trusted because Caddy sets
+   * it and is the only ingress; a missing header means a direct dev connection.
    */
   const forwarded = (await headers()).get("x-forwarded-for");
   const client = forwarded?.split(",")[0]?.trim() ?? "unknown-client";
@@ -101,14 +80,12 @@ export async function requestMagicLink(
       { scope: "signin.magic-link", count: senderDecision.count },
       "Magic-link request refused: per-client send limit",
     );
-    // Same shape as the per-recipient refusal. A distinct message here would tell an
-    // enumerator which limit they hit, which tells them how to pace the next attempt.
+    // Same shape as the per-recipient refusal, so callers can't tell which limit hit.
     return { status: "rateLimited", email, resetAt: signInWindowResetAt().toISOString() };
   }
 
   try {
-    // `redirect: false` keeps the HTTP redirect ours to make; the email is still sent, and
-    // the rate-limit decision still happens inside the `signIn` callback.
+    // `redirect: false` so we do the redirect; the email is still sent.
     await signIn("nodemailer", { email, redirect: false, redirectTo: callbackUrl });
   } catch (error) {
     if (error instanceof AuthError && error.type === "AccessDenied") {
@@ -131,15 +108,12 @@ export async function requestMagicLink(
     maxAge: 60 * 60,
   });
 
-  // Outside the try: `redirect` signals by throwing, and catching it here would turn a
-  // successful send into the failure branch.
+  // Outside the try: `redirect` throws.
   redirect("/signin/check-email");
 }
 
 /**
- * GitHub. `signIn` performs the redirect itself, so there is no success branch to return.
- * A denial at GitHub comes back to `/signin/error`, where it is read as a decision rather
- * than a failure (`states.md` §6.8).
+ * GitHub. `signIn` redirects itself. A denial at GitHub lands on `/signin/error`.
  */
 export async function continueWithGithub(formData: FormData): Promise<void> {
   if (!authProviders.github) return;

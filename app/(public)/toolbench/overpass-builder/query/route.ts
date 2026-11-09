@@ -6,37 +6,17 @@ import { runConnector } from "@/lib/connectors/runtime";
 import { clientSubject } from "@/lib/rate-limit";
 
 /**
- * The Overpass submission behind `/toolbench/overpass-builder`.
+ * Overpass submission for `/toolbench/overpass-builder`.
  *
- * ── POST, and the body is never logged ─────────────────────────────────────
- * The query contains a bounding box around the place a reader is investigating. That is the
- * single most sensitive thing this tool handles, and a GET would write it into our own
- * access log. ADR 0013: we record that a request happened, never what it asked for.
+ * POST so the bounding box stays out of the access log. Server-side so Overpass never sees
+ * the reader's IP next to their coordinates.
  *
- * ── WHY THE SERVER MAKES THE CALL ──────────────────────────────────────────
- * overpass-turbo runs in the browser, and for an OSM mapper that is right. For this audience
- * it is not: a direct browser call hands the Overpass operators the reader's IP address next
- * to the coordinates they are searching. ADR 0011 §1.
+ * `overpassDriver.normalise` parses the query with `lib/toolbench/overpass.ts` and re-emits
+ * it, so the upstream only ever gets a string we generated. Unparseable queries are refused
+ * with no call and no audit row. `runConnector` resolves the registry row by `driver.slug`.
  *
- * ── THE QUERY IS NOT THE READER'S BYTES ────────────────────────────────────
- * `overpassDriver.normalise` runs the submitted text through the grammar in
- * `lib/toolbench/overpass.ts` and re-emits it from the parsed structure, so what reaches
- * the upstream is always a string this codebase generated. A query that does not parse is
- * refused here, no call is made, and no audit row is written — there was no outbound
- * attempt to record.
- *
- * ── WHICH REGISTRY ROW ─────────────────────────────────────────────────────
- * `runConnector` resolves it by `driver.slug`. It used to resolve by `driver.kind`, and
- * several connectors now share one kind — every Toolbench source is `infrastructure` — so it
- * handed this driver whichever row sorted first alphabetically. During development that
- * meant an Overpass query being POSTed at a DNS resolver's base URL, successfully, with the
- * wrong attribution and the wrong quota envelope. That is fixed in `runtime.ts` itself, and
- * the `runToolConnector` wrapper that worked around it has been deleted rather than left
- * behind as a second way to do the same thing.
- *
- * Always answers 200 with an envelope. The reader needs to know whether the query was
- * refused by us, refused by them, or ran and found nothing, and those are three different
- * sentences.
+ * Always returns 200 with an envelope so the client can tell our refusal, theirs, and an
+ * empty result apart.
  */
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

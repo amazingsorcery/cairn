@@ -1,12 +1,8 @@
 import { z } from "zod";
 
 /**
- * Environment contract.
- *
- * Parsed once, at module load, on the server only. If the environment is wrong the
- * process refuses to boot rather than failing later inside a request handler — a
- * misconfigured container should fail loudly at `docker compose up`, not silently serve
- * 500s at 3am. See docs/deploy/RUNBOOK.md and .env.example.
+ * Environment contract. Parsed once at module load (server only); a bad environment fails
+ * at boot. See .env.example.
  */
 
 const nonEmpty = (label: string) => z.string().min(1, `${label} must not be empty`);
@@ -25,13 +21,9 @@ const serverSchema = z
     ),
 
     /**
-     * HMAC key for rate-limit and audit-log subject hashing. Never a raw email or IP
-     * reaches the database (ADR 0009, ADR 0013). Generate with: openssl rand -hex 32
-     *
-     * Rotating it resets every rate-limit window and breaks audit-log correlation across
-     * the rotation. Both are acceptable: windows are minutes long and audit retention is
-     * 30 days. It must NOT be the same value as AUTH_SECRET — one is a session-forgery key
-     * and the other is a pseudonymisation key, and they have different blast radii.
+     * HMAC key for hashing rate-limit and audit-log subjects, so no raw email or IP is
+     * stored. Generate with: openssl rand -hex 32. Rotating resets rate-limit windows and
+     * audit correlation. Must differ from AUTH_SECRET.
      */
     RATE_LIMIT_SECRET: nonEmpty("RATE_LIMIT_SECRET").min(
       32,
@@ -52,14 +44,10 @@ const serverSchema = z
         "DATABASE_URL must use the postgres:// or postgresql:// scheme",
       ),
 
-    /**
-     * Maximum pooled database connections. Optional, with a default sized for the target
-     * deployment (see lib/db.ts). It exists as a knob because the local PGlite harness is
-     * single-connection and needs `DATABASE_POOL_MAX=1`; production is left alone.
-     */
+    /** Max pooled connections (see lib/db.ts). The PGlite harness needs 1. */
     DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
 
-    /** GitHub OAuth. Both or neither — a half-configured provider is a broken button. */
+    /** GitHub OAuth. Both or neither. */
     AUTH_GITHUB_ID: z.string().optional(),
     AUTH_GITHUB_SECRET: z.string().optional(),
 
@@ -78,23 +66,15 @@ const serverSchema = z
     ADMIN_EMAILS: z.string().default(""),
 
     /* ---------------------------------------------------------------- *
-     * Live sources (v2). All optional: a missing key must disable ONE
-     * layer with a visible "source unavailable" state, never stop the
-     * process. That is why none of these is required — product-brief §2b.
+     * Live sources. All optional: a missing key disables one layer.
      * ---------------------------------------------------------------- */
 
     /** NASA FIRMS wildfire hotspots. Register at firms.modaps.eosdis.nasa.gov. */
     FIRMS_MAP_KEY: z.string().optional(),
 
     /**
-     * Socrata application token, shared by the US municipal 911 feeds.
-     *
-     * Optional by design, and deliberately NOT an `apiKeyEnvVar`: without it the adapters
-     * still poll inside Socrata's anonymous limit. The token only raises the throttle. Its
-     * absence degrades headroom rather than disabling a layer, which is the difference
-     * between this and FIRMS_MAP_KEY — and the reason the emergency layers do not report
-     * `notConfigured` when it is missing.
-     *
+     * Socrata app token for the US municipal 911 feeds. Not an `apiKeyEnvVar`: it only raises
+     * the anonymous throttle, so layers still work without it.
      * Free: https://dev.socrata.com/docs/app-tokens.html
      */
     SOCRATA_APP_TOKEN: z.string().optional(),
@@ -102,21 +82,12 @@ const serverSchema = z
     FIRMS_SOURCE: z.string().optional(),
     /** Override the USGS earthquake feed window, e.g. all_hour, all_day. */
     USGS_QUAKE_FEED: z.string().optional(),
-    /** Default aircraft viewport as "lat,lon,radiusNm". See ADR 0021 on the 30s TTL. */
+    /** Default aircraft viewport as "lat,lon,radiusNm". */
     AIRCRAFT_VIEWPORT: z.string().optional(),
-    /**
-     * Contact address sent in the User-Agent to upstreams that ask for one.
-     * NWS and Nominatim both request it; sending it is a condition of polite use, and an
-     * operator who cannot be contacted is one who gets blocked without warning.
-     */
+    /** Contact address for the User-Agent; NWS and Nominatim ask for one. */
     SOURCE_CONTACT_EMAIL: z.string().email().optional(),
 
-    /*
-     * There is deliberately NO REDIS_URL here. ADR 0031 removed the `redis` container: it
-     * had zero application consumers, and the source cache is the in-process map in
-     * `app/(public)/map/sources.ts`. A variable declared here and read by nothing is a
-     * variable an operator sets and then trusts, which is QV-08's defect in one line.
-     */
+    // No REDIS_URL: the source cache is in-process and nothing would read it.
   })
   .superRefine((env, ctx) => {
     if (env.RATE_LIMIT_SECRET === env.AUTH_SECRET) {
@@ -148,53 +119,20 @@ const serverSchema = z
       });
     }
 
-    /*
-     * THERE IS DELIBERATELY NO "PRODUCTION NEEDS A SIGN-IN METHOD" CHECK HERE ANY MORE.
-     *
-     * It used to refuse to boot with: "No sign-in method is configured. Production needs
-     * GitHub OAuth, SMTP magic link, or both — otherwise nobody can log in." That is right
-     * about sign-in and wrong about the product. Most of what this ships is public: the map,
-     * fifteen Toolbench tools, the directory, the playbooks, search, live, the legal pages.
-     * Only case workspaces need a session. Refusing to serve any of it because nobody can
-     * save a case stops a working product from going live over a feature the operator has
-     * not asked for yet.
-     *
-     * So a deployment with no provider now boots in **public-only mode**: the signed-in
-     * surface is absent rather than broken, and one startup line says so and says what to
-     * set. `lib/auth-mode.ts` derives it; ADR 0032 records the decision and what it costs.
-     *
-     * THE TWO HALF-CONFIGURED CHECKS ABOVE ARE UNTOUCHED, and that distinction is the whole
-     * design: "no provider" is a choice, "four of the five SMTP variables" is a mistake that
-     * drops every sign-in email silently. The first is served; the second still refuses to
-     * boot.
-     */
+    // No sign-in provider at all is allowed (public-only mode, see `lib/auth-mode.ts`);
+    // only half-configured providers are rejected.
   });
 
 export type ServerEnv = z.infer<typeof serverSchema>;
 
 /**
- * Which phase we are validating for. See ADR 0018.
- *
- * `runtime` is strict and throwing: a misconfigured container must fail at `docker compose
- * up`, not serve 500s at 3am.
- *
- * `build` exists because `docker build` deliberately carries no secrets — an ARG is visible
- * in `docker history` — while Next imports every route module (and therefore this one) to
- * collect page data. The shape rules below still apply to anything that IS present; what is
- * relaxed is the requirement that secrets exist at all.
- *
- * Note that the two half-configured-provider checks are NOT relaxed: they are about the
- * shape of what was supplied, not about whether it was supplied, so a build carrying four of
- * the five SMTP variables fails at build time exactly as it would at boot.
+ * `runtime` is strict. `build` fills absent secrets with placeholders, since `docker build`
+ * carries none but Next imports this module. Values that are present are still validated,
+ * including the half-configured provider checks.
  */
 export type EnvPhase = "runtime" | "build";
 
-/**
- * Placeholders used only while compiling. They are never reachable at runtime: the strict
- * path is selected unless `NEXT_PHASE` says a production build is in progress, and Next
- * never sets that during `next start`. They are deliberately self-describing so that if one
- * ever DID surface in a log or an error, it would be unmistakable rather than plausible.
- */
+/** Build-only placeholders, obviously fake so they're recognisable if they ever leak. */
 const BUILD_PLACEHOLDERS: Readonly<Record<string, string>> = {
   APP_URL: "http://build.invalid",
   AUTH_SECRET: "build-phase-placeholder-not-a-secret-0000",
@@ -208,19 +146,10 @@ export function parseEnv(source: NodeJS.ProcessEnv, phase: EnvPhase = "runtime")
     phase === "build"
       ? {
           ...source,
-          // Only fill what is ABSENT. A real value supplied at build time is still validated
-          // and still used, so a build with a database prerenders exactly as intended.
+          // Only fill absent keys; real values are still validated and used.
           ...Object.fromEntries(
             Object.entries(BUILD_PLACEHOLDERS).filter(([key]) => !source[key]),
           ),
-          /*
-           * `NODE_ENV` is NOT overridden here any more. It used to be forced to
-           * `development` for one reason: to skip the cross-field check "production needs a
-           * sign-in method", which asked a question about a running server rather than about
-           * a compiled artefact. That check is gone (see the superRefine above and ADR 0032),
-           * so the override had become a line that changed nothing while appearing to. No
-           * remaining rule in this schema branches on NODE_ENV.
-           */
         }
       : source;
 

@@ -8,26 +8,14 @@ import { cn } from "@/lib/utils";
 import { FacetCheckbox, FacetDisclosure, FacetRadio, FilterForm } from "./filter-controls";
 
 /**
- * The facet panel. One Server Component, rendered twice: as the `md:` sidebar and inside the
- * mobile sheet. Only the leaves are client components, which is the whole reason this file is
- * server-side — every label, count and legend is computed on the server and shipped as HTML.
- *
- * `idPrefix` exists because both copies are in the DOM at once (one is `hidden`, the other is
- * `md:hidden`) and two `<label for>` targets with the same id would point the sheet's label at
- * the sidebar's checkbox.
- *
- * `hidden` mirrors the parts of the filter tuple this form does not own — `q` and `sort` live
- * in the toolbar. Without the mirror, changing a checkbox would silently discard the query.
+ * Facet panel, rendered twice (sidebar and mobile sheet). `idPrefix` keeps label ids unique
+ * across both copies. `hidden` mirrors `q` and `sort` from the toolbar so they survive a submit.
  */
 
 export interface FacetOption {
   value: string;
   label: string;
-  /**
-   * `null` renders no count at all rather than a zero (`states.md` §2.5: "facet checkboxes
-   * render without their counts rather than not rendering"). A zero we have not measured is
-   * a false statement, which is the same rule the home page counts follow.
-   */
+  /** `null` (counts unavailable) renders the option without a count, never as zero. */
   count: number | null;
   checked: boolean;
   /** The confidence group renders the chip itself, so the filter matches the card. */
@@ -46,11 +34,8 @@ export interface FacetGroup {
   /** Long vocabularies (tags, input types) scroll inside the group. */
   scroll?: boolean;
   /**
-   * Render behind a `<details>` disclosure, collapsed unless something in it is selected.
-   *
-   * Set on the long vocabularies. A collapsed group contributes ONE tab stop instead of one
-   * per value, which is what keeps the catalogue reachable from the keyboard (audit Q-21).
-   * Its inputs stay in the form, so a checked value inside a collapsed group still submits.
+   * Collapse behind `<details>` unless something is selected, so long vocabularies cost one
+   * tab stop. Inputs stay in the form and still submit when collapsed.
    */
   collapsible?: boolean;
 }
@@ -114,12 +99,8 @@ export function FilterPanel({
                   const label = (
                     <span className="flex items-center gap-2">
                       {/*
-                      `aria-hidden` on the chip, deliberately. `ConfidenceChip` carries its own
-                      screen-reader text — "Our confidence in this entry: Verified. Checked
-                      against the primary source…" — which is right on a card and wrong here:
-                      this is a filter option, not an entry, and without this a reader hears a
-                      sentence about an entry that does not exist followed by the actual label.
-                      The visible chip is the shape cue; the text beside it is the name.
+                      Hidden from screen readers: the chip's own SR text describes an entry,
+                      which is wrong for a filter option. The label beside it is the name.
                     */}
                       {option.confidence ? (
                         <span aria-hidden="true" className="inline-flex">
@@ -158,11 +139,7 @@ export function FilterPanel({
             </>
           );
 
-          /**
-           * A collapsible group is wrapped in `<details>`; a short one keeps its visible
-           * `<legend>`. Either way the group is a labelled `<fieldset>`, so a screen reader
-           * announces "cost model, group" on entry rather than a run of loose checkboxes.
-           */
+          // Always a labelled fieldset; collapsible groups move the visible legend into `<details>`.
           return (
             <fieldset key={group.id}>
               {group.collapsible ? (
@@ -189,12 +166,7 @@ export function FilterPanel({
         })}
       </div>
 
-      {/*
-        The no-JavaScript path. With the bundle running, every control pushes on change and
-        this is never needed; without it, the form still has to be submittable from the
-        keyboard. It is `sr-only` rather than absent because a control nobody can reach is
-        the same as no control at all.
-      */}
+      {/* No-JS submit path; visually hidden until focused. */}
       <button
         type="submit"
         className="focus:bg-primary focus:text-primary-foreground sr-only focus:not-sr-only focus:mt-4 focus:inline-flex focus:h-11 focus:items-center focus:rounded-md focus:px-4 focus:text-sm focus:font-medium"

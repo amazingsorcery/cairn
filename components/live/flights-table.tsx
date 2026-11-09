@@ -12,26 +12,12 @@ import {
 } from "./live-format";
 
 /**
- * The primary, always-present surface of `/live/flights`. ADR 0016 §1.
+ * The primary surface of `/live/flights`: a real `<table>` with a caption, `scope` headers,
+ * and sort buttons inside each `<th>` (which carries `aria-sort`).
  *
- * "Table first because it is the accessible path, it works with no JavaScript map at all,
- * and it is genuinely the better interface for 'which aircraft are these'."
+ * Sort changes are announced by the surface's single live region, not from here.
  *
- * It is a REAL `<table>`: a `<caption>`, `scope="col"` headers, one row per aircraft. It is
- * scanned, sorted and compared, which are the three things a table is for. Sorting is a
- * `<button>` inside each `<th>`, so it is reachable and operable from the keyboard, and the
- * `<th>` carries `aria-sort` so a screen reader can report the current order without the
- * reader having to infer it from an icon.
- *
- * Sort changes are announced through the route's single `aria-live` region, which the
- * surface owns — not from here. More than one live region per route and a screen reader
- * queues announcements from regions the reader is not looking at
- * (`docs/frontend/HANDOFF-shell.md` §10.1).
- *
- * UNITS ARE THE BROADCAST UNITS. ADS-B transmits altitude in feet and ground speed in
- * knots, and an investigator quoting a figure should be quoting what the aircraft actually
- * said. The detail panel converts as well as reports; this table does not, because a
- * silently converted number in a scanning surface is a number nobody can trace back.
+ * Units are as broadcast (ft, kt); only the detail panel converts.
  */
 
 export type FlightSortKey =
@@ -78,13 +64,7 @@ export function sortDescription(sort: FlightSort): string {
   return `Sorted by ${column?.label ?? sort.key}, ${ARIA_SORT[sort.direction]}.`;
 }
 
-/**
- * Nulls always sort last, in both directions.
- *
- * An aircraft that broadcasts no callsign is not "before A" or "after Z" — it is an absence,
- * and floating absences to the top of a descending sort would bury the data the reader asked
- * to see under the rows that have none of it.
- */
+/** Nulls always sort last, in both directions. */
 function compare(a: Aircraft, b: Aircraft, sort: FlightSort): number {
   const left = a[sort.key];
   const right = b[sort.key];
@@ -104,8 +84,7 @@ function compare(a: Aircraft, b: Aircraft, sort: FlightSort): number {
 export function sortAircraft(aircraft: readonly Aircraft[], sort: FlightSort): Aircraft[] {
   return [...aircraft].sort((a, b) => {
     const result = compare(a, b, sort);
-    // A stable tiebreak on the ICAO 24-bit address, which is unique and always present, so
-    // the row order does not shuffle between refreshes for equal values.
+    // Tiebreak on the ICAO hex so rows don't shuffle between refreshes.
     return result !== 0 ? result : a.hex.localeCompare(b.hex, "en");
   });
 }
@@ -232,11 +211,7 @@ export function FlightsTable({
   );
 }
 
-/**
- * An absent value is an em dash with a screen-reader word, never a blank cell. A blank cell
- * is indistinguishable from a rendering failure, and on this surface the difference between
- * "not broadcast" and "we lost it" matters.
- */
+/** Em dash plus screen-reader text, so a missing value doesn't look like a render failure. */
 function emptyCell() {
   return (
     <span className="text-muted-foreground">

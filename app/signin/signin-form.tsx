@@ -12,20 +12,9 @@ import { requestMagicLink } from "./actions";
 import { IDLE_SIGNIN_STATE, type SignInFormState } from "./signin-state";
 
 /**
- * The magic-link form.
- *
- * A CLIENT LEAF, not a client page. The heading, the lead, the separator, the GitHub form
- * and the legal line are all server-rendered; this component exists only because three
- * things here need state: the inline validation, the pending label, and the rate-limit
- * countdown.
- *
- * VALIDATION IS ON BLUR, NEVER ON KEYSTROKE (wireframe 10). Telling somebody their
- * half-typed address is wrong is noise, not help. The same address is re-checked with the
- * same Zod schema server-side, so the client check is a courtesy and never the gate.
- *
- * THE FIELD KEEPS ITS VALUE THROUGH EVERY FAILURE. `flows.md` M3: no action that can fail
- * may discard typed input. The server action echoes the attempted address back in its
- * result and the input is seeded from it.
+ * Magic-link form; a client leaf for validation, pending state and the rate-limit countdown.
+ * Validates on blur, not per keystroke; the server re-checks with the same schema. The
+ * field keeps its value through failures (the action echoes the address back).
  */
 
 function formatCountdown(msRemaining: number): string {

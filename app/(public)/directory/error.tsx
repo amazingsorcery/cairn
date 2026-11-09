@@ -5,15 +5,8 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 
 /**
- * The route-level boundary for `/directory`.
- *
- * It should almost never render. The list query and the taxonomy reads are already caught
- * inside the page and degraded in-region (`states.md` §2.4 and §2.5) so that a failure keeps
- * the filter bar interactive; this file covers what is left — a throw during render.
- *
- * Copy is verbatim from `states.md` §1.3. NOTHING from `error` is rendered: a server error
- * message can carry a table name, a query fragment or a file path, and Next has already
- * logged the real error with its digest server-side, which is where an operator looks.
+ * Route boundary for `/directory`. Query failures are handled in-region by the page; this
+ * only catches render throws. `error` is never shown: it can leak table names or paths.
  */
 export default function DirectoryError({ reset }: { error: Error; reset: () => void }) {
   return (

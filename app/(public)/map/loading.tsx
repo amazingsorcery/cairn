@@ -3,16 +3,8 @@ import { Loader2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 
 /**
- * The first load of `/map`, before any source has answered.
- *
- * IT APPEARS ONLY WHEN THERE IS GENUINELY NOTHING TO SHOW (`docs/design/states.md` §0). A
- * refresh never reaches here: the current features stay on screen with their age counting up
- * while a layer revalidates in the background (ADR 0014 §8). An indeterminate spinner on a
- * refresh keeps asserting that fresh data is arriving even after the upstream has stopped
- * answering, which is the most common way a live interface lies.
- *
- * The skeletons are `aria-hidden`. A screen reader reading out a grid of empty boxes is worse
- * than silence; the sentence above them is the announcement.
+ * First load of `/map` only; refreshes keep current features on screen while revalidating.
+ * Skeletons are `aria-hidden`; the text line is the announcement.
  */
 export default function LoadingMap() {
   return (

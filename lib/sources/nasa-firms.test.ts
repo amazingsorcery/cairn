@@ -11,18 +11,10 @@ import {
 import { testContext } from "./__fixtures__/context";
 
 /**
- * ⚠ NO CAPTURED FIXTURE EXISTS FOR THIS SOURCE, and that is deliberate rather than lazy.
- *
- * Every other adapter here is tested against a real payload held from the live upstream.
- * FIRMS requires a MAP_KEY obtained by registering an account, which the agent that wrote
- * this could not do; a keyless request returns `HTTP 400 / Invalid MAP_KEY.` and nothing else
- * (confirmed 2026-08-31).
- *
- * So the tests below are honest about what they cover: they exercise the CSV READER and the
- * MAPPING, using inputs written here. They do NOT prove the upstream's column names, and
- * writing a fake payload and calling it a fixture would assert exactly the thing that is
- * unverified. The first operator with a key must capture a real response to
- * `__fixtures__/nasa-firms.csv` and add the round-trip test — see `docs/sources/nasa-firms.md`.
+ * No captured fixture: FIRMS needs a registered MAP_KEY (keyless requests get
+ * `HTTP 400 / Invalid MAP_KEY.`). These tests cover the CSV reader and mapping with
+ * hand-written inputs; they don't verify upstream column names. With a key, capture a real
+ * response to `__fixtures__/nasa-firms.csv` and add a round-trip test.
  */
 
 describe("firms CSV reader", () => {
@@ -87,8 +79,7 @@ describe("firms normalise", () => {
   });
 
   it("keeps the upstream's confidence verbatim rather than flattening two scales into one", () => {
-    // VIIRS says l/n/h; MODIS says 0-100. They do not mean the same thing, and normalising
-    // them to a single number would invent a precision the data does not have.
+    // VIIRS uses l/n/h, MODIS 0-100; they aren't comparable.
     expect(normaliseFirms([{ ...row, confidence: "h" }], {})[0]?.properties.confidence).toBe("h");
     expect(normaliseFirms([{ ...row, confidence: "87" }], {})[0]?.properties.confidence).toBe("87");
   });
@@ -116,9 +107,8 @@ describe("firms normalise", () => {
   });
 
   it("rejects a payload missing the required columns", () => {
-    // The guard that matters: an error page or a differently-shaped CSV must disable the
-    // layer, not render "no fires anywhere on earth". The decision is the SCHEMA's, made in
-    // `fetch` — a missing COLUMN fails, while a single bad VALUE only drops its own row.
+    // An error page must disable the layer, not read as "no fires". A missing column fails
+    // the schema; a bad value only drops its row.
     const records = csvToRecords("message\nInvalid MAP_KEY.\n");
     expect(firmsResponseSchema.safeParse(records).success).toBe(false);
   });
@@ -149,14 +139,13 @@ describe("firms adapter contract", () => {
   it("names the env var holding its key, and fails as notConfigured without it", async () => {
     expect(nasaFirms.apiKeyEnvVar).toBe(FIRMS_API_KEY_ENV_VAR);
 
-    // No `process.env` mutation: the key is read through `SourceContext.env`, so this test
-    // cannot leak into another.
+    // Key is read via `SourceContext.env`, so no `process.env` mutation.
     const result = await nasaFirms.fetch({}, testContext({ env: {} }));
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.failure.kind).toBe("notConfigured");
     if (result.failure.kind !== "notConfigured") return;
-    // The operator must be told WHICH variable is missing, or the message is useless.
+    // Name the missing variable.
     expect(result.failure.missingEnvVar).toBe(FIRMS_API_KEY_ENV_VAR);
   });
 

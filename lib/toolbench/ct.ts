@@ -1,14 +1,8 @@
 import { z } from "zod";
 
 /**
- * Certificate transparency, turned from a list of certificates into a list of hostnames.
- *
- * crt.sh answers with one row per certificate. An investigator wants the opposite shape:
- * one row per *hostname*, with the date it first appeared in a public certificate — because
- * that date is when the infrastructure was stood up, and dating an operation is most of what
- * certificate transparency is good for.
- *
- * Everything in this module is pure. The HTTP call lives in `lib/connectors/crtsh.ts`.
+ * Turns crt.sh's one-row-per-certificate output into one row per hostname with its
+ * first-seen date. Pure; the HTTP call is in `lib/connectors/crtsh.ts`.
  */
 
 /* ------------------------------------------------------------------ *
@@ -16,17 +10,10 @@ import { z } from "zod";
  * ------------------------------------------------------------------ */
 
 /**
- * crt.sh's JSON row, validated at the boundary (product-brief §5).
+ * crt.sh JSON row. Lenient (no published API contract); only `name_value` is required.
  *
- * `.passthrough()` and the nullish optionals are deliberate: crt.sh is a free service run by
- * one CA with no published API contract, and an added field must not break us. Only
- * `name_value` is genuinely required — a row without it names no hostname and is the one
- * thing this tool cannot work around.
- *
- * DATES ARE NAIVE AND ARE UTC. crt.sh emits `2017-07-26T11:06:02` with no zone. Feeding that
- * to `new Date()` in a browser parses it as *local* time (ECMA-262 makes a date-time form
- * without an offset local), which would shift every first-seen date by the reader's offset
- * and, near midnight, by a day. `toInstant` appends the `Z`.
+ * Dates are zone-less UTC (`2017-07-26T11:06:02`), which `new Date()` would parse as local
+ * time, so `toInstant` appends `Z`.
  */
 export const crtShRowSchema = z
   .object({
@@ -59,14 +46,9 @@ export function toInstant(value: string | null | undefined): Date | null {
  * ------------------------------------------------------------------ */
 
 /**
- * Is `name` the queried domain or a subdomain of it?
- *
- * This matters more than it looks. crt.sh's identity search is a SQL `ILIKE`, so a query for
- * `example.com` also matches `example.com.attacker.example`, `notexample.com` and
- * `example.community`. Presenting those as "subdomains we found" would be wrong, and
- * silently dropping them would throw away the most interesting rows in the set — a
- * lookalike domain certificated by somebody else is a finding in an impersonation
- * investigation. So they are separated and both are shown, labelled.
+ * Is `name` the queried domain or a subdomain? crt.sh matches with `ILIKE`, so results also
+ * include lookalikes (`notexample.com`, `example.com.attacker.example`); those are shown
+ * separately rather than dropped.
  */
 export function isWithinDomain(name: string, domain: string): boolean {
   const host = name.toLowerCase().replace(/^\*\./, "").replace(/\.$/, "");
@@ -87,12 +69,8 @@ export function splitNameValue(value: string): readonly string[] {
 }
 
 /**
- * Pull the organisation out of an X.500 issuer string, e.g.
- * `C=US, O=Let's Encrypt, CN=R11` → `Let's Encrypt`.
- *
- * Deliberately simple. An RDN value containing an escaped comma would be split wrongly here;
- * the consequence is a slightly truncated issuer label on a summary row, which is a cosmetic
- * defect rather than a wrong answer, and the full issuer string is kept alongside it.
+ * Organisation from an X.500 issuer, e.g. `C=US, O=Let's Encrypt, CN=R11` -> `Let's Encrypt`.
+ * Escaped commas aren't handled; the full issuer string is kept alongside.
  */
 export function issuerOrganisation(issuerName: string | null | undefined): string | null {
   if (!issuerName) return null;
@@ -187,13 +165,7 @@ function toFinding(name: string, acc: Accumulator): HostnameFinding {
   };
 }
 
-/**
- * Fold crt.sh rows into one entry per hostname.
- *
- * Sorted by most recently issued first, then alphabetically, so the newest infrastructure is
- * at the top — which is where an investigation usually starts — and the order is stable for
- * a snapshot pasted into notes.
- */
+/** Fold crt.sh rows into one entry per hostname, newest issued first, then alphabetical. */
 export function summariseCertificates(
   rows: readonly CrtShRow[],
   domain: string,
@@ -217,8 +189,7 @@ export function summariseCertificates(
     }
 
     for (const name of names) {
-      // crt.sh occasionally carries an email address or an IP in an identity row; neither is
-      // a hostname and neither belongs in a subdomain list.
+      // Identity rows sometimes hold an email or IP; skip those.
       if (name.includes("@") || name.includes(" ")) continue;
       const bucket = isWithinDomain(name, domain) ? inScope : outOfScope;
       bucket.set(name, fold(bucket.get(name), row, now));
@@ -268,11 +239,7 @@ export function summariseCertificates(
   };
 }
 
-/**
- * The hostnames worth resolving next, as a plain list a reader can paste into the DNS tool
- * or a passive-DNS source. Wildcards are dropped: `*.example.com` is not a name you can look
- * up, and including it in a list somebody feeds to a resolver produces a confusing failure.
- */
+/** Hostnames to resolve next, as a pasteable list. Wildcards are dropped (not resolvable). */
 export function resolvableHostnames(summary: CertificateSummary): readonly string[] {
   return summary.hostnames.filter((entry) => !entry.wildcard).map((entry) => entry.name);
 }

@@ -8,19 +8,11 @@ import { pageMetadata } from "@/lib/metadata";
 import { formatDate } from "@/lib/utils";
 
 /**
- * `/legal/[slug]` — the policy documents in `content/legal/`.
+ * `/legal/[slug]`: policy documents from `content/legal/`, static at build.
  *
- * Static at build over `LEGAL_DOCUMENTS` (`docs/architecture/sitemap.md` §5). The documents
- * contain no brand strings: `readLegalDocument()` substitutes every `{{TOKEN}}` from
- * `config/brand.ts` and throws on an unknown one, so an unsubstituted placeholder fails the
- * build instead of shipping into a page a reader is entitled to rely on.
- *
- * THE DRAFT BANNER IS NOT DECORATION. `readLegalDocument()` reports `isDraft` when counsel
- * has not signed off, or when any fact in the document is still unresolved. Both are true
- * today. Facts that nobody has established — the governing law, the data region, the
- * effective date — render as a conspicuous marker rather than as an invented value, because
- * a privacy notice that names a jurisdiction we made up is a false statement of fact in the
- * one document a reader is supposed to be able to trust.
+ * `readLegalDocument()` substitutes `{{TOKEN}}`s from `config/brand.ts` and throws on unknown
+ * ones, so a stray placeholder fails the build. `isDraft` is set when counsel hasn't signed
+ * off or any fact is unresolved; unresolved facts render as a visible marker.
  */
 
 interface RouteParams {
@@ -36,12 +28,8 @@ function isLegalSlug(slug: string): slug is LegalDocumentSlug {
 }
 
 /**
- * Strip the YAML front matter before the body reaches the Markdown renderer.
- *
- * Without this the reader sees the raw `title:` / `slug:` lines and a horizontal rule where
- * the fence was, because remark treats the leading `---` as a thematic break. Written as a
- * regex rather than a YAML parse deliberately: the `yaml` package is a devDependency and
- * pulling a parser into the request path to read four known keys would be the wrong trade.
+ * YAML front matter, stripped before rendering (remark would show it as text plus an `<hr>`).
+ * A regex because `yaml` is only a devDependency.
  */
 const FRONT_MATTER = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/;
 
@@ -59,19 +47,9 @@ function splitFrontMatter(source: string): { body: string; lastReviewedAt: strin
 }
 
 /**
- * Stop GFM turning a contact address into a `mailto:` link while the domain is unregistered.
- *
- * `remark-gfm` implements autolink literals, so a bare `privacy@…` in the source becomes a
- * live link with no markup asking for one. `brand.domainRegistered` is `false`: the address
- * is on an RFC 2606 reserved TLD that cannot resolve, and the moment a real domain is bought
- * that same string would become a link to a mailbox that may belong to somebody else.
- * `docs/design/states.md` §1.1 and `docs/brand/HANDOFF.md` §1 both say nothing renders as a
- * link while the flag is false.
- *
- * Wrapping in backticks rather than deleting keeps the reader informed: the document still
- * tells them which mailbox a request would go to, and the monospace treatment matches how
- * every other machine-readable identifier is set in this product. The gate is the flag, so
- * the commit that registers the domain turns these back into links with no edit here.
+ * While the domain is unregistered, wrap placeholder addresses in backticks so remark-gfm's
+ * autolinking doesn't turn them into `mailto:` links. Flipping `brand.domainRegistered`
+ * restores the links.
  */
 const PLACEHOLDER_ADDRESS = new RegExp(
   String.raw`(?<![\`\w])[\w.+-]+@${brand.domainPlaceholder.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\`\w])`,

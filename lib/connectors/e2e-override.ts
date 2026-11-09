@@ -3,38 +3,21 @@ import type { ConnectorEnvelope, DegradedReason } from "./types";
 /**
  * A test-only override that forces a connector into a chosen state without calling upstream.
  *
- * WHY THIS EXISTS. `/live/flights` reads a real third-party aggregator through our own
- * server, so Playwright cannot intercept it: the call happens server-side by design
- * (ADR 0011 §1). Before this hook the E2E suite could only *observe* whatever state the
- * shared connector row happened to be in, and the assertions that need a specific state —
- * ADR 0011 rule 5's four degraded states, and architecture HANDOFF §11 assertion 21, "the
- * stale and unavailable states are reachable in tests, not just theoretically implemented" —
- * had to skip. Coverage that skips is coverage that evaporates exactly when someone changes
- * connector behaviour, which is the moment it was written for.
+ * Connector calls happen server-side, so Playwright can't intercept them; this lets E2E tests
+ * reach the degraded and stale states deterministically.
  *
- * WHY IT CANNOT FIRE IN PRODUCTION. A test hook that a production process can be talked into
- * honouring is a worse defect than the flakiness it removes: an attacker who can set an
- * environment variable could switch a live surface off, or feed a reader fabricated data on a
- * page whose entire value is that its data is real. So:
+ * Safety:
+ *   1. Always off when `NODE_ENV === "production"`, with no way to re-enable it.
+ *   2. A malformed value is ignored rather than throwing.
+ *   3. It replaces the whole call: no quota, no audit row, no outbound request.
  *
- *   1. `NODE_ENV === "production"` disables it unconditionally, before the variable is even
- *      read. There is no flag that re-enables it — deliberately, because "unless someone sets
- *      the other variable" is exactly how these things come back.
- *   2. A malformed value is ignored rather than throwing. This must not be able to take a
- *      surface down by being typed wrongly.
- *   3. It returns an envelope. It never suppresses a check, never grants a quota, and never
- *      touches the audit log — it stands in for the whole call, so nothing leaves and nothing
- *      is recorded, which is what the degraded states it simulates would also do.
- *
- * FORMAT — `E2E_CONNECTOR_STATE`, a JSON object keyed by connector slug:
+ * `E2E_CONNECTOR_STATE` is a JSON object keyed by connector slug:
  *
  *   {"adsb-lol": {"reason": "rate-limited"}}     → the degraded state, no outbound call
  *   {"adsb-lol": {"reason": "disabled"}}
  *   {"adsb-lol": {"data": { … }, "ageSeconds": 5}} → a fresh (or stale) payload of your own
  *
- * `data` is passed through as the driver's `Result` without validation, which is acceptable
- * only because this cannot run in production. `ageSeconds` sets how old the payload claims to
- * be, so the `fresh` / `stale` boundary either side of `cache_ttl_seconds` is drivable.
+ * `data` is passed through unvalidated (test-only). `ageSeconds` backdates the payload.
  */
 
 const VARIABLE = "E2E_CONNECTOR_STATE";
@@ -95,10 +78,7 @@ const DEFAULT_MESSAGE: Record<DegradedReason, string> = {
   "bad-request": "That request could not be understood. Forced by E2E_CONNECTOR_STATE.",
 };
 
-/**
- * The envelope this connector should return instead of calling out, or `null` to proceed
- * normally — which is always the answer in production.
- */
+/** The forced envelope for this connector, or `null` (always `null` in production). */
 export function e2eOverride<T>(
   slug: string,
   attribution: string | null,
@@ -125,9 +105,7 @@ export function e2eOverride<T>(
       attribution,
       lastError: forced.reason === "stale" ? (forced.message ?? DEFAULT_MESSAGE.stale) : null,
       reason: forced.reason === "stale" ? "stale" : null,
-      // A forced state stands in for the whole call, so no counter was consulted and there is
-      // no reset instant to report — not even for a forced `quota-exhausted`. Nor a scope:
-      // naming a counter that was never read would be the fabrication QV-29 was about.
+      // No counter was consulted, so there's no reset time or scope to report.
       quotaResetsAt: null,
       quotaScope: null,
     };
@@ -142,8 +120,7 @@ export function e2eOverride<T>(
     attribution,
     lastError: forced.message ?? DEFAULT_MESSAGE[reason],
     reason,
-    // See above: nothing was counted, so there is nothing to say about when it resets or
-    // about which counter did it.
+    // Nothing was counted (see above).
     quotaResetsAt: null,
     quotaScope: null,
   };

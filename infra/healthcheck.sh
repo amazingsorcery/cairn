@@ -7,12 +7,9 @@
 #
 # Exit code: 0 all checks passed, 1 at least one FAIL, 2 warnings only.
 #
-# This exists because the failures that actually take a small VPS down are slow ones —
-# the disk filling, a certificate quietly failing to renew, a container restart-looping at
-# 3 a.m. — and none of them announce themselves. Run it from a timer and you find out on
-# the day it starts, not the day it finishes.
+# Catches slow failures (disk filling, cert renewal failing, crash loops); run from a timer.
 
-set -uo pipefail # deliberately NOT -e: every check must run even after one fails.
+set -uo pipefail # no -e: every check must run even after one fails.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
@@ -50,13 +47,8 @@ emit ""
 
 # --- Containers -------------------------------------------------------------------------
 emit "Containers"
-# Three. ADR 0019 raised this to five; ADR 0031 removed `worker` and `redis` again -- the
-# worker had no entrypoint and Redis had no consumer. Ordered by what a reader depends on:
-# if db is down, everything below it in this list is going to look broken too, and reading
-# the list top-down gives the cause before the symptoms.
-#
-# `migrate` is deliberately absent: it is profile-gated and one-shot, so "not running" is
-# its correct steady state and checking it would report a fault on every healthy server.
+# Dependency order, so the cause is listed before its symptoms. `migrate` is one-shot and
+# normally not running, so it's skipped.
 for svc in db web caddy; do
 	cid="$("${COMPOSE[@]}" ps -q "${svc}" 2>/dev/null)"
 	if [ -z "${cid}" ]; then
@@ -77,29 +69,16 @@ for svc in db web caddy; do
 		ok "${svc} running (health=${health}, restarts=${restarts})"
 	fi
 
-	# A container that has restarted many times is up right now and broken anyway: it is
-	# crash-looping and each loop drops in-flight requests.
+	# Up now but crash-looping.
 	if [ "${restarts:-0}" -gt 5 ]; then
 		warn "${svc} has restarted ${restarts} times — it is crash-looping. docker compose -f ${COMPOSE_FILE} logs --tail=100 ${svc}"
 	fi
 done
 
 # --- Live sources -----------------------------------------------------------------------
-# "Has a source gone dark?" -- answered from Postgres, because since ADR 0031 there is no
-# worker to ask. Two questions, in order, and they are NOT the same question:
-#
-#   1. IS ANYTHING SWITCHED ON? Every connector ships `enabled = false` and eleven of the
-#      thirteen also ship `status = 'draft'`. A board with no LIVE rows is the SHIPPED
-#      STATE of a fresh deploy, not a fault, and this script reports it as OK with a note
-#      rather than as a failure. A health check that cries wolf on the intended
-#      configuration is one an operator learns to ignore.
-#   2. FOR THE ROWS THAT ARE ON, WHAT HAPPENED IN THE LAST 24 HOURS? `connector_requests`
-#      records one row per governed attempt including the refusals, so an upstream that
-#      started answering 5xx, or one we started refusing to call, is visible here. This is
-#      the artefact that found v1's Q-02.
-#
-# The web-facing version of the same data is /admin/connectors (ADR 0024). This is the
-# version you can run over SSH when the app will not render.
+# 1. Is anything switched on? Connectors ship disabled, so zero live is OK on a fresh deploy.
+# 2. For live ones, what happened in the last 24 h (from `connector_requests`)?
+# Same data as /admin/connectors, but usable over SSH when the app is down.
 emit ""
 emit "Live sources"
 
@@ -115,18 +94,16 @@ live_count="$(psql_q "select count(*) from connectors
                          and terms_url is not null and legal_basis is not null;")"
 
 if [ -z "${live_count}" ]; then
-	fail "could not read the connectors table. Is db up, and has the seed been run? See RUNBOOK section 6."
+	fail "could not read the connectors table. Is db up, and has the seed been run? (docker compose -f ${COMPOSE_FILE} --profile tools run --rm migrate pnpm db:seed)"
 elif [ "${live_count}" -eq 0 ]; then
 	total="$(psql_q 'select count(*) from connectors;')"
 	ok "no source is switched on (0 of ${total:-?} connectors are live). This is the SHIPPED STATE."
 	emit "        Nothing is calling any upstream. The map and the Toolbench render an honest"
 	emit "        'an operator switched this source off' on every live surface, by design."
-	emit "        To turn one on deliberately, read its legal_basis first: RUNBOOK section 18.5."
+	emit "        To turn one on, read its legal_basis, then set connectors.enabled = true."
 else
 	ok "${live_count} connector(s) are live"
-	# One line per live source: attempts and outbound requests in 24 h, broken down by the
-	# outcomes that mean different things. `disabled` is excluded from "bad" because it is a
-	# decision, not a fault.
+	# One line per live source over 24 h. `disabled` isn't counted as bad.
 	board="$(psql_q "select
 	    rpad(c.slug, 26)
 	    || ' attempts=' || lpad(count(*)::text, 5)
@@ -141,19 +118,15 @@ else
 	  group by c.slug
 	  order by c.slug;")"
 	if [ -n "${board}" ]; then
-		# Process substitution, not a pipe: a piped `while read` runs in a subshell, and every
-		# `emit` inside it would append to a copy of REPORT that is discarded when the subshell
-		# exits. The board would then be collected and silently thrown away.
+		# Process substitution, not a pipe: a piped loop runs in a subshell and loses REPORT.
 		while IFS= read -r line; do
 			[ -n "${line}" ] && emit "        ${line}"
 		done < <(printf '%s\n' "${board}")
 		emit "        bad = anything that is not 'ok' and not 'disabled': upstreamError, timeout,"
-		emit "        schemaChanged, rateLimited, quotaDenied. RUNBOOK section 18.3 forks on which."
+		emit "        schemaChanged, rateLimited, quotaDenied."
 	fi
 
-	# A live source that has not been attempted at all in 24 h is the shape of a dead poll
-	# path. With on-demand fetching that can simply mean nobody opened the page, so it is a
-	# WARN and it says so rather than a FAIL.
+	# No attempts in 24 h may just mean nobody opened the page, so WARN only.
 	silent="$(psql_q "select string_agg(c.slug, ', ' order by c.slug)
 	  from connectors c
 	  where c.enabled and c.status = 'published'
@@ -180,14 +153,13 @@ if [ -n "${DOMAIN:-}" ] && command -v curl >/dev/null 2>&1; then
 	code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "https://${DOMAIN}/api/health" 2>/dev/null)"
 	case "${code}" in
 	200) ok "https://${DOMAIN}/api/health returns 200 from the public edge" ;;
-	000) fail "https://${DOMAIN}/api/health is unreachable (DNS, firewall, or TLS). See RUNBOOK 'Certificate troubleshooting'." ;;
+	000) fail "https://${DOMAIN}/api/health is unreachable (DNS, firewall, or TLS). Check: dig +short ${DOMAIN}; sudo ufw status; docker compose -f ${COMPOSE_FILE} logs --tail=100 caddy" ;;
 	*) fail "https://${DOMAIN}/api/health returned HTTP ${code}" ;;
 	esac
 fi
 
 # --- TLS certificate -----------------------------------------------------------------------
-# Caddy renews at 2/3 of the lifetime, so a 90-day Let's Encrypt certificate should never
-# drop below 30 days. If it does, renewal is failing and nothing has told you.
+# Caddy renews at 2/3 lifetime; under 30 days left means renewal is failing.
 if [ -n "${DOMAIN:-}" ] && command -v openssl >/dev/null 2>&1; then
 	emit ""
 	emit "TLS"
@@ -213,7 +185,7 @@ emit "Disk"
 disk_pct="$(df -P / | awk 'NR==2 {gsub(/%/,"",$5); print $5}')"
 disk_avail="$(df -Ph / | awk 'NR==2 {print $4}')"
 if [ "${disk_pct}" -ge 90 ]; then
-	fail "/ is ${disk_pct}% full (${disk_avail} free). Postgres will refuse writes. See RUNBOOK 'Disk full'."
+	fail "/ is ${disk_pct}% full (${disk_avail} free). Postgres will refuse writes. Reclaim space: docker system prune -af --filter 'until=168h'"
 elif [ "${disk_pct}" -ge 80 ]; then
 	warn "/ is ${disk_pct}% full (${disk_avail} free)"
 else
@@ -236,7 +208,7 @@ else
 	ok "${mem_avail_mb} MB available, ${swap_total_mb} MB swap configured"
 fi
 if [ "${swap_total_mb}" -lt 512 ]; then
-	warn "no meaningful swap configured — 'next build' is likely to be OOM-killed. See RUNBOOK 'Swap file'."
+	warn "no meaningful swap configured — 'next build' is likely to be OOM-killed. Add a 2 GB /swapfile."
 fi
 
 # --- Backups ----------------------------------------------------------------------------------
@@ -275,7 +247,7 @@ if [ "${WARNINGS}" -gt 0 ]; then
 else
 	emit "RESULT: all checks passed"
 fi
-# In --quiet mode a clean run says nothing at all, so a cron entry mails only on trouble.
+# --quiet: silent on a clean run, so cron mails only on trouble.
 if [ "${QUIET}" -eq 0 ] || [ "${WARNINGS}" -gt 0 ]; then
 	printf '%s' "${REPORT}"
 fi

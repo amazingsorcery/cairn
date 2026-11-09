@@ -9,13 +9,7 @@ import {
 import { checkContiguousOrder } from "@/lib/validation/playbooks";
 import { tagNameFromSlug, toOrderIndex, toOrderIndexes, toUtcDate } from "./seed";
 
-/**
- * The seed script's translation rules, tested without a database.
- *
- * These are the parts of `db/seed.ts` that fail SILENTLY when they are wrong: an off-by-one
- * in the step ordering produces a playbook numbered 2..n+1, and a timezone slip moves a
- * verification date across a day boundary. Neither raises.
- */
+/** Seed translation rules that would otherwise fail silently (step ordering, UTC dates). */
 
 describe("toOrderIndex — content is 1-based, the column is 0-based", () => {
   it("shifts a 1-based content order to a 0-based index", () => {
@@ -25,8 +19,7 @@ describe("toOrderIndex — content is 1-based, the column is 0-based", () => {
   });
 
   it("refuses 0, which would mean content was already 0-based", () => {
-    // If content ever became 0-based, this must fail loudly rather than shift everything to
-    // -1 and be rejected later by `playbook_steps_order_index_check` with no explanation.
+    // Fail clearly instead of producing -1 and tripping the CHECK later.
     expect(() => toOrderIndex(0)).toThrow(/1-based/);
   });
 
@@ -42,8 +35,7 @@ describe("toOrderIndexes — the whole list, with contiguity asserted on the out
   });
 
   it("preserves the authored order, not the sorted order", () => {
-    // The array position is what maps to the inserted row, so a list authored out of order
-    // must translate positionally and still be contiguous as a set.
+    // Translated positionally; contiguity is checked on the set.
     expect(toOrderIndexes([3, 1, 2])).toEqual([2, 0, 1]);
   });
 
@@ -60,8 +52,7 @@ describe("toOrderIndexes — the whole list, with contiguity asserted on the out
   });
 
   it("agrees with the admin path's contiguity rule", () => {
-    // The seed and `replacePlaybookSteps` must enforce the SAME invariant, or content that
-    // seeds cleanly cannot be saved from `/admin` and vice versa.
+    // Seed and `replacePlaybookSteps` must enforce the same invariant.
     const translated = toOrderIndexes([1, 2, 3]);
     expect(checkContiguousOrder(translated)).toEqual([]);
   });
@@ -73,8 +64,7 @@ describe("toOrderIndexes — the whole list, with contiguity asserted on the out
 
 describe("toUtcDate", () => {
   it("parses an authored date as midnight UTC", () => {
-    // Not local midnight: the container's TZ must not be able to move a verification date
-    // across a day boundary (product-brief §6.3).
+    // Not local midnight, so the container TZ can't shift the date.
     expect(toUtcDate("2026-08-31").toISOString()).toBe("2026-08-31T00:00:00.000Z");
   });
 
@@ -101,9 +91,7 @@ describe("tagNameFromSlug", () => {
     expect(tagNameFromSlug("certificates")).toBe("Certificates");
   });
 
-  // Acronym casing is deliberately not special-cased: an exception list here would drift
-  // from the content and be invisible when it did. An editor renames the tag in
-  // /admin/taxonomy, and the rename fans out to search_keywords correctly.
+  // No acronym exception list; editors rename tags in /admin/taxonomy.
   it("does not attempt to fix acronym casing", () => {
     expect(tagNameFromSlug("osint")).toBe("Osint");
   });
@@ -118,8 +106,7 @@ describe("camera subject → view kind", () => {
   });
 
   it("files road-weather cameras under traffic, not tourism", () => {
-    // A road-weather camera is road infrastructure published by a highways authority and
-    // read for road conditions. There is no "weather" facet in CAMERA_VIEW_KINDS.
+    // Road-weather cameras are road infrastructure; there's no "weather" view kind.
     expect(CAMERA_SUBJECT_TO_VIEW_KIND.weather).toBe("traffic");
   });
 

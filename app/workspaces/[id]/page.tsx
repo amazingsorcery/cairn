@@ -17,25 +17,13 @@ import { requireSession } from "../session";
 import { toolFactsFor } from "./tool-facts";
 
 /**
- * `/workspaces/[id]` — the whole case on ONE page.
+ * `/workspaces/[id]`: the whole case on one page, in four regions.
  *
- * Four regions, not four routes (sitemap.md 7): splitting them would multiply the round
- * trips for a view whose entire value is having the case in front of you at once. The fourth
- * — "saved from the map" — arrived with ADR 0025; `states.md` 7.2 predates it and names three.
+ * Ownership is a SQL predicate in `getWorkspace`; a non-owner gets the same 404 as a missing
+ * case. Never cached, `noindex`.
  *
- * A NON-OWNER GETS 404, NOT 403 (architecture HANDOFF 11 assertion 2). `getWorkspace` binds
- * `where id = $1 and user_id = $2` and returns null for both "does not exist" and "is not
- * yours", which are deliberately the same answer: a 403 confirms the workspace exists, and
- * for an audience whose cases are the sensitive thing that is an enumeration oracle. The
- * ownership decision is a SQL predicate, never a TypeScript comparison after a fetch.
- *
- * `force-dynamic`, never cached at any layer, `noindex`. A user's case file must not touch
- * a shared cache, a CDN or the ISR filesystem cache.
- *
- * NOTES APPEAR EXACTLY ONCE. A note anchored to a checklist entry is rendered inside that
- * entry, where it is useful while working the step; the notes region holds the case-level
- * ones and states how many are attached elsewhere. Rendering both lists in full would give
- * the same note two editors and two save indicators.
+ * Each note renders once: step-anchored notes inside their step, case-level notes in the
+ * notes region.
  */
 
 export const dynamic = "force-dynamic";
@@ -64,7 +52,7 @@ export default async function WorkspaceDetailPage({
   const workspace = await getWorkspace(id, user.id);
   if (!workspace) notFound();
 
-  // No query: confidence and last-verified come joined on the item rows (QA finding Q-15).
+  // No query: confidence and last-verified come joined on the item rows.
   const facts = toolFactsFor(workspace.savedTools);
 
   const notesByItem: Record<string, NoteView[]> = {};
@@ -79,11 +67,8 @@ export default async function WorkspaceDetailPage({
   const anchoredCount = workspace.notes.length - caseNotes.length;
 
   /**
-   * Q-12. Note bodies are rendered to Markdown HERE, on the server, and passed into the
-   * client note cards as elements. `NoteCard` has to be a client component — editor,
-   * autosave timer, unload guard — but importing the Markdown renderer from it put
-   * react-markdown, remark-gfm and micromark into the browser bundle, and this was the only
-   * route in the app doing that. See `components/workspaces/note-card.tsx`.
+   * Render note Markdown on the server and pass it to the client `NoteCard`, keeping
+   * react-markdown and friends out of the browser bundle.
    */
   const renderedNoteBodies: Record<string, React.ReactNode> = Object.fromEntries(
     workspace.notes.map((note) => [
@@ -119,7 +104,7 @@ export default async function WorkspaceDetailPage({
         />
       </div>
 
-      {/* One polite live region for the route (HANDOFF-shell 10.1). */}
+      {/* One polite live region for the route. */}
       <p aria-live="polite" className="sr-only">
         {`${checkedCount} of ${workspace.checklist.length} checklist steps done, ${workspace.savedTools.length} saved tools, ${workspace.savedFeatures.length} saved map features, ${workspace.notes.length} notes`}
       </p>
@@ -155,11 +140,8 @@ export default async function WorkspaceDetailPage({
         </Region>
 
         {/*
-          SAVED FROM THE MAP — the fourth region, and the only one whose rows are a record
-          rather than a reference to one. A saved tool points at a catalogue entry that can be
-          re-checked; a saved feature points at nothing, because the upstream has forgotten it
-          (ADR 0025). It renders even when empty, like the other three, so a reader learns the
-          surface exists rather than only discovering it by accident on the map.
+          Saved map features are snapshots, not references (the upstream keeps no history).
+          Rendered even when empty so the feature is discoverable.
         */}
         <Region
           title="Saved from the map"

@@ -7,63 +7,29 @@ import type { Connector } from "@/db/schema";
 import type { ConnectorDriver } from "@/lib/connectors/types";
 
 /**
- * EVERY REQUEST THAT CAN REACH AN UPSTREAM CROSSES ONE COUNTER, AND THE COUNTER IS INSIDE
- * `runConnector`.
+ * Every request that can reach an upstream crosses one counter, `connector-entry`, inside
+ * `runConnector`. It lives there rather than at each entry point so new surfaces can't forget
+ * it.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * QA finding QV-25
- * ─────────────────────────────────────────────────────────────────────────────
- * QV-05 was closed on `/map` — 20 page views went from 120 audit rows to 6, and the
- * `map-layer` limiter refuses at exactly 240/60 s. None of it reached the Toolbench. QA
- * measured, against the shipped `enabled = false, status = 'draft'` registry:
- *
- *   100 x POST /toolbench/broadcast-finder/search -> 100 connector_requests, 0 rate_limits
- *   100 x GET  /api/live/flights                  -> 100 connector_requests, 0 rate_limits
- *
- * Six Toolbench entry points and one API route, unauthenticated and unlimited, each writing
- * a row into "the only table in the schema with no natural bound".
- *
- * ─────────────────────────────────────────────────────────────────────────────
- * WHY THE LIMITER IS NOT AT THE ENTRY POINTS
- * ─────────────────────────────────────────────────────────────────────────────
- * The obvious fix — `consumeSafely("toolbench", clientSubject(request))` at the top of each
- * route handler and each action — is the shape QA's closing note warns about: a helper every
- * path is *expected* to call. Seven call sites today, and the eighth surface is written by
- * somebody who has not read this file.
- *
- * So the counter sits inside `runConnector`, which every path must cross because it is the
- * only exported way to reach a driver, and this file asserts BOTH halves of that claim:
- *
- *   1. the inventory half — the set of files under `app/` that can reach `lib/connectors/`
- *      is exactly the list below, and every one of them reaches it through `runConnector`
- *      rather than by calling a driver's `fetch` or the outbound primitive directly;
- *   2. the behavioural half — `runConnector` consumes `connector-entry` before it reads the
- *      registry, before the cache, before the audit log and before any socket, and refuses
- *      identically for two different questions when the budget is spent.
- *
- * Neither half is worth much alone. Together they say: there is one door, and the door
- * counts.
+ * 1. Inventory: the files under `app/` that import `lib/connectors/` are exactly the list
+ *    below, and each goes through `runConnector` rather than a driver or the primitive.
+ * 2. Behaviour: `runConnector` consumes `connector-entry` before reading the registry, cache,
+ *    audit log or network, and refuses identically for any question once spent.
  */
 
 const ROOT = process.cwd();
 const APP = join(ROOT, "app");
 
 /**
- * Every file under `app/` that may reach `lib/connectors/`, what it is, and who may call it.
- *
- * Adding a surface that talks to a connector means adding a line here — which is the point.
- * A new entry point is a decision about unauthenticated outbound traffic on somebody else's
- * fair-use ceiling, and it should cost a reviewer's attention rather than a silent import.
+ * Every file under `app/` that may reach `lib/connectors/`. New entry points must be added
+ * here, so they get reviewed.
  */
 type Entry = {
   /** What the surface is and who may reach it. */
   readonly note: string;
   /**
-   * `outbound` — this file can cause a request to leave the building, so it must go through
-   * `runConnector` and therefore through the entry counter.
-   * `constants` — it imports a value from `lib/connectors/` (a retention period, a type) and
-   * can reach no upstream at all. It must NOT import a driver or `runConnector`, which is
-   * what keeps this category honest.
+   * `outbound`: can trigger an upstream request, so must go through `runConnector`.
+   * `constants`: only imports values/types; must not import a driver or `runConnector`.
    */
   readonly reaches: "outbound" | "constants";
 };
@@ -109,11 +75,8 @@ const INVENTORY: Readonly<Record<string, Entry>> = {
 };
 
 /**
- * Imports that reach a driver or the outbound primitive without passing `runConnector`.
- *
- * `toLookupOutcome` and `invalidInput` live in `lib/connectors/toolbench.ts` too and are
- * envelope mapping, not outbound anything, so the test is on the identifier rather than on
- * the module path.
+ * Identifiers that bypass `runConnector`. Matched by identifier, not module, since harmless
+ * helpers share those modules.
  */
 const BYPASS_IDENTIFIERS = ["upstreamGet", "upstreamRequest", "readCappedText"];
 
@@ -135,18 +98,14 @@ function entryPoints(): string[] {
     .sort();
 }
 
-describe("QV-25: the inventory of surfaces that can reach a connector", () => {
+describe("the inventory of surfaces that can reach a connector", () => {
   it("is exactly the declared list — a new one fails this test rather than shipping quietly", () => {
     expect(entryPoints()).toEqual(Object.keys(INVENTORY).sort());
   });
 
   it("every one of them goes through runConnector, and none reaches the socket another way", () => {
     for (const [file, entry] of Object.entries(INVENTORY)) {
-      /*
-       * Comments removed first. `wayback-explorer/actions.ts` documents `upstreamGet`'s
-       * redirect pin in prose — a mention is not a call, and a test that cannot tell them
-       * apart teaches people to stop writing the prose.
-       */
+      // Strip comments so prose mentions don't count as calls.
       const source = readFileSync(join(APP, file), "utf8")
         .replace(/\/\*[\s\S]*?\*\//g, "")
         .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
@@ -182,7 +141,7 @@ describe("QV-25: the inventory of surfaces that can reach a connector", () => {
   it("`middleware.ts` says why it does not cover these paths, rather than leaving it unstated", () => {
     const middleware = readFileSync(join(ROOT, "middleware.ts"), "utf8");
     expect(middleware).toMatch(/matcher:\s*\["\/workspaces\/:path\*",\s*"\/admin\/:path\*"\]/);
-    // The matcher is the reason nothing above these routes counts anything. QV-25 fix 3.
+    // The comment must explain why these paths are limited elsewhere.
     expect(middleware).toMatch(/toolbench/i);
     expect(middleware).toMatch(/connector-entry/);
   });
@@ -213,7 +172,7 @@ function liveRow(overrides: Partial<Connector> = {}): Connector {
   return {
     id: "00000000-0000-4000-8000-0000000000e1",
     slug: "qv25-connector",
-    name: "QV-25 fixture",
+    name: "Entry-counter fixture",
     kind: "infrastructure",
     operatorName: "QA",
     homepageUrl: "https://example.invalid/",
@@ -253,7 +212,7 @@ beforeEach(() => {
   audit.mockReset();
 });
 
-describe("QV-25: runConnector consumes an entry budget before it does anything else", () => {
+describe("runConnector consumes an entry budget before it does anything else", () => {
   it("counts one entry unit per call, keyed on the caller", async () => {
     const { runConnector, clearConnectorCache } = await import("@/lib/connectors/runtime");
     clearConnectorCache();
@@ -265,8 +224,7 @@ describe("QV-25: runConnector consumes an entry budget before it does anything e
     const entry = consume.mock.calls.filter(([action]) => action === "connector-entry");
     expect(entry.length).toBe(1);
     expect(entry[0]?.[1]).toBe("203.0.113.77");
-    // First, before the registry read: the point of the counter is to bound work, and a
-    // counter consumed after the SELECT and the INSERT has not bounded either.
+    // Before the registry read, so it bounds the DB work too.
     expect(consume.mock.invocationCallOrder[0]).toBeLessThan(
       getConnectorBySlug.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
     );
@@ -307,8 +265,7 @@ describe("QV-25: runConnector consumes an entry budget before it does anything e
     const probe = await runConnector(driver, { q: "victim-term" }, { subject: "attacker" });
     const control = await runConnector(driver, { q: "never-typed" }, { subject: "attacker" });
 
-    // The entry limiter must not become a second oracle: an attacker who has spent it must
-    // not be able to tell a populated cache entry from an empty one either.
+    // The entry limiter must not reveal whether a cache entry exists.
     expect(JSON.stringify(probe)).toBe(JSON.stringify(control));
   });
 
@@ -322,14 +279,13 @@ describe("QV-25: runConnector consumes an entry budget before it does anything e
     });
 
     const envelope = await runConnector(driver, { q: "a" }, { subject: "s" });
-    // This limiter protects OUR box, not a third party's fair-use ceiling: everything behind
-    // it needs the same database, so failing closed buys nothing. The connector quotas below
-    // it still fail CLOSED, which is asserted in connector-cache.test.ts.
+    // This limiter protects our own server, and everything behind it needs the same DB, so
+    // fail open. Connector quotas still fail closed (connector-cache.test.ts).
     expect(envelope.state).toBe("fresh");
   });
 });
 
-describe("QV-25: a refused connector is not re-audited on every anonymous request", () => {
+describe("a refused connector is not re-audited on every anonymous request", () => {
   it("writes one disabled row per connector per window, not one per request", async () => {
     const { runConnector, clearConnectorCache, clearRefusalMemo } = await import(
       "@/lib/connectors/runtime"
@@ -347,8 +303,7 @@ describe("QV-25: a refused connector is not re-audited on every anonymous reques
     // Twenty anonymous requests against a switched-off connector.
     expect(audit).toHaveBeenCalledTimes(1);
     expect(getConnectorBySlug).toHaveBeenCalledTimes(1);
-    // And the twentieth caller is told exactly what the first was told, so a remembered
-    // refusal is not distinguishable from a fresh one.
+    // A remembered refusal looks identical to a fresh one.
     expect(JSON.stringify(envelopes[19])).toBe(JSON.stringify(envelopes[0]));
     expect(envelopes[19]?.reason).toBe("disabled");
   });
@@ -365,8 +320,7 @@ describe("QV-25: a refused connector is not re-audited on every anonymous reques
     const first = await runConnector(driver, { q: "live" }, { subject: "s" });
     expect(first.state).toBe("fresh");
 
-    // The operator flips the kill-switch. No memo of a LIVE row exists, so the registry is
-    // read again and the very next request is refused.
+    // Live rows aren't memoised, so the kill-switch applies on the next request.
     getConnectorBySlug.mockResolvedValue(liveRow({ enabled: false }));
     const second = await runConnector(driver, { q: "live-2" }, { subject: "s" });
     expect(second.reason).toBe("disabled");

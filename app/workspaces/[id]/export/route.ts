@@ -14,27 +14,16 @@ import { renderCasePdf } from "./pdf";
 /**
  * `GET /workspaces/[id]/export?format=md|pdf`.
  *
- * ORDER OF OPERATIONS IS THE SECURITY PROPERTY. Session, then a uuid shape check, then
- * ownership as a SQL predicate — and only then is a single byte of the case rendered.
- * `getWorkspaceForExport` binds `where id = $1 and user_id = $2`; a non-owner gets null and
- * therefore a 404, never a 403, because a 403 confirms the workspace exists (architecture
- * HANDOFF 11 assertion 2). Nothing about the case is read, buffered or logged before that
- * predicate has been satisfied.
+ * Order matters: session, uuid check, then ownership in SQL before anything is rendered.
+ * A non-owner gets 404, not 403, so existence isn't confirmed. No share links or signed
+ * tokens: ownership is checked on every request.
  *
- * NO SIGNED TOKEN, NO SHARE LINK, AND NONE MAY BE ADDED. Ownership is re-checked on every
- * single request because a leaked export link is a leaked case file (sitemap.md 7).
- *
- * `private, no-store` and `X-Robots-Tag: noindex` are set on the response itself rather
- * than relied on from the edge: this handler returns a user's case file, and the header that
- * keeps it out of a shared cache should live next to the code that produces it.
- *
- * `?format` is parsed with `exportFormatSchema`, which is `.catch("md")` — a junk value
- * yields Markdown rather than a 400. The reader asked for their case file; giving them the
- * cheap format is a better answer than an error page.
+ * Cache and robots headers are set here rather than relying on the edge. A junk `?format`
+ * falls back to Markdown.
  */
 
 export const dynamic = "force-dynamic";
-/** pdfkit is a Node library. It cannot run on the edge runtime and must not be moved there. */
+/** pdfkit needs Node; it can't run on the edge runtime. */
 export const runtime = "nodejs";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -53,16 +42,10 @@ export async function GET(
 ): Promise<Response> {
   const { id } = await context.params;
 
-  /*
-   * 0. Is there a signed-in surface at all? In public-only mode there is no sign-in to
-   *    redirect to, so this download is not served — the same 404 the rest of `/workspaces`
-   *    gives (ADR 0032). It is checked before the session so a leftover cookie cannot open
-   *    an export path whose sign-out is no longer served.
-   */
+  // 0. Public-only mode: 404, checked before the session so a stale cookie can't get in.
   requireSignInEnabled();
 
-  // 1. Session. Signed out is a redirect to sign-in, per the route-level invariant in
-  //    sitemap.md 10.2 — the same answer every other `/workspaces/**` path gives.
+  // 1. Session. Signed out redirects to sign-in, like the rest of `/workspaces/**`.
   const user = await currentUser();
   if (!user) {
     const target = `/signin?callbackUrl=${encodeURIComponent(`/workspaces/${id}`)}`;
@@ -81,19 +64,9 @@ export async function GET(
   }
 
   /**
-   * 4. Rate limit — AFTER the ownership check, deliberately. QA finding Q-10.
-   *
-   * Rendering a PDF runs pdfkit in-process and was measured at 0.7–10.7 s per call, on a
-   * box that also runs Postgres and Caddy (product-brief §5). Unbounded, a signed-in user
-   * looping this is a denial of service against the whole deployment.
-   *
-   * The order matters: limiting BEFORE the ownership check would turn the limiter into an
-   * existence oracle — a caller could distinguish "this workspace is not yours" from "you
-   * are being throttled" and learn that the id is real. Behind the check, a non-owner always
-   * gets the same 404 and never reaches the counter at all.
-   *
-   * `consumeSafely` fails open on a database error, which is right here: the export needs
-   * the same database, so a failing limiter means the export was going to fail anyway.
+   * 4. Rate limit, since a PDF render takes up to ~10 s in-process. It runs after the
+   * ownership check so a 429 vs 404 can't reveal that an id exists. Fails open on a DB
+   * error; the export would fail anyway.
    */
   const budget = await consumeSafely("workspace-export", user.id);
   if (!budget.ok) {
@@ -105,7 +78,7 @@ export async function GET(
   }
 
   const format = exportFormatSchema.parse(new URL(request.url).searchParams.get("format"));
-  // No query: confidence and last-verified come joined on the item rows (QA finding Q-15).
+  // No query: confidence and last-verified come joined on the item rows.
   const facts = toolFactsFor(workspace.savedTools);
 
   const caseDocument = buildCaseDocument(workspace, facts, new Date());
@@ -132,7 +105,7 @@ export async function GET(
       }),
     });
   } catch (error) {
-    // The case is untouched: this handler only reads. The dialog says so, and it is true.
+    // Read-only handler, so the case is untouched.
     logger.error({ scope: "workspace.export.pdf", workspaceId: id, err: error }, "PDF export failed");
     return new NextResponse("Export failed", { status: 500, headers: privateHeaders({}) });
   }

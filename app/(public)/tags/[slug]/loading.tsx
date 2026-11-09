@@ -1,10 +1,7 @@
 import { ToolGridSkeleton } from "@/components/directory/tool-card";
 import { Skeleton } from "@/components/ui/skeleton";
 
-/**
- * `states.md` §2.3, for a tag listing. One `aria-live` region; skeletons are `aria-hidden`
- * and reserve the confidence chip and last-verified line (shell handoff §10.1).
- */
+/** Card skeletons reserve the confidence chip and last-verified line. */
 export default function TagLoading() {
   return (
     <div className="mx-auto w-full max-w-[80rem] px-4 py-10 md:px-6 md:py-14">

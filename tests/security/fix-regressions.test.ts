@@ -7,31 +7,17 @@ import type { Connector } from "@/db/schema";
 import type { ConnectorDriver } from "@/lib/connectors/types";
 
 /**
- * QA v3 — INDEPENDENT re-verification of the v2 fixes.
+ * Independent regression checks for the outbound-path security fixes. Intentionally shares
+ * no fixtures with `kill-switch.test.ts`, `connector-cache.test.ts` or `upstream-get.test.ts`.
  *
- * Owned by qa-adversary. Deliberately does NOT reuse the fixtures or the helpers in
- * `kill-switch.test.ts`, `connector-cache.test.ts` or `upstream-get.test.ts`: those files were
- * edited by the engineers who wrote the fixes, so a re-audit that runs them is verifying the
- * fixer's own account of the fix. Everything here is written from the finding text, not from
- * the fix.
- *
- * The instrument is a spy on `globalThis.fetch` rather than on a driver's own `fetch` member.
- * `driver.fetch` is the seam the guard is in front of; `globalThis.fetch` is the socket. A
- * guard that stops the first and not the second is the defect QV-01 was.
+ * Spies on `globalThis.fetch` (the socket), not a driver's `fetch` member, so a driver that
+ * calls fetch itself is still caught.
  */
 
 /**
- * A FIXED window boundary, NOT `new Date()`. Integration finding I-20, applied here too.
- *
- * `lib/rate-limit.ts` is a fixed window (ADR 0009): `resetAt` is the same instant for every
- * call inside that window, derived from the caller's own key. A mock that returned
- * `new Date()` per call made the byte-identity assertion below fail whenever a probe and the
- * control made microseconds later straddled a millisecond tick — one digit of
- * `quotaResetsAt`. I-20 fixed exactly that in `tests/security/flights-oracle.test.ts` and
- * this file kept the defect, so it still failed roughly one run in three.
- *
- * The constant is no weaker: the value never depended on any per-subject state, so it could
- * not have carried the leak these tests hunt. The assertions are untouched.
+ * A fixed window boundary rather than `new Date()`: `resetAt` is constant within a
+ * fixed window, and a per-call `new Date()` made the byte-identity assertions flaky when two
+ * calls straddled a millisecond.
  */
 const WINDOW_RESET_AT = new Date("2026-09-01T00:01:00.000Z");
 
@@ -56,7 +42,7 @@ vi.mock("@/lib/connectors/audit", () => ({
 function row(overrides: Partial<Connector> = {}): Connector {
   return {
     id: "00000000-0000-0000-0000-0000000000qa".replace("qa", "aa"),
-    slug: "qa-v3",
+    slug: "test-connector",
     name: "QA v3",
     kind: "infrastructure",
     operatorName: "QA",
@@ -100,18 +86,13 @@ afterEach(() => {
 });
 
 /* ------------------------------------------------------------------ *
- * QV-01 — the kill-switch, against every real driver
+ * The kill-switch, against every real driver
  * ------------------------------------------------------------------ */
 
-describe("QV-01 re-verified: no real driver reaches a socket while its row is not live", () => {
+describe("no real driver reaches a socket while its row is not live", () => {
   /**
-   * Every shipped driver, imported for real and invoked through `runConnector`.
-   *
-   * The v2 fix was verified against a fixture driver. A fixture cannot show that a driver
-   * which calls `fetch` itself — `flights` and `overpass` both do, bypassing `upstreamGet` —
-   * is behind the same guard. Each entry is a thunk because `ConnectorDriver<P, R>` has no
-   * usable common supertype (`P` is contravariant in `fetch`), so the drivers cannot be put
-   * in one array without an `any` this codebase forbids.
+   * Every shipped driver, invoked through `runConnector`. Thunks because `ConnectorDriver<P, R>`
+   * has no usable common supertype (`P` is contravariant in `fetch`).
    */
   type Case = { slug: string; run: (subject: string) => Promise<{ state: string; reason: string | null }> };
 
@@ -197,10 +178,10 @@ describe("QV-01 re-verified: no real driver reaches a socket while its row is no
 });
 
 /* ------------------------------------------------------------------ *
- * QV-02 — the cache oracle
+ * The cache oracle
  * ------------------------------------------------------------------ */
 
-describe("QV-02 re-verified: a spent actor cannot tell a cached term from an unknown one", () => {
+describe("a spent actor cannot tell a cached term from an unknown one", () => {
   const liveRow = () => row({ enabled: true, status: "published", perUserQuota: 2, cacheTtlSeconds: 900 });
 
   async function harness() {
@@ -209,15 +190,8 @@ describe("QV-02 re-verified: a spent actor cannot tell a cached term from an unk
     getConnectorBySlug.mockResolvedValue(liveRow());
     const driver: ConnectorDriver<{ q: string }, { answer: string }> = {
       kind: "infrastructure",
-      slug: "qa-v3",
-      /*
-       * EDITED BY backend-engineer, 2026-09-01, mechanically: `ConnectorDriver.perActor` was
-       * deleted, so `perActor: true` no longer compiles. The behaviour this fixture relied on
-       * is now unconditional — `runConnector` charges every caller before it reads the cache,
-       * for every driver — which is what closed QV-02 on the eighth driver. Nothing else in
-       * this file was changed except the two `DEFECT` assertions named below, which are
-       * inverted as the finding required.
-       */
+      slug: "test-connector",
+      // runConnector charges every caller before reading the cache, for every driver.
       normalise: (raw) => raw as { q: string },
       cacheKey: (p) => p.q,
       fetch: async (_c, p) => ({ data: { answer: p.q }, upstreamStatus: 200 }),
@@ -264,34 +238,25 @@ describe("QV-02 re-verified: a spent actor cannot tell a cached term from an unk
   });
 
   /**
-   * THE RESIDUAL. `quantiseInstant` floors to an epoch-aligned window of `cacheTtlSeconds`.
-   * A cache entry written near the END of one window is still inside its TTL after the next
-   * window has opened — so a hit reports the previous window's start and a miss reports the
-   * current one. The timestamp still separates them, at window granularity, for an actor with
-   * quota left.
+   * Known residual: `quantiseInstant` floors to an epoch-aligned `cacheTtlSeconds` window, so
+   * an entry written near the end of one window and hit in the next reports the previous
+   * window's start, while a miss reports the current one.
    */
-  it("RESIDUAL: fetchedAt still separates a hit from a miss across a window boundary", async () => {
+  it("residual: fetchedAt still separates a hit from a miss across a window boundary", async () => {
     const { runConnector, clearConnectorCache } = await import("@/lib/connectors/runtime");
     clearConnectorCache();
     getConnectorBySlug.mockResolvedValue(liveRow());
     consume.mockResolvedValue({ ok: true, count: 1, limit: 99, remaining: 98, resetAt: WINDOW_RESET_AT });
     const driver: ConnectorDriver<{ q: string }, { answer: string }> = {
       kind: "infrastructure",
-      slug: "qa-v3",
-      // `perActor` deleted from the type — see the note on the fixture above.
+      slug: "test-connector",
       normalise: (raw) => raw as { q: string },
       cacheKey: (p) => p.q,
       fetch: async (_c, p) => ({ data: { answer: p.q }, upstreamStatus: 200 }),
     };
 
-    /*
-     * Fake timers because the FRESH path stamps `new Date()` rather than `options.now` — the
-     * real upstream response instant, which is right, and which means the clock has to be
-     * moved rather than injected.
-     *
-     * 900 s windows, epoch-aligned. The victim asks at 03:59:00, one minute before a window
-     * boundary. The entry is valid until 04:14:00.
-     */
+    // Fake timers: the fresh path stamps `new Date()`. 900 s windows; the victim asks one
+    // minute before a boundary, so the entry is valid until 04:14.
     vi.useFakeTimers();
     try {
       vi.setSystemTime(new Date("2026-09-01T03:59:00.000Z"));
@@ -304,7 +269,7 @@ describe("QV-02 re-verified: a spent actor cannot tell a cached term from an unk
 
       expect(hit.state).toBe("fresh");
       expect(miss.state).toBe("fresh");
-      // If these were equal the oracle would be closed. They are not.
+      // They differ: the residual is still open.
       expect(hit.fetchedAt?.toISOString()).toBe("2026-09-01T03:45:00.000Z");
       expect(miss.fetchedAt?.toISOString()).toBe("2026-09-01T04:00:00.000Z");
     } finally {
@@ -314,10 +279,10 @@ describe("QV-02 re-verified: a spent actor cannot tell a cached term from an unk
 });
 
 /* ------------------------------------------------------------------ *
- * QV-03 — the byte cap, on the paths that do NOT use the shared helper
+ * Response byte caps
  * ------------------------------------------------------------------ */
 
-describe("QV-03 re-verified: which outbound paths are actually capped", () => {
+describe("which outbound paths are actually capped", () => {
   /** A body that never ends, counting the bytes the consumer pulls. */
   function endlessBody(chunkBytes: number, counter: { pulled: number }): ReadableStream<Uint8Array> {
     const chunk = new Uint8Array(chunkBytes).fill(0x61);
@@ -344,13 +309,7 @@ describe("QV-03 re-verified: which outbound paths are actually capped", () => {
     expect(counter.pulled).toBeLessThanOrEqual(256 * 1024 + 64 * 1024);
   });
 
-  /**
-   * INVERTED by backend-engineer 2026-09-01, as QV-03's fix required. Measured before the
-   * fix, by this exact assertion: **513 MiB pulled** (the harness closes the stream at 512),
-   * against the 5 MiB the capped sibling path stops at. The driver now goes through
-   * `lib/connectors/upstream.ts` with an 8 MiB ceiling, and the same is asserted for the
-   * flights driver below.
-   */
+  /** Overpass goes through `lib/connectors/upstream.ts` with an 8 MiB cap. */
   it("the Overpass driver stops within one chunk of its cap", async () => {
     const { overpassDriver } = await import("@/lib/connectors/overpass");
     const counter = { pulled: 0 };
@@ -372,13 +331,7 @@ describe("QV-03 re-verified: which outbound paths are actually capped", () => {
       overpassDriver.fetch(connector, { query: "[out:json];out;" }, new AbortController().signal),
     ).rejects.toBeTruthy();
 
-    /*
-     * 8 MiB cap, 1 MiB chunks. The bound is the cap plus TWO chunks, not one: the reader
-     * stops on the first chunk that carries the total past the cap, and a `ReadableStream`
-     * with the default count-based queuing strategy has already pulled one more behind it.
-     * Measured here: 10 MiB against an 8 MiB cap, where this same assertion measured 513 MiB
-     * before the fix.
-     */
+    // Bound is cap + two chunks: the stream's default queue has pulled one ahead.
     expect(counter.pulled).toBeLessThanOrEqual(10 * 1024 * 1024);
   });
 
@@ -401,14 +354,11 @@ describe("QV-03 re-verified: which outbound paths are actually capped", () => {
       ),
     ).rejects.toBeTruthy();
 
-    // 4 MiB cap, 1 MiB chunks, same two-chunk bound. Measured: 6 MiB, against 513 before.
+    // 4 MiB cap, same two-chunk bound.
     expect(counter.pulled).toBeLessThanOrEqual(6 * 1024 * 1024);
   });
 
-  /**
-   * INVERTED by backend-engineer 2026-09-01. Both drivers now go through the one outbound
-   * primitive, which sends `redirect: "manual"` and re-checks the pinned host on every hop.
-   */
+  /** Both use the outbound primitive: `redirect: "manual"` and host re-checked per hop. */
   it("both the Overpass and the flights driver pin the host across a redirect", async () => {
     const overpass = (await import("@/lib/connectors/overpass")).overpassDriver;
     const flights = (await import("@/lib/connectors/flights")).flightsDriver;
@@ -433,7 +383,6 @@ describe("QV-03 re-verified: which outbound paths are actually capped", () => {
       )
       .catch(() => undefined);
 
-    // `upstreamRequest` sends `redirect: "manual"` and re-pins every hop. Both now do.
     for (const init of seen) {
       expect(init.redirect).toBe("manual");
     }
@@ -442,10 +391,10 @@ describe("QV-03 re-verified: which outbound paths are actually capped", () => {
 });
 
 /* ------------------------------------------------------------------ *
- * QV-04 — the map cache key
+ * The map cache key
  * ------------------------------------------------------------------ */
 
-describe("QV-04 re-verified: the map cache key and the client throttle agree", () => {
+describe("the map cache key and the client throttle agree", () => {
   it("a Tokyo box and a world box produce different keys", async () => {
     const { sourceQueryKey } = await import("@/components/map/query");
     const tokyo = sourceQueryKey({ bbox: { west: 139, south: 35, east: 141, north: 36 } });
@@ -471,10 +420,10 @@ describe("QV-04 re-verified: the map cache key and the client throttle agree", (
 });
 
 /* ------------------------------------------------------------------ *
- * QV-06 — attacking the guard that is supposed to stop QV-06 recurring
+ * Limits of the contrast guard
  * ------------------------------------------------------------------ */
 
-describe("QV-06 re-verified: what app/tokens.contrast.test.ts does and does not guard", () => {
+describe("what app/tokens.contrast.test.ts does and does not guard", () => {
   const tokens = readFileSync(join(process.cwd(), "app", "tokens.css"), "utf8");
 
   /** Semantic tokens of one theme block, resolved through the primitives. */
@@ -506,16 +455,9 @@ describe("QV-06 re-verified: what app/tokens.contrast.test.ts does and does not 
   }
 
   /**
-   * GAP (QV-06-R1). The matrix guard verifies that every pair it LISTS is accurately
-   * documented and clears AA. Nothing requires the matrix to list every surface the palette
-   * defines — so a new `--*-surface` token added to both themes and used by a component is
-   * invisible to all 229 assertions. That is QV-06's own defect ("a list of anticipated
-   * pairs") reproduced one level up, in the file written to prevent it.
-   *
-   * Measured: adding `--qa-callout-surface: var(--slate-450)` to both blocks leaves the suite
-   * at 229/229 green while `--muted-foreground` on it is 2.15:1 light and 1.19:1 dark.
-   *
-   * INVERT THIS ASSERTION when the guard is extended to require coverage.
+   * Known gap: the contrast guard checks the pairs it lists, but nothing forces the matrix to
+   * list every surface token, so a new `--*-surface` would go unchecked. Invert this when
+   * the guard requires coverage.
    */
   it("GAP: §4.1 does not have to list every surface token the palette defines", () => {
     const listed = listedSurfaces();
@@ -524,9 +466,9 @@ describe("QV-06 re-verified: what app/tokens.contrast.test.ts does and does not 
       (name) => name.endsWith("-surface") || ["--background", "--card", "--popover", "--muted", "--accent"].includes(name),
     );
     const unlisted = surfaceish.filter((name) => !listed.has(name));
-    // Today every surface happens to be listed — the point is that nothing MAKES it so.
+    // Every surface is listed today, but nothing enforces it.
     expect(unlisted).toEqual([]);
-    // The guard's own count assertion is a fixed literal, not a function of the palette:
+    // The guard pins a literal row count:
     expect(tokens).toContain("4.1 THE TEXT RAMP");
     const guard = readFileSync(join(process.cwd(), "app", "tokens.contrast.test.ts"), "utf8");
     expect(guard, "the guard pins a literal row count instead of deriving it from the palette").toContain(
@@ -538,9 +480,8 @@ describe("QV-06 re-verified: what app/tokens.contrast.test.ts does and does not 
   });
 
   /**
-   * GAP (QV-06-R2). §4.5's executable half greps exactly one file — `pagination.tsx`, the one
-   * that was fixed. `tokens.css` §4.5 itself names two other shipped instances of the rule it
-   * calls FORBIDDEN, and one of them still ships.
+   * Known gap: the opacity rule in `tokens.css` §4.5 is only enforced against
+   * `pagination.tsx`, and `filter-controls.tsx` still violates it.
    */
   it("GAP: the opacity rule is enforced against one file, and a named violation still ships", () => {
     const guard = readFileSync(join(process.cwd(), "app", "tokens.contrast.test.ts"), "utf8");
@@ -551,24 +492,11 @@ describe("QV-06 re-verified: what app/tokens.contrast.test.ts does and does not 
       join(process.cwd(), "components", "directory", "filter-controls.tsx"),
       "utf8",
     ).replace(/\/\*[\s\S]*?\*\//g, "");
-    // `opacity-60` on a <div> wrapping the whole results region while a filter is pending:
-    // every word inside it renders at 60% alpha, which tokens.css §4.5 calls FORBIDDEN and
-    // measures at 2.98 / 2.85 on muted ink.
+    // `opacity-60` on the results region while pending (about 2.9:1 on muted ink).
     expect(filterControls).toMatch(/\bopacity-60\b/);
   });
 
-  /**
-   * QV-27, fixed and now guarded in both directions.
-   *
-   * §4.4 named `search-field.tsx:249` as a shipped violation after the same commit had fixed
-   * it. A matrix that names a violation which no longer exists is the same failure as one
-   * that misses a violation which does: in both cases the document disagrees with the code,
-   * and this file exists because that disagreement is the defect class the whole §4 matrix
-   * was written to end.
-   *
-   * The assertion is therefore not "the stale sentence is gone" — that would pass the moment
-   * somebody deleted the line. It is that the claim and the code agree.
-   */
+  /** `tokens.css` §4.4's claim about shipped violations must agree with `search-field.tsx`. */
   it("§4.4 does not name a shipped violation that has been fixed", () => {
     const searchField = readFileSync(
       join(process.cwd(), "components", "directory", "search-field.tsx"),
@@ -578,9 +506,9 @@ describe("QV-06 re-verified: what app/tokens.contrast.test.ts does and does not 
     expect(stillViolating).toBe(false);
     expect(searchField).toContain("text-foreground-secondary");
 
-    // The code is clean, so the matrix must not claim otherwise.
+    // The code is clean, so the matrix must say so.
     expect(tokens).not.toContain("ONE SHIPPED VIOLATION:");
-    expect(tokens).toContain("NO SHIPPED VIOLATIONS");
+    expect(tokens).toContain("No current violations.");
   });
 });
 
@@ -590,10 +518,8 @@ describe("QV-06 re-verified: what app/tokens.contrast.test.ts does and does not 
 
 describe("the server's INITIAL_BOUNDS and the client's WORLD are one constant written twice", () => {
   /**
-   * `app/(public)/map/page.tsx` fetches every layer for `INITIAL_BOUNDS`; `map-surface.tsx`
-   * seeds `answeredKeys` from `WORLD`. If they ever differ, the client believes every payload
-   * answers an area it does not, which is QV-04's shape with the drift moved into two
-   * constants instead of two grids. Nothing but this test connects them.
+   * The page fetches layers for `INITIAL_BOUNDS`; `map-surface.tsx` seeds `answeredKeys` from
+   * `WORLD`. If they differ, the client misattributes payloads to the wrong area.
    */
   it("are equal, and nothing else in the tree asserts it", () => {
     const page = readFileSync(join(process.cwd(), "app", "(public)", "map", "page.tsx"), "utf8");

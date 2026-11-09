@@ -1,9 +1,6 @@
 /**
- * Reads back what the migrations actually created.
- *
- * Uses `pg` rather than psql so it exercises the same driver the application does, and so
- * it works against the PGlite harness (which does not speak psql's SSL negotiation).
- * Assertions come from docs/architecture/HANDOFF.md section 11.
+ * Reads back what the migrations created. Uses `pg` (the app's driver) rather than psql,
+ * which also works against the PGlite harness.
  */
 import { Client } from "pg";
 

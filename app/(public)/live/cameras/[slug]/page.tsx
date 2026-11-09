@@ -15,16 +15,10 @@ import { isoDay } from "@/components/live/live-format";
 import { displayHost, formatDate } from "@/lib/utils";
 
 /**
- * `/live/cameras/[slug]`. sitemap.md §3, ADR 0015, `wireframes/09-live-cameras.txt`.
+ * `/live/cameras/[slug]`. No outbound request until the reader clicks. The IP disclosure is
+ * repeated here because readers can land on this page directly.
  *
- * `force-dynamic` and NO OUTBOUND CALL until the reader clicks. The disclosure repeats here
- * rather than relying on the one on the listing, because a detail page can be entered
- * directly — from a search result, a bookmark or somebody else's link — and a reader who
- * never saw the listing has been told nothing.
- *
- * A camera whose connector is switched off still renders in full. The registry row is ours;
- * only the metadata refresh stops (states.md §5.11), and the operator's own page stays
- * authoritative either way.
+ * A camera with a disabled connector still renders; only its metadata refresh stops.
  */
 
 export const dynamic = "force-dynamic";
@@ -52,11 +46,7 @@ export default async function CameraDetailPage({ params }: { params: Promise<{ s
   const camera = await getCameraBySlug(slug);
   if (!camera) notFound();
 
-  /*
-   * Camera-level attribution wins over the connector's, and both render. `cameras.attribution`
-   * is "the attribution string this feed obliges us to render, if any BEYOND the connector's"
-   * (db/schema.ts), so where a camera carries one it is the more specific obligation.
-   */
+  // Camera-level attribution is more specific, so it wins over the connector's.
   const attribution = camera.attribution ?? camera.connector?.attribution ?? null;
   const connectorOff = camera.connector !== null && !camera.connector.enabled;
 
@@ -194,11 +184,7 @@ export default async function CameraDetailPage({ params }: { params: Promise<{ s
             </div>
           ) : null}
 
-          {/*
-            Attribution renders here as well as under the image, because the registry entry is
-            itself a use of the operator's data. ADR 0011 rule 2 — next to the data, never in
-            the footer.
-          */}
+          {/* The registry entry uses the operator's data too, so attribution goes here as well. */}
           {attribution ? (
             <p className="mt-6 border-t border-border pt-4 text-sm font-medium">{attribution}</p>
           ) : null}

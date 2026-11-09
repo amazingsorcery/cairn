@@ -11,16 +11,11 @@ import type { LookupOutcome } from "@/lib/toolbench/connector-envelope";
 import { normaliseHostname } from "@/lib/toolbench/net-target";
 
 /**
- * The DNS lookup.
+ * DNS lookup. A Server Action rather than a GET route so the name never lands in a URL,
+ * history, referrer or access log.
  *
- * A Server Action rather than a GET route so the name being resolved never appears in a URL,
- * a browser history, a referrer or an access log. See the note in the certificate
- * transparency action for the full argument; it applies identically here and matters slightly
- * more, because "which domains did this person resolve" is close to a reading list.
- *
- * WHAT LEAVES, AND WHAT DOES NOT. The name reaches Cloudflare's resolver. The reader's IP
- * does not — the query is made from this server. Nothing about either is written to our audit
- * log, which records only that a call happened and how it ended (ADR 0013).
+ * The name reaches Cloudflare's resolver; the reader's IP doesn't. The audit log records only
+ * that a call happened and how it ended.
  */
 
 const inputSchema = z.object({ name: z.string().max(400) });

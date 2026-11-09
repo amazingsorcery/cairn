@@ -21,30 +21,14 @@ import {
 import { useLiveAge } from "./use-live-age";
 
 /**
- * `/live/flights`. The one interactive leaf on the route; the page around it is a Server
- * Component that does the data fetch.
+ * Client leaf for `/live/flights`; the page is a Server Component that does the fetch.
  *
- * THERE IS NO MAP ON THIS ROUTE, AND THAT IS DELIBERATE. It used to carry an opt-in Leaflet
- * map of its own (`flights-map.tsx`, deleted 2026-09-01). `/map` now draws aircraft on
- * MapLibre + deck.gl with a sortable table equivalent, freshness reporting and degraded
- * states, so a second aircraft map here was the same feature maintained twice — and it had
- * already rotted once, silently, when the tile config moved from raster to vector. This
- * surface links to `/map` instead. See `docs/frontend/HANDOFF-basemaps.md`.
+ * No map here: aircraft are drawn on `/map`, and this page links to it.
  *
- * WHY THE INTERACTIVE PART IS ONE LEAF RATHER THAN TWO. The freshness bar and the table read
- * the same payload and the same `fetchedAt`. Split across components with two copies of the
- * state they would drift, and the one number on this page that must never be wrong is the age
- * (ADR 0014 §1). One owner, one clock, one payload.
- *
- * IT IS SERVER-RENDERED FIRST. The page passes the initial envelope in as a prop, so the
- * table is present in the initial HTML and is fully readable with no JavaScript at all —
- * which is the point of ADR 0016 §1 making the table primary. What JavaScript adds is
- * sorting, the detail panel and the ticking age. What it never adds is a request to the
- * upstream: refreshes go to `/api/live/flights`, which is our own server (ADR 0011 §1).
- *
- * NO SPINNER ON A REFRESH (ADR 0014 §8). The current data stays on screen with its age
- * counting up. The only loading indicator on this route is the first-load one in
- * `loading.tsx`, when there is genuinely nothing to show yet.
+ * The freshness bar and table share one payload and one `fetchedAt` so the age can't drift.
+ * The initial envelope comes in as a prop, so the table works without JavaScript. Refreshes
+ * go to our own `/api/live/flights`, never the upstream, and show no spinner: the data stays
+ * on screen with its age counting up.
  */
 
 export interface FlightsSurfaceProps {
@@ -54,21 +38,14 @@ export interface FlightsSurfaceProps {
   /** `connectors.cache_ttl_seconds` — the shared cadence, not a per-viewer preference. */
   refreshSeconds: number;
   operatorName: string | null;
-  /**
-   * `connectors.per_user_quota` and `connectors.window_seconds` — the operator's configured
-   * numbers, for the one sentence that quotes them. They are registry facts rather than
-   * envelope facts, which is why they are still props; the reset instant is not, and used to
-   * be (QV-29).
-   */
+  /** `connectors.per_user_quota` and `connectors.window_seconds`, quoted in the quota message. */
   perUserLimit: number | null;
   windowSeconds: number | null;
 }
 
 /**
- * Narrow the JSON from our own route handler. Zod at every boundary includes this one: the
- * response is same-origin and ours, but "it is ours" is exactly the assumption that stops
- * being true after a refactor, and an `as` cast here would turn a shape change into a blank
- * page rather than a degraded state.
+ * Narrow the JSON from our own route handler. A plain `as` cast would turn a shape change
+ * into a blank page instead of a degraded state.
  */
 function parseEnvelope(value: unknown, fallback: FlightsEnvelopeDto): FlightsEnvelopeDto | null {
   if (typeof value !== "object" || value === null) return null;
@@ -99,16 +76,8 @@ function parseEnvelope(value: unknown, fallback: FlightsEnvelopeDto): FlightsEnv
     message: typeof record.message === "string" ? record.message : null,
     connector: typeof record.connector === "string" ? record.connector : fallback.connector,
     /*
-     * BOTH OF THESE WERE DROPPED HERE, AND THAT WAS THE WHOLE OF QV-29 ON THE CLIENT.
-     *
-     * The route answers 429 with the refusing counter's own reset instant and, since the same
-     * fix, which counter it was. Narrowing the envelope without carrying them meant a refusal
-     * that arrived on a refresh lost its instant — so the degraded state rendered no retry
-     * control at all — and lost its discriminator, so the surface fell back to guessing from
-     * the prose of `message` and guessed wrong in the most common case.
-     *
-     * Unrecognised values become null rather than a default: a wrong sentence about a third
-     * party is worse than the neutral one.
+     * Needed so a 429 on refresh keeps its reset time and the counter that refused.
+     * Unrecognised values become null, which gets the neutral message.
      */
     quotaResetsAt: typeof record.quotaResetsAt === "string" ? record.quotaResetsAt : null,
     quotaScope: asQuotaScope(record.quotaScope),
@@ -133,17 +102,8 @@ export function FlightsSurface({
 
   const aircraft = envelope.data?.aircraft ?? [];
   /**
-   * Whether to keep polling.
-   *
-   * `rate-limited` means the UPSTREAM refused us — 429 or 420 — and it is excluded here even
-   * when we still hold a stale payload worth showing. Every other degraded reason is a
-   * condition that polling might resolve; this one is a condition polling makes worse.
-   * Continuing to call a service that has asked us to stop is the breach of product-brief
-   * §3.2 constraint 5 that QA finding Q-02 was about, and the audit log had 57 of them.
-   *
-   * The server holds its own cooldown (`lib/connectors/runtime.ts`), so a client that ignored
-   * this would be refused anyway — but it would still cost a request to our own server, and
-   * "the other layer will catch it" is how both layers end up not catching it.
+   * Whether to keep polling. `rate-limited` (upstream 429/420) stops polling even with a
+   * stale payload on screen: polling makes it worse. The server also enforces a cooldown.
    */
   const live =
     (envelope.state === "fresh" || envelope.state === "stale") &&
@@ -153,11 +113,7 @@ export function FlightsSurface({
    * Refresh — always through our own server, never to the upstream
    * ---------------------------------------------------------------- */
 
-  /**
-   * The viewport is fixed for the life of the surface: it comes from the query string, which
-   * the server already validated, and nothing on this page can change it now that the map is
-   * gone. Panning lives on `/map`, which owns its own viewport and its own refresh.
-   */
+  /** The viewport is fixed: it comes from the server-validated query string. */
   const refresh = React.useCallback(
     async () => {
       setRefreshing(true);
@@ -172,12 +128,7 @@ export function FlightsSurface({
         const parsed = parseEnvelope(body, envelope);
         if (parsed) setEnvelope(parsed);
       } catch {
-        /*
-         * A failed refresh changes nothing on screen. The payload that is already here keeps
-         * its own `fetchedAt`, so the age simply keeps counting up and the reader watches it
-         * get older — which is the honest thing to show and the opposite of a spinner that
-         * keeps asserting fresh data is arriving.
-         */
+        // A failed refresh changes nothing; the existing data's age keeps counting up.
       } finally {
         setRefreshing(false);
       }
@@ -186,17 +137,11 @@ export function FlightsSurface({
   );
 
   React.useEffect(() => {
-    /*
-     * No polling when the connector is switched off or a quota is exhausted. In the first
-     * case no outbound call would be made anyway and we would only be talking to ourselves;
-     * in the second, polling a limit we have already reached is what caused it. The reader
-     * has an explicit control for both.
-     */
+    // No polling when disabled or out of quota; the reader has an explicit control for both.
     if (!live) return;
     const interval = Math.max(5, refreshSeconds) * 1000;
     const timer = window.setInterval(() => {
-      // A hidden tab is not a reader. Refreshing it burns the shared global ceiling that
-      // exists to keep us inside the upstream's fair use (ADR 0011 rule 3).
+      // Skip hidden tabs so they don't spend the shared upstream quota.
       if (document.visibilityState !== "visible") return;
       void refresh();
     }, interval);
@@ -218,12 +163,7 @@ export function FlightsSurface({
         unavailableTitle={UNAVAILABLE_TITLE[envelope.reason ?? "upstream-down"]}
       />
 
-      {/*
-        THE ROUTE'S ONE POLITE LIVE REGION (HANDOFF-shell.md §10.1). It is in the DOM before
-        the content it describes, it is never duplicated, and it carries the three things a
-        reader who cannot see the screen needs to know: how many aircraft, how old, and how
-        the table is currently ordered.
-      */}
+      {/* The route's single polite live region: count, age and sort order. */}
       <p aria-live="polite" className="sr-only">
         {live
           ? `${countLine}. ${age === null ? "" : `Positions are ${formatAge(age)}.`} ${sortDescription(sort)}`
@@ -259,11 +199,7 @@ export function FlightsSurface({
             <span className="font-mono">{formatPosition(viewport.lat, viewport.lon)}</span>
           </p>
 
-          {/*
-            WHERE THE MAP IS. This page draws none: `/map` is the map, and it is the only one.
-            Saying so plainly — with the link as a real link, not a button that reveals a map
-            — is the honest replacement for a control that used to load one here.
-          */}
+          {/* Pointer to `/map`, which is where aircraft are drawn. */}
           <div className="rounded-lg border border-dashed border-border bg-card p-5">
             <h2 className="text-base font-semibold tracking-tight">
               The map is on a page of its own
@@ -323,18 +259,14 @@ export function FlightsSurface({
         </>
       )}
 
-      {/*
-        ALWAYS RENDERED, never collapsed (states.md §5.1). The coverage caveat is not a
-        footnote: an audience that publishes based on what it sees here needs to know that an
-        absence is not evidence, and it needs to know it on the same screen as the data.
-      */}
+      {/* Coverage caveat is always shown: an absent aircraft is not evidence of anything. */}
       <div className="space-y-2 border-t border-border pt-4 text-sm leading-relaxed text-foreground-secondary">
         <p className="max-w-[68ch]">
           Positions are broadcast by aircraft and collected by{" "}
           {operatorName ?? "an open ADS-B aggregator"}. Coverage depends on volunteer receiver
           locations; an aircraft absent from this page is not evidence it is not flying.
         </p>
-        {/* Attribution next to the data, never in the footer. ADR 0011 rule 2. */}
+        {/* Attribution next to the data, not in the footer. */}
         {envelope.attribution ? (
           <p className="max-w-[68ch] font-medium text-foreground">{envelope.attribution}</p>
         ) : null}
@@ -353,18 +285,6 @@ const UNAVAILABLE_TITLE = {
 } as const;
 
 /*
- * WHAT USED TO BE HERE, AND WHY IT IS NOT COMING BACK (QA finding QV-29).
- *
- * `isPerViewerQuota(message)` decided which of our quotas had refused by testing
- * `message.startsWith("You have reached")`, because the envelope carried no discriminator.
- * Three counters produce `quota-exhausted` and the one that bites first — the per-client
- * entry limiter in front of `runConnector` — writes "You have made". So the test failed, the
- * surface took the other branch, and a reader was told:
- *
- *   "This feed has a shared request ceiling so we stay inside adsb.lol's fair-use limit,
- *    and it is currently reached."
- *
- * on a path where the registry row had not even been read and nothing had been asked of
- * adsb.lol. Matching a different prefix would be the identical mechanism one word later.
- * `quotaScope` now travels on the envelope and this surface branches on data, never on prose.
+ * Which quota refused comes from `quotaScope` on the envelope. Don't infer it from the
+ * `message` text.
  */

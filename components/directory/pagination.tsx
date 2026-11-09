@@ -4,27 +4,11 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
- * Explicit pages, never infinite scroll.
+ * Prev/next page links (no infinite scroll, so every page has a shareable URL and the back
+ * button works).
  *
- * An investigator has to be able to get back to where they were — to reopen the third card
- * on page 4 tomorrow, and to paste that page into a note. Infinite scroll has no address for
- * "where they were", and it also breaks the browser's own back button, which is the control
- * this whole route is built around (`wireframes/02-directory.txt`).
- *
- * Both controls are links, so they are middle-clickable, keyboard-operable and prefetched by
- * `next/link` without any JavaScript of ours. The unavailable end renders as disabled text
- * rather than a link to nowhere.
- *
- * THE UNAVAILABLE END IS DIMMED WITH A TOKEN, NEVER WITH OPACITY — audit QV-06. It used to
- * carry `opacity-40`, which rendered inherited `--foreground` at 2.63:1 in light and 3.36:1
- * in dark and failed WCAG 1.4.3 on both. WCAG's exemption for "text that is part of an
- * inactive user interface component" does not reach this markup: a `<span>` is not a user
- * interface component and cannot be disabled, so it owes the full 4.5:1 like any other text.
- * It is `--muted-foreground` instead — 7.37:1 light, 6.31:1 dark, both measured in
- * `app/tokens.css` §4.1 — and its unavailability is carried by three non-colour signals:
- * `--border` instead of `--input` on the outline, no hover fill, and no focus ring, because
- * it is not focusable. `aria-hidden` keeps it out of the accessibility tree entirely; a
- * screen reader gets the position from the "page N of M" text between the two chips.
+ * The unavailable end is a span using `--muted-foreground`, not opacity, so it still meets
+ * WCAG 4.5:1 contrast. It's `aria-hidden`; "page N of M" carries the position.
  */
 export function Pagination({
   page,

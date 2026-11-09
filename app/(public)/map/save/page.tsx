@@ -12,44 +12,17 @@ import { metadataUnlessPublicOnly, requireSignInEnabled } from "@/lib/session-su
 import { cn } from "@/lib/utils";
 
 /**
- * `/map/save` — keep one live feature in a case.
+ * `/map/save`: save one live feature into a case.
  *
- * THIS IS THE JOIN BETWEEN THE LIVE PILLAR AND THE WORKSPACES PILLAR. `ADR 0025` designed it,
- * migration 0006 created the table, `savedFeatureSchema` validated it — and QA finding QV-13
- * found that nothing wrote it, nothing read it, and no control anywhere led to it.
+ * Only the source slug and feature id come from the query string; everything else is read
+ * from `lib/live/feature-cache.ts`, so nothing about the feature is trusted from the browser.
+ * If the cache no longer has it we say so rather than re-fetch: sources like adsb.lol keep no
+ * history, so a re-fetch would pair the current position with the old timestamp.
  *
- * ## Why the feature is resolved here, and refused rather than re-fetched
- *
- * The reader arrives with a source slug and a feature id in the query string. Everything else
- * — the coordinates, the observation instant, the label, the credit, the licence — is read
- * from `lib/live/feature-cache.ts`, which holds what the last governed poll returned. Nothing
- * about the feature survives a round trip through the browser (QA finding QV-14).
- *
- * If the cache has forgotten it, this page says so and offers the map. It does **not** go and
- * look: ADR 0025 rejects re-fetching outright, because adsb.lol keeps no history and a
- * re-fetch would return the aircraft's *current* position under the original timestamp. Not
- * old — wrong.
- *
- * ## Why this is its own route rather than a dialog on `/map`
- *
- * A picker listing the reader's own cases needs `auth()`, and `sitemap.md` §10.1 makes "no
- * public route reads the session" a route-level invariant. `/map` is public. A child segment
- * is `force-dynamic` on its own without touching its parent — the same shape
- * `/tools/[slug]/save` uses, so this is that pattern rather than a second one.
- *
- * ## Why the picker is native forms
- *
- * `docs/frontend/HANDOFF-directory.md` §1b: two Server Action versions of the equivalent
- * control were rejected by the E2E suite, each able to drop a save silently — one before
- * hydration, one after. Each case here is a `<form method="post">` to `save/submit`. The
- * whole surface ships no client component and works with the bundle removed.
- *
- * ## It never calls `notFound()`
- *
- * A feature that has aged out of the cache is the *expected* state of this page, not a
- * missing resource, and `/map` has a `loading.tsx` whose Suspense boundary would commit a
- * 200 status before a child's `notFound()` could change it (finding I-15). Both reasons point
- * the same way: render the state, with a control.
+ * Separate route because listing the user's cases needs `auth()` and `/map` is public.
+ * Uses native POST forms (no client JS), which proved more reliable than Server Actions.
+ * Never calls `notFound()`: an expired feature is an expected state, and `/map`'s
+ * `loading.tsx` would commit a 200 anyway.
  */
 
 export const dynamic = "force-dynamic";
@@ -60,7 +33,7 @@ export const metadata = metadataUnlessPublicOnly(
     title: "Save a map feature",
     description: "Keep a live map feature in one of your cases.",
     path: "/map/save",
-    // Session-dependent and private to one reader. Nothing here belongs in an index.
+    // Session-dependent and private.
     index: false,
   }),
 );
@@ -87,11 +60,7 @@ export default async function SaveMapFeaturePage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  /*
-   * PUBLIC-ONLY MODE. With no sign-in method configured there are no cases to save into and
-   * no sign-in to offer, so this picker is not served — and neither is the control that
-   * leads here. ADR 0032, `lib/session-surface.ts`.
-   */
+  // Not served in public-only mode (no sign-in configured). See `lib/session-surface.ts`.
   requireSignInEnabled();
 
   const query = await searchParams;
@@ -152,12 +121,8 @@ export default async function SaveMapFeaturePage({
 }
 
 /**
- * What is about to be kept, in full, before the reader commits.
- *
- * The observation instant is here because it is the whole value of the row: a saved feature
- * is a claim about a moment (ADR 0025). The credit is here because the licence requires it at
- * the point of display and this is a display. The precision caveat is here because the
- * coordinate above it may be an administrative centroid tens of kilometres from the thing.
+ * Preview of what will be saved. Shows the observation time, the licence-required credit, and
+ * a precision caveat (the coordinate may be a coarse centroid).
  */
 function FeatureSummary({ resolved }: { resolved: ResolvedLiveFeature }) {
   const { feature } = resolved;
@@ -202,7 +167,7 @@ function FeatureSummary({ resolved }: { resolved: ResolvedLiveFeature }) {
         </div>
       </dl>
 
-      {/* The credit sits with the data, not in a footer (ADR 0011 rule 2). */}
+      {/* Credit sits with the data, not in a footer. */}
       <p className="text-foreground-secondary mt-4 border-t border-border pt-3 text-sm leading-relaxed">
         {resolved.sourceName} · {resolved.attribution.text} · {resolved.attribution.licence}
       </p>
@@ -210,13 +175,7 @@ function FeatureSummary({ resolved }: { resolved: ResolvedLiveFeature }) {
   );
 }
 
-/**
- * The feature has aged out of the cache.
- *
- * The copy says what is true and what is not: nothing is broken, the source simply does not
- * keep this, and going back to the map is the whole of the fix. It does not offer a retry,
- * because there is nothing to retry.
- */
+/** The feature has aged out of the cache. No retry, since there's nothing to retry. */
 function Gone() {
   return (
     <>
@@ -238,12 +197,7 @@ function Gone() {
   );
 }
 
-/**
- * `states.md` §6.10's register: say what to do, no apology, and never discard the reader's
- * intent. `callbackUrl` returns them to THIS page, holding the same feature, rather than to
- * the map — landing them one click short of what they came for answers a question they did
- * not ask.
- */
+/** `callbackUrl` returns the reader to this page with the same feature after sign-in. */
 function SignedOut({ callbackUrl }: { callbackUrl: string }) {
   return (
     <>
@@ -288,11 +242,7 @@ async function SignedIn({
   const workspaces = await listWorkspaces(userId);
 
   if (workspaces.length === 0) {
-    /**
-     * First run. `states.md` §0's rule for an empty state — name the next action, do not
-     * congratulate and do not scold. The warning about coming back is not decoration: a
-     * feature saved ten minutes from now may no longer be in the feed.
-     */
+    /** No cases yet. Warns that the feature may leave the feed before they come back. */
     return (
       <>
         <p className="text-foreground-secondary mt-5 text-base leading-relaxed">
@@ -326,12 +276,7 @@ async function SignedIn({
         {workspaces.length === 1 ? "Save it into your case." : "Choose the case to save it into."}
       </p>
 
-      {/*
-        THE OUTCOME IS ANNOUNCED, and the list stays underneath it — a retry is the same
-        button in the same place rather than a trip back through the map. `aria-live` on a
-        region that is empty on first render, so a result arriving after a form post is read
-        out; a full page load would otherwise announce nothing at all.
-      */}
+      {/* Outcome announced via aria-live; the list stays below so retry is one click. */}
       <div aria-live="polite" className="mt-6 empty:mt-0">
         {outcome ? (
           <OutcomeMessage
@@ -352,10 +297,8 @@ async function SignedIn({
             <li key={workspace.id}>
               <form method="post" action="/map/save/submit">
                 {/*
-                  The workspace id is the ONLY thing the reader chooses, and it is re-checked
-                  in SQL against the session user inside the action's transaction. The source
-                  and feature ride along because the handler needs to know what was asked
-                  for — they are a lookup key into our own cache, not a payload.
+                  workspaceId is re-checked against the session user server-side. source and
+                  feature are only a lookup key into our cache.
                 */}
                 <input type="hidden" name="workspaceId" value={workspace.id} />
                 <input type="hidden" name="source" value={sourceSlug} />

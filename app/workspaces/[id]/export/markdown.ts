@@ -2,12 +2,8 @@ import type { CaseDocument } from "./document";
 import { provenanceNote } from "./document";
 
 /**
- * The Markdown export. Returns immediately and needs no progress state
- * (`docs/design/states.md` 7.6).
- *
- * Note bodies are written through UNCHANGED. They are the user's own Markdown, this is
- * their file, and reformatting somebody's evidence notes on the way out would be a small
- * act of vandalism. They are indented under their step only where that costs nothing.
+ * Markdown export. Note bodies are the user's own Markdown and are written through
+ * unchanged (only indented under their step).
  */
 export function renderCaseMarkdown(doc: CaseDocument): string {
   const out: string[] = [];
@@ -62,12 +58,9 @@ export function renderCaseMarkdown(doc: CaseDocument): string {
   }
 
   /*
-   * SAVED MAP FEATURES. Every one carries its credit and its licence INLINE, beside the
-   * feature (ADR 0025, ADR 0011 rule 2) — a line at the foot of the file does not satisfy
-   * ODbL, CC BY or the TfL terms, and this file gets pasted into other documents in pieces.
-   *
-   * Observed and saved are both printed and never collapsed: one is the upstream's instant,
-   * the other is ours.
+   * Saved map features. Attribution and licence go inline with each feature (ODbL, CC BY and
+   * TfL terms), since the file gets pasted elsewhere in pieces. Observed (upstream) and saved
+   * (ours) times are both printed.
    */
   out.push(`## Saved from the map — ${doc.counts.features}`, "");
   if (doc.features.length === 0) {
@@ -78,8 +71,7 @@ export function renderCaseMarkdown(doc: CaseDocument): string {
       out.push(`- Observed: ${feature.observedAt}`);
       out.push(`- Position: ${feature.coordinates}`);
       if (feature.precisionNote) {
-        // The caveat goes UNDER the number it qualifies, in a full sentence. An export never
-        // calls the map's renderer, so this is the only place it can be said.
+        // Caveat goes right under the position it qualifies.
         out.push(`  - Approximate position. ${feature.precisionNote}`);
       }
       if (feature.altitudeMetres !== null) {

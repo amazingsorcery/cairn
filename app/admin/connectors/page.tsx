@@ -12,21 +12,12 @@ import { cn, formatDate, formatTimestamp } from "@/lib/utils";
 import { CONNECTOR_KINDS, type ConnectorKind } from "@/db/schema";
 
 /**
- * `/admin/connectors` — the health board and the kill-switch. **admin only**, not editor
- * (sitemap.md §8): this page carries the kill-switch, the quota envelope and the recorded
- * legal basis, which are operator responsibilities rather than editorial ones. A non-admin
- * gets 404.
+ * `/admin/connectors`: health board and kill-switch. Admin only (non-admins get 404).
  *
- * THE LINE ABOUT WHAT THIS BOARD CANNOT SHOW IS RENDERED PERMANENTLY, not as a tooltip
- * (states.md §11.5). It is the visible half of ADR 0013: the audit log answers "is this
- * connector failing, how often are we quota-denied, how slow is upstream" and deliberately
- * cannot answer "who looked at what", because there is no column for the request content and
- * no index on the hashed actor. An operator who assumed otherwise would be wrong about what
- * this product retains, and that is a dangerous thing to be wrong about in front of a source.
+ * The notice that the board can't show who made a request is always visible: the audit log
+ * has no request-content column and no index on the hashed actor.
  *
- * NOT BUILT IN THIS PASS: `/admin/connectors/[id]`, the edit form for the quota envelope and
- * the recorded legal basis. It is in sitemap.md §8 and is therefore not linked from here
- * (product-brief §8). Recorded in `docs/frontend/HANDOFF-live.md`.
+ * `/admin/connectors/[id]` (quota and legal-basis editing) isn't built yet, so isn't linked.
  */
 
 export const dynamic = "force-dynamic";
@@ -43,15 +34,8 @@ export function generateMetadata() {
 }
 
 /**
- * Which reader-facing surface each connector kind feeds. Used in the kill-switch dialog, so
- * an operator about to disable a source can see what goes dark.
- *
- * Explicit entries first, then every remaining kind defaults to the map — which is true, and
- * is where all the v2 layers render. Derived from `CONNECTOR_KINDS` rather than hand-written
- * because a hand-written map is exactly what broke when the enum grew: `getConnectorHealth`
- * had one, adding an outcome silently dropped a row from the board, and a connector being
- * refused upstream was counted nowhere. A map built from its own vocabulary cannot fall
- * behind it.
+ * The public surface each connector kind feeds, shown in the kill-switch dialog. Built from
+ * `CONNECTOR_KINDS` so new kinds can't be missed; anything not listed feeds the map.
  */
 const EXPLICIT_SURFACE: Partial<Record<ConnectorKind, string>> = {
   flights: "/live/flights",
@@ -108,21 +92,15 @@ export default async function AdminConnectorsPage() {
           const stats = healthBySlug.get(connector.slug);
           const total = stats?.total ?? 0;
           /**
-           * Not the same number as `total`, and the difference is the point. One governed
-           * attempt is one row; several drivers fan out inside it — six DoH queries per DNS
-           * lookup, four RIPEstat endpoints, two Wayback captures plus redirects. The board
-           * showed attempts and an operator read them as requests, so a recorded ceiling of
-           * 20 lookups a minute was really 120 requests a minute against Cloudflare. QV-09.
+           * Can exceed `total`: one attempt may fan out into several upstream requests
+           * (e.g. six DoH queries per DNS lookup).
            */
           const outbound = stats?.outboundRequests ?? 0;
           const errors = (stats?.byOutcome.upstreamError ?? 0) + (stats?.byOutcome.timeout ?? 0);
           const denied = stats?.byOutcome.quotaDenied ?? 0;
           /**
-           * Shown SEPARATELY from quota denials, and it is not a presentation nicety. A quota
-           * denial is our ceiling refusing the caller; a rate limit is the upstream refusing
-           * us. They point at opposite fixes — lower our ceiling versus back off from theirs —
-           * and an operator reading this board at 3am must not have to reconstruct which is
-           * which from `upstream_status`. QA finding Q-02.
+           * Separate from quota denials: those are our ceiling refusing the caller, this is the
+           * upstream refusing us. They need opposite fixes.
            */
           const rateLimited = stats?.byOutcome.rateLimited ?? 0;
 
@@ -235,7 +213,7 @@ export default async function AdminConnectorsPage() {
                       {connector.legalBasis}
                     </p>
                     <p className="mt-3 text-xs text-muted-foreground">
-                      Not a legal opinion. See <span className="font-mono">docs/content/legal-review.md</span>.
+                      Not a legal opinion.
                     </p>
                   </details>
                 ) : (
@@ -272,7 +250,7 @@ export default async function AdminConnectorsPage() {
 
                 <p className="text-xs text-muted-foreground">
                   Publishing does not enable. The two axes are separate so that re-publishing
-                  cannot silently re-enable something an operator switched off (ADR 0012 §1).
+                  cannot silently re-enable something an operator switched off.
                 </p>
               </CardContent>
             </Card>
@@ -293,11 +271,7 @@ export default async function AdminConnectorsPage() {
   );
 }
 
-/**
- * `tone="warning"` is used only where a non-zero value is itself the finding — a source
- * refusing us is not a number to read past. It is never used for a value that is merely
- * large, because everything coloured is a claim that something needs attention.
- */
+/** `tone="warning"` only where any non-zero value needs attention, not for large values. */
 function Stat({
   label,
   value,

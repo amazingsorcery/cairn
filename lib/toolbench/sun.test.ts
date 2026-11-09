@@ -10,15 +10,9 @@ import {
 } from "./sun";
 
 /**
- * These check the solar model against published astronomy, not against its own output.
- *
- * Every expected value below is either a defined astronomical constant (Earth's obliquity,
- * the equinox geometry) or a consequence of one that can be stated without running this
- * code. Tolerances are given in degrees and minutes because that is what the underlying
- * algorithm — the low-precision solar series from Meeus, as implemented by `suncalc` —
- * actually promises: about a minute of arc for the sun's position, and about a minute of
- * time for rise and set. This is not an ephemeris-grade check against JPL Horizons, and the
- * handoff says so.
+ * Checks the solar model against astronomical constants, not its own output. Tolerances
+ * match suncalc's low-precision Meeus series (~1' of arc, ~1 min of time); not
+ * ephemeris-grade.
  */
 
 /** Earth's obliquity of the ecliptic, and therefore the solar declination at each solstice. */
@@ -37,8 +31,7 @@ function peakElevation(latitude: number, longitude: number, isoDate: string): nu
 
 describe("the solstices put the sun overhead at the tropics", () => {
   it("reaches the zenith on the Tropic of Cancer at the June solstice", () => {
-    // The definition of the Tropic of Cancer: the sun is directly overhead there, and
-    // nowhere further north, on the day of the June solstice.
+    // By definition, the sun is overhead on the Tropic of Cancer at the June solstice.
     expect(peakElevation(OBLIQUITY_DEGREES, 0, "2026-06-21")).toBeGreaterThan(89.5);
   });
 
@@ -56,14 +49,7 @@ describe("the solstices put the sun overhead at the tropics", () => {
 });
 
 describe("solar noon", () => {
-  /**
-   * The standard relation for the sun's elevation at local solar noon:
-   *
-   *   elevation = 90 - |latitude - declination|
-   *
-   * At the solstices the declination is the obliquity, so both sides can be written down
-   * without computing anything.
-   */
+  // Noon elevation = 90 - |latitude - declination|; at the solstice, declination = obliquity.
   it("matches 90 minus the latitude, minus the declination, at the June solstice", () => {
     const cases: Array<[number, number]> = [
       [51.4778, 90 - Math.abs(51.4778 - OBLIQUITY_DEGREES)],
@@ -71,8 +57,7 @@ describe("solar noon", () => {
       [-33.8688, 90 - Math.abs(-33.8688 - OBLIQUITY_DEGREES)],
     ];
     for (const [latitude, expected] of cases) {
-      // Sampling by the minute, so allow the quarter-degree the sun moves in that time near
-      // noon, plus the declination's own drift across the solstice day.
+      // Loose tolerance for per-minute sampling and declination drift over the day.
       expect(peakElevation(latitude, 0, "2026-06-21"), `latitude ${latitude}`).toBeCloseTo(
         expected,
         0,
@@ -95,9 +80,7 @@ describe("solar noon", () => {
 
 describe("the equinox geometry", () => {
   it("puts sunrise close to due east and sunset close to due west", () => {
-    // At an equinox the sun rises due east and sets due west from every latitude. The few
-    // tenths of a degree of slack is the sun's own movement between the equinox instant and
-    // the moment of sunrise at this longitude.
+    // Slack covers the sun's movement between the equinox instant and local sunrise.
     const times = sunTimes(0, 0, new Date("2026-03-20T06:00:00Z"));
     expect(times.sunrise).not.toBeNull();
     expect(times.sunset).not.toBeNull();
@@ -110,21 +93,14 @@ describe("the equinox geometry", () => {
     const times = sunTimes(0, 0, new Date("2026-03-20T06:00:00Z"));
     if (times.sunrise === null || times.sunset === null) throw new Error("no sunrise");
     const hours = (times.sunset.getTime() - times.sunrise.getTime()) / 3_600_000;
-    // Slightly over twelve, because rise and set are defined at the upper limb with
-    // refraction (-0.833 degrees), not at the centre of the disc on the true horizon.
+    // Slightly over 12h: rise/set use the upper limb with refraction (-0.833°).
     expect(hours).toBeGreaterThan(12);
     expect(hours).toBeLessThan(12.2);
   });
 
   it("agrees with suncalc's own rise and set times about where the horizon is", () => {
-    /*
-     * A cross-check that the position function and the times function are reading the same
-     * sky. Rise and set are defined at a geometric altitude of -0.833 degrees (the sun's
-     * semidiameter plus standard refraction); the altitude reported back is the *apparent*
-     * one, which adds refraction again, so the two conventions land within about half a
-     * degree of each other rather than exactly on the same number. What this rules out is a
-     * whole-degree-scale error: a radians-for-degrees mix-up would show as tens of degrees.
-     */
+    // Position and times should agree to within ~0.5° (geometric vs apparent altitude);
+    // this catches gross errors like a radians/degrees mix-up.
     const times = sunTimes(51.4778, -0.0015, new Date("2026-09-15T06:00:00Z"));
     if (times.sunrise === null || times.sunset === null) throw new Error("no sunrise");
     expect(
@@ -188,8 +164,7 @@ describe("the inverse: time of day from a shadow", () => {
     const result = timesForShadowRatio(latitude, longitude, day, 1.0);
     expect(result.matches).toHaveLength(2);
     expect(result.matches.map((match) => match.half).sort()).toEqual(["afternoon", "morning"]);
-    // The two candidates are symmetric about solar noon, which is precisely why shadow
-    // length alone cannot tell morning from afternoon.
+    // Symmetric about solar noon, so shadow length alone can't pick one.
     const noon = sunTimes(latitude, longitude, day).solarNoon.getTime();
     const [first, second] = result.matches;
     if (first === undefined || second === undefined) return;
@@ -201,8 +176,7 @@ describe("the inverse: time of day from a shadow", () => {
     const result = timesForShadowRatio(latitude, longitude, day, 1.0);
     const [morning, afternoon] = result.matches;
     if (morning === undefined || afternoon === undefined) return;
-    // A morning shadow points west of north here, an afternoon shadow east of it. That
-    // difference is the only thing that resolves the ambiguity from the image itself.
+    // Morning shadows point west of north here, afternoon shadows east.
     expect(bearingDifference(morning.shadowBearingDegrees, afternoon.shadowBearingDegrees)).
       toBeGreaterThan(30);
   });

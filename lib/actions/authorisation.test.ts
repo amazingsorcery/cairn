@@ -3,35 +3,13 @@ import { join, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 /**
- * Written by qa-adversary.
+ * Source-shape tests: every Server Action is a public endpoint and must establish the caller
+ * first. These read the source, so a copied action missing its guard fails without a
+ * database.
  *
- * WHY THIS IS A SOURCE-SHAPE TEST AND NOT A BEHAVIOURAL ONE.
- *
- * `lib/actions/**` carries every write in the product. The property asserted here,
- * deterministically and with no database, is the one the whole authorisation model rests on:
- * **a Server Action is a public HTTP endpoint, and its first act must be to establish who is
- * calling.** Every regression in this class looks the same — a new action written by copying
- * a neighbour and dropping the guard line, which typechecks, lints, renders and ships.
- *
- * These tests read the source. That is the point: they fail on the shape of the code before
- * anyone has to reproduce the exploit. They also cover all five action modules, which no
- * behavioural suite yet does.
- *
- * THE BEHAVIOURAL HALF NOW EXISTS, for workspaces, and this note is amended rather than left
- * standing because it said something that has stopped being true. The original wording was:
- * "A behavioural test needs a real Postgres and a Next request scope; the Vitest environment
- * has neither (`vitest.config.ts` pins a fake `DATABASE_URL`)." The first half was a correct
- * reading of the config and the second half turned out to be a solvable problem, not a fixed
- * one — see `tests/db/provision.ts`, which creates an isolated `_vitest` database from
- * whatever server `.env.local` or CI already names, and `tests/db/session.ts`, which doubles
- * the session store rather than the guards.
- *
- * `lib/actions/workspaces.authorisation.test.ts` and
- * `lib/queries/workspaces.authorisation.test.ts` are that half (QA finding QV-16). The two
- * kinds of test catch different regressions and neither replaces the other: a shape test
- * cannot see a guard that is present and ineffective, and a behavioural test cannot see a
- * new action nobody wired a case for. Both are derived from the module's exports so that
- * neither depends on somebody remembering.
+ * The behavioural counterparts are `lib/actions/workspaces.authorisation.test.ts` and
+ * `lib/queries/workspaces.authorisation.test.ts`. Shape tests can't see an ineffective guard;
+ * behavioural tests can't see a new unwired action.
  */
 
 const ROOT = resolve(__dirname, "..", "..");
@@ -41,11 +19,7 @@ function read(path: string): string {
   return readFileSync(path, "utf8");
 }
 
-/**
- * Source with comments and string literals of prose stripped. Every assertion below is about
- * what the code DOES; a sentence in a comment explaining why something is not done must not
- * be able to fail the test that proves it is not done.
- */
+/** Source with comments stripped, so prose in comments can't trip assertions. */
 function code(source: string): string {
   return source
     .replace(/\/\*[\s\S]*?\*\//g, " ")
@@ -105,8 +79,7 @@ describe("every Server Action establishes the caller before it does anything els
       });
 
       it(`${mod.name} → ${action.name}() guards before it parses input`, () => {
-        // An unauthenticated caller must not learn whether their payload was well-formed:
-        // a validation error that only a valid payload produces is an oracle.
+        // Otherwise validation errors leak information to unauthenticated callers.
         const guardAt = action.body.search(GUARDS);
         const parseAt = action.body.search(/\.safeParse\(|\.parse\(/);
         if (parseAt === -1) return; // nothing to order against
@@ -115,8 +88,7 @@ describe("every Server Action establishes the caller before it does anything els
       });
 
       it(`${mod.name} → ${action.name}() runs inside guard() so no driver error escapes`, () => {
-        // `guard()` maps Postgres errors to sentences and strips `detail`, which on a unique
-        // violation contains the conflicting value — for users_email_key, an email address.
+        // `guard()` strips Postgres `detail`, which can contain an email address.
         expect(action.body).toMatch(/return guard\(/);
       });
     }
@@ -128,8 +100,7 @@ describe("workspace mutations carry the session user id into SQL", () => {
 
   for (const action of exportedActions(source)) {
     it(`${action.name}() constrains by user id rather than by a form field`, () => {
-      // Either an explicit ownership assertion inside the transaction, or `user.id` in the
-      // WHERE clause. What must never appear is a fetch-then-compare in TypeScript.
+      // An `assertOwns*` call or `user.id` in the WHERE clause; never fetch-then-compare.
       const body = code(action.body);
       const scopesToUser =
         /assertOwns(Workspace|Item|Note)\(/.test(body) ||
@@ -146,13 +117,13 @@ describe("workspace mutations carry the session user id into SQL", () => {
   });
 
   it("returns notFound, never forbidden, for a non-owner", () => {
-    // A 403 confirms the workspace exists. HANDOFF §11 assertion 2.
+    // A 403 would confirm the workspace exists.
     expect(source).not.toMatch(/fail\(\s*["']forbidden["']/);
     expect(source).toMatch(/fail\(\s*["']notFound["']/);
   });
 
   it("never revalidates a public cache tag from a workspace mutation", () => {
-    // caching.md §5: a checkbox click must not purge the catalogue.
+    // A checkbox click must not purge the catalogue.
     expect(code(source)).not.toMatch(/revalidateTag|revalidatePath/);
   });
 });
@@ -161,7 +132,7 @@ describe("role levels match the routes that expose them", () => {
   const connectors = read(join(ACTIONS_DIR, "connectors.ts"));
   const taxonomy = read(join(ACTIONS_DIR, "taxonomy.ts"));
 
-  it("connector operations are admin, not editor (sitemap.md §8)", () => {
+  it("connector operations are admin, not editor", () => {
     for (const action of exportedActions(connectors)) {
       if (!/^(setConnectorEnabled|updateConnector|publishConnector|recheckConnector)$/.test(action.name)) continue;
       expect(action.body).toMatch(/await requireAdmin\(\)/);
@@ -188,14 +159,12 @@ describe("every /admin page carries its own role guard", () => {
     const source = read(page);
 
     it(`${rel} calls requireEditorPage or requireAdminPage in the page body`, () => {
-      // Not the layout. A layout guard is one parallel route or one streamed loading.tsx
-      // away from not running.
+      // Not the layout: a parallel route or loading.tsx can bypass a layout guard.
       expect(source).toMatch(/await require(Editor|Admin)Page\(\)/);
     });
 
     it(`${rel} resolves its metadata behind the same role check`, () => {
-      // A static `export const metadata` resolves even when the body calls notFound(), so a
-      // non-editor gets the 404 body under a title naming the page they were refused.
+      // Static metadata resolves even when the body calls notFound(), leaking the title.
       expect(source).not.toMatch(/^export const metadata/m);
       if (/generateMetadata/.test(source)) expect(source).toMatch(/adminMetadata\(/);
     });
@@ -214,7 +183,7 @@ describe("banned constructs, asserted across the whole tree", () => {
     expect(sources.length).toBeGreaterThan(100);
   });
 
-  it("contains zero uses of dangerouslySetInnerHTML (ADR 0016 decision 5, as amended)", () => {
+  it("contains zero uses of dangerouslySetInnerHTML", () => {
     const offenders = sources
       .filter((f) => !f.rel.endsWith(".test.ts") && !f.rel.endsWith(".test.tsx"))
       .filter((f) => /dangerouslySetInnerHTML\s*[=:]/.test(f.source))
@@ -230,10 +199,8 @@ describe("banned constructs, asserted across the whole tree", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("has no source file outside db/schema.ts importing or querying `reviews` (HANDOFF §11 assertion 9)", () => {
-    // The identifier, not the English word. `/about` and `/methodology` both say in prose
-    // that the product publishes no user reviews — which is ADR 0010's decision being
-    // honoured, not breached, and a test that flags it would train people to weaken it.
+  it("has no source file outside db/schema.ts importing or querying `reviews`", () => {
+    // Matches the identifier, not the word (pages mention "reviews" in prose).
     const offenders = sources
       .filter((f) => f.rel !== "db/schema.ts" && !/\.(test|spec)\.tsx?$/.test(f.rel))
       .filter((f) =>
@@ -245,15 +212,13 @@ describe("banned constructs, asserted across the whole tree", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("stores no hyphenated `needs-review` confidence value (HANDOFF §11 assertion 10)", () => {
+  it("stores no hyphenated `needs-review` confidence value", () => {
     const offenders = sources
       .filter((f) => !f.rel.endsWith(".test.ts") && !f.rel.endsWith(".test.tsx"))
       .filter((f) => /["']needs-review["']/.test(f.source))
-      // methodology-anchor.tsx maps the stored value to a URL fragment; that is the one
-      // legitimate appearance and it is a documented translation point.
+      // Maps the stored value to a URL fragment.
       .filter((f) => f.rel !== "components/layout/methodology-anchor.tsx")
-      // `scripts/verify-backend.ts` queries FOR the hyphenated value in order to assert that
-      // no row carries it. Excluding the assertion is not excluding the property.
+      // Queries for the hyphenated value to assert no row has it.
       .filter((f) => f.rel !== "scripts/verify-backend.ts")
       .map((f) => f.rel);
     expect(offenders).toEqual([]);

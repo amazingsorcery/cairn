@@ -1,13 +1,6 @@
 /**
- * The Toolbench index.
- *
- * One entry per route that exists and resolves. Product-brief section 8: if it is not built,
- * it is not linked — so a tool is added here in the same change that adds its page, never
- * before, and there is no "coming soon" state.
- *
- * `dataHandling` is the field that matters most to this audience and it is not decoration:
- * it is rendered as a badge on the index and again at the top of each tool page, and it must
- * describe what the tool actually does rather than what we would like it to do.
+ * Toolbench index: one entry per built route, added with its page (no "coming soon").
+ * `dataHandling` is shown on the index and each tool page and must match actual behaviour.
  */
 
 export type DataHandling =
@@ -30,18 +23,10 @@ export const DATA_HANDLING_DETAIL: Readonly<Record<DataHandling, string>> = {
     "Everything this tool does happens on your own machine. No file, no coordinate and no text you type is sent to this site's server or anywhere else — there is no request to send it in.",
   opensThirdParty:
     "This tool opens other companies' search engines. Nothing is uploaded to this site, but the image does reach whichever engines you open, and they keep their own records of it.",
-  /**
-   * The honest version, written for somebody deciding whether to type a sensitive domain
-   * into it. It states what we see, what the upstream sees, and what we keep — including
-   * the part that is genuinely protective, which is that the query never appears in a log.
-   */
+  /** States what we see, what the upstream sees, and what we keep. */
   onOurServer:
     "This tool cannot run in your browser: it queries a public source that a web page is not allowed to call directly. Your query goes to this site's server, which asks the source on your behalf and sends you the answer. That means the source sees our server rather than your address — but it does see what you asked about. We record that a lookup happened and how it ended; we never record the domain, address or URL you asked about, and there is no column in our audit log that could hold it.",
-  /**
-   * Distinct from `onOurServer`: these sources CAN be called from a browser, and we route
-   * them through the server anyway. Saying "cannot" where we mean "chose not to" would
-   * misdescribe the trade, and the trade is the thing the reader is deciding about.
-   */
+  /** Unlike `onOurServer`, these sources could be called from the browser; we choose not to. */
   viaOurServer:
     "Your browser could call this source directly. We route it through this site's server instead, so the source sees us rather than your address and never learns which place, language or area you were searching for — that pattern is the thing this audience most needs not to leak. The request is sent as a POST so the query does not appear in a web-server log, here or anywhere. We record that a search happened and how it ended, never what it asked for.",
   clientToSource:
@@ -54,7 +39,7 @@ export interface ToolbenchEntry {
   /** One line, on the index card. */
   readonly summary: string;
   readonly dataHandling: DataHandling;
-  /** The playbook this tool is a step in. Every entry has one; a tool with no method is a toy. */
+  /** The playbook this tool is a step in. Required. */
   readonly playbook: { readonly slug: string; readonly title: string; readonly step: string };
   /** Grouping on the index page. */
   readonly group: ToolGroup;

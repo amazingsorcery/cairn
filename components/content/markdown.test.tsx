@@ -4,16 +4,9 @@ import { describe, expect, it } from "vitest";
 import { Markdown } from "./markdown";
 
 /**
- * Written by qa-adversary. This is the XSS proof for user-authored content.
- *
- * Note bodies (`notes.body`) and playbook/tool copy all reach the reader through this one
- * component. `docs/decisions/0016-ui-policy-rulings.md` decision 5 bans
- * `dangerouslySetInnerHTML` outright and states that markdown is rendered through
- * react-markdown, which escapes by default. That is a claim about a third-party library's
- * configuration, and a configuration claim that nothing asserts is one `rehypePlugins` prop
- * away from being false — silently, with no type error and no failing test.
- *
- * So these tests do not read the source. They render hostile input and assert on the DOM.
+ * XSS tests for user-authored content. Note bodies and playbook/tool copy all render
+ * through this component, so these render hostile input and assert on the DOM rather than
+ * trusting react-markdown's default escaping (one `rehypePlugins` prop could undo it).
  */
 
 describe("Markdown — raw HTML in user input is inert", () => {
@@ -45,8 +38,7 @@ describe("Markdown — raw HTML in user input is inert", () => {
   });
 
   it("renders raw HTML as visible text rather than dropping it silently", () => {
-    // Dropping it would be safe but dishonest: an investigator pasting evidence that happens
-    // to contain angle brackets must see their own note back.
+    // Pasted evidence containing angle brackets must still show up in the note.
     render(<Markdown>{`<script>x</script>`}</Markdown>);
     expect(screen.getByText(/<script>x<\/script>/)).toBeInTheDocument();
   });

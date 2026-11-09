@@ -13,23 +13,11 @@ import {
 } from "@/components/ui/dialog";
 
 /**
- * Export a case to Markdown or PDF (`docs/design/flows.md` 4, `states.md` 7.6 / 7.7).
+ * Export a case to Markdown or PDF.
  *
- * MARKDOWN IS IMMEDIATE and needs no state: the handler streams it straight back with
- * `Content-Disposition: attachment`, so a plain navigation downloads it without leaving the
- * page.
- *
- * PDF IS GENERATED SERVER-SIDE and is one of exactly two spinners in the product — and even
- * here it is a spinner WITH TEXT saying what is happening, plus an elapsed count, plus a
- * different sentence past 20 seconds. An indeterminate spinner with no text would be the
- * thing `states.md` 0 forbids.
- *
- * THE DIALOG CANNOT BE DISMISSED BY CLICKING AWAY MID-EXPORT. Only the explicit `cancel`
- * closes it, and that button states that cancelling changes nothing in the case — because
- * the user's first question after any export trouble is whether their case survived.
- *
- * ON FAILURE the dialog STAYS OPEN with the error and a retry, and offers Markdown as the
- * escape hatch. The case is untouched and the copy says so.
+ * Markdown is a plain navigation (`Content-Disposition: attachment`). PDF is built
+ * server-side; while building, the dialog shows elapsed time and can only be closed with
+ * the explicit cancel. On failure it stays open with retry and the Markdown fallback.
  */
 
 const SLOW_AFTER_SECONDS = 20;
@@ -40,13 +28,8 @@ export interface ExportDialogProps {
   workspaceId: string;
   counts: { notes: number; tools: number; steps: number; features: number };
   /**
-   * The control that opened this dialog. Focus goes back to it on close.
-   *
-   * Q-09. Radix restores focus to its own `DialogTrigger` for free, but this dialog is driven
-   * by controlled `open` state from the header rather than by a trigger element, so Radix has
-   * nothing to restore to and focus lands on `<body>`. Handing it the trigger explicitly is
-   * the smaller change of the two the audit offered, and it keeps the dialog mountable on
-   * demand — which is what Q-12 needed.
+   * The control that opened this dialog; focus returns to it on close. Needed because the
+   * dialog is controlled without a `DialogTrigger`, so Radix has nothing to restore to.
    */
   returnFocusTo?: RefObject<HTMLButtonElement | null>;
 }
@@ -89,8 +72,7 @@ export function ExportDialog({
   const summary = `${counts.notes} ${counts.notes === 1 ? "note" : "notes"} with timestamps, ${counts.tools} saved ${counts.tools === 1 ? "tool" : "tools"} with their confidence and last-verified dates, ${counts.features} saved map ${counts.features === 1 ? "feature" : "features"} with the attribution and licence each one is owed, and ${counts.steps} checklist ${counts.steps === 1 ? "step" : "steps"}.`;
 
   function exportMarkdown() {
-    // A navigation, not a fetch: `Content-Disposition: attachment` means the browser saves
-    // the file and stays on this page. Nothing to wait for, so nothing to report.
+    // `Content-Disposition: attachment` keeps the browser on this page.
     window.location.href = `/workspaces/${workspaceId}/export?format=md`;
     onOpenChange(false);
   }
@@ -116,7 +98,7 @@ export function ExportDialog({
       anchor.remove();
       URL.revokeObjectURL(url);
 
-      // The dialog closes only on a confirmed response (`flows.md` 4, step 5).
+      // Close only after a successful response.
       onOpenChange(false);
     } catch (error) {
       if (controller.signal.aborted) {
@@ -150,9 +132,7 @@ export function ExportDialog({
           if (building) event.preventDefault();
         }}
         onCloseAutoFocus={(event) => {
-          // Take the restore away from Radix — it has no trigger to aim at here — and put
-          // focus back on the button that opened the dialog. Without this it goes to `<body>`
-          // and a keyboard user is returned to the top of the document (Q-09).
+          // Radix has no trigger to restore to; focus the opener instead of `<body>`.
           const trigger = returnFocusTo?.current;
           if (!trigger) return;
           event.preventDefault();

@@ -13,7 +13,7 @@ This policy governs what you may and may not do with {{BRAND_NAME}}. It forms pa
 It is short and it is specific, because a policy that lists everything is a policy that enforces
 nothing. Where it prohibits something, we mean it and we will act on it.
 
-**A qualified lawyer has not yet reviewed this document. See `docs/content/legal-review.md`.**
+**A qualified lawyer has not yet reviewed this document.**
 
 ## 1. What {{BRAND_NAME}} is
 

@@ -1,49 +1,16 @@
 import { fail, ok, type ToolResult } from "./result";
 
 /**
- * Aircraft and vessel identifier decoding — entirely in the browser, against no registry.
+ * Aircraft and vessel identifier decoding, entirely in the browser.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * WHAT THIS TOOL DELIBERATELY DOES NOT DO, AND WHY
- * ─────────────────────────────────────────────────────────────────────────────
- * It does not query the FAA aircraft registry, or any other registry, from our server.
+ * The FAA registry is linked, not proxied: it has no API or published rate limit, returns
+ * HTML that could change silently, and includes registrants' home addresses, which we won't
+ * serve. No vessel registry is queried since none permits programmatic third-party use.
  *
- * The FAA's N-Number Inquiry works and its data is US public domain. It was exercised by
- * hand on 2026-09-01 to obtain the reference values this file is tested against. Three
- * things stopped it becoming a backend, and the third is decisive:
- *
- * 1. **There is no API and no published rate limit.** `registry.faa.gov/aircraftinquiry`
- *    serves HTML built for a person. Source-acceptance criterion 4 requires a documented
- *    rate limit the adapter's TTL respects, or a measured one — and measuring an unpublished
- *    limit means deliberately loading a government system to find where it breaks.
- *
- * 2. **The response is a page, not a contract.** A markup change would silently produce
- *    wrong or empty registry facts about a named aircraft owner. Wrong data about a named
- *    person is the worst failure this tool could have.
- *
- * 3. **The record contains the owner's postal address.** The N-Number result page returns
- *    the registrant's street, city, state, ZIP and county, and for a privately owned
- *    aircraft that is a named individual's home address. Standing constraint 3 and
- *    source-acceptance criterion 6: proxying that through our server, cached and served on
- *    demand, would make this product a personal-data lookup for aircraft owners. That is a
- *    thing we decline to be, and it is a decision rather than a technical limitation.
- *
- * So the FAA registry is LINKED, not proxied. The reader goes there themselves, sees the
- * federal system notice themselves, and their query is between them and the FAA.
- *
- * **No vessel registry is queried either.** No source was found whose terms permit
- * programmatic third-party use for ship particulars, so none is claimed. product-brief §6:
- * omission is always allowed; fabrication never is.
- *
- * What IS here is the arithmetic — which is genuinely useful, entirely deterministic, and
- * checkable against published values:
- *
- *   - US N-number ↔ ICAO 24-bit address, both directions. This is a real daily problem: an
- *     ADS-B feed gives you a hex, a registry gives you a tail number, and they are different
- *     encodings of the same aircraft.
+ * What's here:
+ *   - US N-number <-> ICAO 24-bit address, both directions.
  *   - Which national block an ICAO address falls in.
- *   - What an MMSI's digits say about the station it belongs to.
- * ─────────────────────────────────────────────────────────────────────────────
+ *   - What an MMSI's digits say about the station.
  */
 
 /* ================================================================== *
@@ -93,26 +60,12 @@ export interface IcaoBlock {
 }
 
 /**
- * National blocks in the ICAO 24-bit address space.
+ * National blocks in the ICAO 24-bit address space. Each block was checked against real
+ * aircraft in ADS-B captures (2026-09-01, plus `lib/sources/__fixtures__/adsb-lol.json`);
+ * anchors are asserted in `registry-lookup.test.ts`.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * PROVENANCE, WHICH MATTERS MORE HERE THAN ANYWHERE ELSE IN THIS FILE
- * ─────────────────────────────────────────────────────────────────────────────
- * **Every block below was checked against real aircraft observed broadcasting from it.**
- * The anchors are hex/registration pairs from ADS-B captures taken on 2026-09-01 over
- * Tokyo, Sydney, Delhi, São Paulo, Dubai, Johannesburg, Moscow and Israel, plus the London
- * capture already in this repository at `lib/sources/__fixtures__/adsb-lol.json`. Each
- * anchor is written out in `registry-lookup.test.ts` and asserted.
- *
- * **The table is therefore partial, and that is deliberate.** Blocks nobody could check are
- * not listed, and an address outside every listed block returns null — which the UI renders
- * as "not in a block this tool has verified", a statement about this tool rather than about
- * the address. A confident wrong country on an aircraft is exactly the kind of error that
- * survives into a published story.
- *
- * Some ranges are narrower than the full national allocation for the same reason: where the
- * observations only support a smaller window, the smaller window is what is written.
- * ─────────────────────────────────────────────────────────────────────────────
+ * Intentionally partial: unverified blocks are omitted (lookup returns null, shown as "not in
+ * a verified block"), and some ranges are narrower than the full allocation.
  */
 export const ICAO_BLOCKS: readonly IcaoBlock[] = [
   { start: 0x040000, end: 0x043fff, country: "Ethiopia", prefixes: ["ET-"] },
@@ -185,10 +138,7 @@ export function findIcaoBlock(value: number): IcaoBlock | null {
  * US N-numbers
  * ------------------------------------------------------------------ */
 
-/**
- * The FAA's 24-letter alphabet: I and O are excluded, because they are read as 1 and 0.
- * The order below IS the encoding order and must not be sorted differently.
- */
+/** FAA's 24-letter alphabet (no I or O). The order is the encoding order. */
 const N_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ";
 
 /** First US address, which is N1. Confirmed against the FAA's own record for N1. */
@@ -197,18 +147,15 @@ export const US_BLOCK_START = 0xa00001;
 export const US_BLOCK_END = 0xadf7c7;
 
 /**
- * The size of the value space reachable from each remaining position.
+ * Number of N-numbers sharing the first `k` characters after the N:
+ * 1 (stop) + letter suffixes + 10 × next slot.
  *
- * `SLOT[k]` is the number of distinct N-numbers that share the first `k` characters after
- * the N. Each slot is: 1 (stop here) + the letter suffixes reachable + 10 × the next slot.
- *
- *   SLOT_5 = 1 + 24 + 10×1        =     35   (fifth position: a letter or a digit, then stop)
+ *   SLOT_5 = 1 + 24 + 10×1        =     35
  *   SLOT_4 = 1 + 24×25 + 10×35    =    951
  *   SLOT_3 = 1 + 24×25 + 10×951   =  10111
  *   SLOT_2 = 1 + 24×25 + 10×10111 = 101711
  *
- * and 9 × 101711 = 915,399, which is exactly `US_BLOCK_END − US_BLOCK_START + 1`. That
- * identity is the check that the constants are the real ones and not approximately right.
+ * 9 × 101711 = 915,399 = `US_BLOCK_END − US_BLOCK_START + 1`.
  */
 const SLOT_2 = 101_711;
 const SLOT_3 = 10_111;
@@ -216,14 +163,8 @@ const SLOT_4 = 951;
 const SLOT_5 = 35;
 
 /**
- * Where the digit branch starts inside a slot.
- *
- * At positions 2 to 4 a letter may be followed by a second letter, so the letter branch is
- * 24 × 25 = 600 values wide and digits start at 601. At position 5 there is no room for a
- * second letter, so the letter branch is 24 wide and digits start at 25. Getting this wrong
- * produces correct answers for every N-number of four characters or fewer and wrong ones for
- * five-digit registrations — which is most of the fleet, and is exactly the bug the FAA
- * reference values below caught.
+ * Where digits start within a slot: 601 at positions 2-4 (letter branch is 24 × 25 wide),
+ * 25 at position 5 (only one letter fits). Wrong values break five-character registrations.
  */
 const DIGIT_BASE_EARLY = 601;
 const DIGIT_BASE_LAST = 25;
@@ -321,12 +262,8 @@ export function nNumberToIcao(input: string): ToolResult<IcaoAddress> {
 }
 
 /**
- * An ICAO address inside the US block back to its N-number.
- *
- * The exact inverse of the encoder above: the same slot sizes, walked outward instead of
- * inward. `registry-lookup.test.ts` round-trips every one of the FAA reference values and a
- * systematic sweep of the block, because an encoder and a decoder that agree with each other
- * and not with reality is the failure this pair is most prone to.
+ * ICAO address in the US block -> N-number; inverse of the encoder above. Tests round-trip
+ * FAA reference values and a sweep of the block.
  */
 export function icaoToNNumber(address: IcaoAddress): ToolResult<string> {
   if (address.value < US_BLOCK_START || address.value > US_BLOCK_END) {
@@ -470,14 +407,8 @@ export const MMSI_CATEGORIES: Readonly<Record<MmsiCategory, MmsiCategoryInfo>> =
 };
 
 /**
- * The regions the first digit of an MID denotes, from ITU-R M.585's own allocation of the
- * MID series. This is the whole of what this tool claims about an MMSI's geography.
- *
- * **There is no MID-to-country table here, on purpose.** A three-digit MID does name a
- * specific administration, but no machine-readable list of the current assignments could be
- * verified during this build, and a table of roughly 250 entries transcribed from memory
- * would put a fabricated fact next to a real one with no way for a reader to tell which was
- * which. The ITU's MARS database is authoritative and is linked from the tool instead.
+ * Regions for the first MID digit (ITU-R M.585). No MID-to-country table: no verifiable
+ * machine-readable source was found, so the tool links to the ITU MARS database instead.
  */
 export const MID_REGIONS: Readonly<Record<string, string>> = {
   "2": "Europe",

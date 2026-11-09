@@ -4,51 +4,27 @@ import { getToolBySlug } from "@/lib/queries/tools";
 import { requireSignInEnabled } from "@/lib/session-surface";
 
 /**
- * `POST /tools/[slug]/save/submit` — the save picker's form target.
+ * `POST /tools/[slug]/save/submit`: form target for the save picker.
  *
- * WHY A ROUTE HANDLER AND NOT A SERVER ACTION. Two earlier versions of this used a Server
- * Action and both lost a race, in opposite directions, and `tests/e2e/vertical-slice.spec.ts`
- * caught each one:
+ * A route handler, not a Server Action. With a Server Action, a click before hydration does
+ * nothing, and after hydration the submit is a background `fetch` that's aborted if the user
+ * navigates away. A native form POST has neither problem (covered by
+ * `tests/e2e/vertical-slice.spec.ts`).
  *
- *   1. Called from `onClick`, a tap that lands between the server HTML arriving and React
- *      attaching does nothing at all — silently. A real reader on a slow connection sees a
- *      button that looks ready and is not.
- *   2. As `<form action={serverAction}>`, React intercepts the submit after hydration and
- *      sends it as a background `fetch`. If the reader navigates away in the moment after
- *      clicking, the connection drops, Next aborts the action, and the save is lost — with the
- *      button having already shown that it was pressed.
- *
- * A native `<form method="post">` to a Route Handler has neither window. The browser commits
- * to the request before it leaves the page, React never intercepts it, and it works with the
- * bundle removed. The cost is a full page load per save, which for a control used once per
- * entry is the right trade for never silently dropping one.
- *
- * IT WRITES NO SQL AND INVENTS NO ACTION. `addWorkspaceItem` re-checks the session,
- * Zod-validates, re-checks ownership inside its transaction, and reads the snapshot title FROM
- * THE DATABASE rather than from the form (ADR 0008). The tool id is resolved HERE from the
- * route's own slug, never from the posted body, so the one value the reader has no business
- * choosing never round-trips through the client.
+ * `addWorkspaceItem` handles session, validation and ownership, and reads the snapshot title
+ * from the database. The tool id comes from the route slug, never the form body.
  */
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-/** What the attempt did. A short code, so the page owns the copy and a crafted link cannot. */
+/** Outcome code; the page owns the copy so a crafted link can't inject text. */
 type Outcome = "saved" | "already" | "busy" | "gone" | "failed" | "invalid" | "signedout";
 
 /**
- * Same-origin check.
- *
- * A Server Action gets this from the framework; a Route Handler does not, and this one writes
- * to the signed-in user's own data, so a cross-site form post must not reach it. `Origin` is
- * set by every browser on a cross-origin form POST and cannot be forged by page script.
- *
- * It is compared against the **Host header** — the authority the browser actually addressed —
- * and not against `request.url`, whose host is the server's own binding and differs from the
- * one the reader used the moment anything sits in front of it. Getting that wrong rejects
- * every genuine save, which is exactly what happened the first time.
- *
- * A missing `Origin` with a same-site `Sec-Fetch-Site` is the ordinary same-origin form case.
+ * CSRF check (route handlers don't get Server Actions' built-in one). Compares `Origin` to
+ * the Host header, not `request.url`, whose host is the server's binding behind a proxy.
+ * No `Origin` plus a same-origin `Sec-Fetch-Site` is a normal same-origin form post.
  */
 function sameOrigin(request: Request): boolean {
   const origin = request.headers.get("origin");
@@ -69,21 +45,13 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ slug: string }> },
 ): Promise<Response> {
-  /*
-   * PUBLIC-ONLY MODE: no sign-in, so no cases, so nothing to write into. 404 before the body
-   * is even read — an unauthenticated caller must not learn whether their payload was
-   * well-formed on a surface this deployment does not offer. ADR 0032.
-   */
+  // Public-only mode: 404 before reading the body.
   requireSignInEnabled();
 
   const { slug } = await params;
   /**
-   * A RELATIVE `Location`, which browsers resolve against the address they used. An absolute
-   * URL built from `request.url` would send the reader to the server's own binding — which is
-   * how the first version bounced `127.0.0.1` visitors to `localhost` and lost their session
-   * cookie on the way.
-   *
-   * 303: the result of a POST is a GET, so a reload does not re-submit the save.
+   * Relative `Location` so the browser keeps the host it used (an absolute URL from
+   * `request.url` can switch hosts and lose the session cookie). 303 so reload doesn't resubmit.
    */
   const back = (outcome: Outcome, workspaceId?: string) => {
     const query = new URLSearchParams({ outcome });
@@ -112,14 +80,12 @@ export async function POST(
   });
 
   if (result.ok) return back("saved", workspaceId);
-  // The session can lapse while this page sits open. It is its own outcome because the next
-  // action is different from every other failure: sign in again, then the same button works.
+  // Session lapsed while the page was open.
   if (result.code === "unauthenticated") return back("signedout", workspaceId);
   if (result.code === "notFound") return back("gone", workspaceId);
   if (result.code === "conflict") {
-    // "That is already saved in this case." and the rate limit both arrive as `conflict`, and
-    // the action's own sentence is the only thing that separates them. If the wording ever
-    // drifts this falls through to `busy`, whose copy is vaguer but not wrong.
+    // Duplicate and rate limit both come back as `conflict`; only the message tells them
+    // apart. Falls back to `busy` if the wording changes.
     const already = result.message.toLowerCase().includes("already saved");
     return back(already ? "already" : "busy", workspaceId);
   }

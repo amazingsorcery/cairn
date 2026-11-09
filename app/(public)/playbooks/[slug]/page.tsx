@@ -17,27 +17,14 @@ import { getPlaybookBySlug, listPublishedPlaybookSlugs } from "@/lib/queries/pla
 import { staticParamsOrEmpty } from "@/lib/static-params";
 
 /**
- * `/playbooks/[slug]` — one method, every step, readable with no account
- * (`docs/brand/HANDOFF.md` §7.4, wireframe 06).
+ * `/playbooks/[slug]`: one playbook, readable without an account. ISR (1h).
  *
- * ISR:3600 with `generateStaticParams` over PUBLISHED slugs only (architecture HANDOFF §8,
- * sitemap.md §2). A draft slug in the prerender manifest would publicly confirm that an
- * unpublished entry exists. The route reads no `searchParams`, no `cookies()` and no
- * `auth()`; any of those would silently make it dynamic and `revalidate` would do nothing.
+ * Static params cover published slugs only, so the prerender manifest can't reveal drafts.
+ * Don't read `searchParams`, `cookies()` or `auth()` or the route turns dynamic.
  *
- * "start a case from this playbook" renders FOR EVERYONE, signed in or out (sitemap.md §2:
- * hiding it would hide the product's fourth pillar from the people most likely to want it).
- * It is a link to `/workspaces/new?playbook=<slug>`, which is session-gated and redirects a
- * signed-out reader through `/signin` carrying that destination as its `callbackUrl` — so
- * the intent survives the round trip rather than dropping the reader back on a bare page
- * (`docs/design/flows.md` ⚠ W0). See `docs/frontend/HANDOFF-workspaces.md` §3.
- *
- * EXCEPT IN PUBLIC-ONLY MODE, where no sign-in method is configured and `/workspaces/**`
- * answers 404 (ADR 0032). "Signed out" and "there are no accounts here" are different
- * states: the first is one click from a case, the second has nowhere to go, and offering the
- * control anyway would be a dead link. The playbook itself is unaffected — every step is
- * readable without an account, which is what the page says and has always been true.
- * `isSignInEnabled()` reads a boot-time constant, so this route stays ISR.
+ * "start a case" shows for signed-out readers too; `/workspaces/new` sends them through
+ * `/signin` with a `callbackUrl`. Hidden in public-only mode, where `/workspaces` 404s.
+ * `isSignInEnabled()` is a boot-time constant, so the route stays static.
  */
 
 /** A Markdown body's own leading title, which the route already renders as its `h1`. */
@@ -46,7 +33,7 @@ const LEADING_HEADING = /^\s*#\s+.*\r?\n+/;
 export const revalidate = 3600;
 
 export async function generateStaticParams() {
-  // Tolerates a build with no database — see ADR 0018.
+  // Tolerates a build with no database.
   return staticParamsOrEmpty("/playbooks/[slug]", async () => {
     const slugs = await listPublishedPlaybookSlugs();
     return slugs.map(({ slug }) => ({ slug }));
@@ -83,8 +70,7 @@ export default async function PlaybookDetailPage({
   const { slug } = await params;
   const playbook = await getPlaybookBySlug(slug);
 
-  // A draft and a slug that never existed are the same answer. Deliberately
-  // (`docs/design/states.md` §1.2).
+  // Drafts and unknown slugs get the same 404.
   if (!playbook) notFound();
 
   const steps = playbook.steps.map((step, index) => ({
@@ -92,9 +78,7 @@ export default async function PlaybookDetailPage({
     title: step.title,
   }));
 
-  // The authored overview opens with its own `# Title`, and `components/content/markdown.tsx`
-  // demotes a Markdown `#` to `<h2>` — which would restate the `h1` immediately below it.
-  // Same treatment as `/legal/[slug]`: the route renders the title, so the body does not.
+  // Strip the overview's own `# Title`; the page already renders it as the h1.
   const overview = playbook.overview?.replace(LEADING_HEADING, "") ?? null;
 
   return (
@@ -102,19 +86,15 @@ export default async function PlaybookDetailPage({
       <Breadcrumb
         items={[
           { label: "playbooks", href: "/playbooks" },
-          // The category is plain text, not a link: `/directory/[category]` is another
-          // engineer's route and "if it isn't built, it isn't linked" (product-brief §8).
-          // See HANDOFF-workspaces.md §7 for the one-line change when it lands.
+          // Category is plain text, not a link.
           { label: playbook.category.name.toLowerCase() },
           { label: playbook.title },
         ]}
       />
 
       {/*
-        DOM order is h1 → step index → steps, which is both the 375px layout and a legal
-        heading outline. From `md` up, explicit grid placement moves the index into a
-        sticky left rail spanning both rows without reordering the document: a screen
-        reader and a mobile reader meet the h1 first either way.
+        DOM order is h1, step index, steps. From `md` up, grid placement moves the index
+        into a sticky left rail without reordering the document.
       */}
       <div className="mt-6 md:grid md:grid-cols-[minmax(0,18rem)_minmax(0,1fr)] md:gap-10">
         <header className="md:col-start-2 md:row-start-1">
@@ -134,17 +114,8 @@ export default async function PlaybookDetailPage({
             <VerificationDate lastVerifiedAt={playbook.lastVerifiedAt} />
           </div>
           {/*
-            Q-16. The definition is READ FROM `confidenceMeaning()` rather than paraphrased
-            here: the chip component is the single home of what each level means, and a
-            second wording on this page is a second thing to drift.
-            `components/layout/methodology-anchor.tsx` already makes the same argument for
-            the anchor map.
-            Rendered with NO prefix of our own. Every `confidenceMeaning()` string now opens
-            by naming our record ("Our record of this entry is..."), so a sighted reader gets
-            the framing that the chip's `sr-only` "Our confidence in this entry:" gives a
-            screen-reader user. Adding a second "Our record of this method:" in front of it
-            stuttered. If those strings are ever reworded to drop the framing, this paragraph
-            is where it has to come back.
+            Definition comes from `confidenceMeaning()` so it can't drift from the chip. No
+            prefix: those strings already open with "Our record of this entry is...".
           */}
           <p className="mt-2 max-w-[68ch] text-sm text-muted-foreground">
             {confidenceMeaning(playbook.confidence)} Every step below is readable without an

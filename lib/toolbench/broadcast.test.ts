@@ -17,17 +17,9 @@ import {
 } from "./broadcast";
 
 /**
- * A REAL captured response, not an invented one.
- *
- * `lib/toolbench/__fixtures__/radio-browser-search.json` was captured on 2026-09-01 from
+ * Real response captured 2026-09-01 from
  * `https://all.api.radio-browser.info/json/stations/search?countrycode=NL&language=dutch&limit=12&order=votes&reverse=true&hidebroken=true`.
- *
- * Two properties of it are asserted below because they are the two findings this whole tool
- * is built around, and an invented fixture would have contained neither:
- *
- *   - **9 of the 12 stream over plain `http:`.** They cannot play on an HTTPS page.
- *   - **2 of the 12 carry coordinates.** The map adapter's `has_geo_info=true` filter would
- *     show two of these twelve, including neither of the national news networks.
+ * 9 of 12 stream over plain `http:`; only 2 of 12 have coordinates.
  */
 const fixture: unknown = JSON.parse(
   readFileSync(join(process.cwd(), "lib", "toolbench", "__fixtures__", "radio-browser-search.json"), "utf8"),
@@ -43,11 +35,7 @@ describe("the captured catalogue response", () => {
     expect(result.value.length).toBe(12);
   });
 
-  /**
-   * The number that decides the UI. 9 of 12 here; the integrations engineer measured about
-   * 20% across the geolocated subset. Either way, a play button on one of these fails
-   * silently — nothing errors, no console message, the reader concludes the tool is broken.
-   */
+  /** 9 of 12 here (~20% catalogue-wide). A play button on these would fail silently. */
   it("flags the plain-http streams a browser will block as mixed content", () => {
     const result = normaliseBroadcast(fixture);
     expect(result.ok).toBe(true);
@@ -198,10 +186,7 @@ describe("filters", () => {
     expect(hasAnyFilter(broadcastFilterSchema.parse({ language: "ukrainian" }))).toBe(true);
   });
 
-  /**
-   * ADR 0014 §4: the cache key is the query and never the caller. Two readers asking the
-   * same question must land on the same entry, and a different question must not.
-   */
+  /** The cache key is the query, never the caller. */
   it("produces the same cache key for the same query and a different one otherwise", () => {
     const a = broadcastFilterSchema.parse({ countryCode: "NL", language: "dutch" });
     const b = broadcastFilterSchema.parse({ countryCode: "nl", language: "Dutch" });

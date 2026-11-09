@@ -4,17 +4,9 @@ import { upstreamGet } from "@/lib/connectors/toolbench";
 import { UpstreamStatusError } from "@/lib/connectors/runtime";
 
 /**
- * QA attack suite for the one outbound HTTP path the Toolbench uses.
- *
- * Owned by qa-adversary. `lib/connectors/toolbench.ts` documents `upstreamGet` as the control
- * that stops a server-side request forgery: it pins the host before the request and again on
- * every redirect hop, and it caps the bytes it will read. Each block below is one attack
- * against one of those claims, driven through a stubbed `globalThis.fetch` so the assertion is
- * about our code and not about a third party's mood.
- *
- * Where a test documents a DEFECT rather than a defence, it is named `DEFECT (QA-nn)` and
- * asserts the behaviour as it is today, so the finding cannot be closed without the assertion
- * being deliberately inverted.
+ * Attacks on `upstreamGet`, the Toolbench's outbound path and SSRF control: it pins the host
+ * before the request and on every redirect hop, and caps bytes read. Uses a stubbed
+ * `globalThis.fetch`.
  */
 
 const PIN = "web.archive.org";
@@ -151,17 +143,10 @@ describe("upstreamGet — the byte cap", () => {
   });
 
   /**
-   * QV-03, fixed. The cap is now applied to the STREAM: `readCappedText` pulls chunk by
-   * chunk and cancels the reader the moment the running total passes `maxBytes`.
-   *
-   * This test was written by QA against the defect — a body 8x the cap was fully buffered
-   * and only then refused — and is inverted here. It asserts the property that matters for a
-   * memory-exhaustion control: how many bytes actually reached this process. An upstream
-   * that omits `Content-Length` (every chunked response, and what `web.archive.org` sends
-   * for an `id_` capture) must not be able to spend more than the cap plus what the stream
-   * had already queued.
+   * The cap applies to the stream: `readCappedText` cancels once the total passes `maxBytes`,
+   * even without Content-Length (chunked responses, Wayback `id_` captures).
    */
-  it("QA-V2-03: stops pulling a chunked oversize body within a chunk or two of the cap", async () => {
+  it("stops pulling a chunked oversize body within a chunk or two of the cap", async () => {
     const CAP = 64 * 1024;
     const CHUNK = 8 * 1024;
     const OVERSIZE = CAP * 8;
@@ -181,7 +166,7 @@ describe("upstreamGet — the byte cap", () => {
               controller.enqueue(chunk);
             },
           }),
-          // No content-length. This is the whole point.
+          // No content-length.
           { status: 200, headers: { "content-type": "text/html" } },
         ),
     );
@@ -195,12 +180,10 @@ describe("upstreamGet — the byte cap", () => {
   });
 
   /**
-   * QV-03, the compression variant, inverted. `fetch` transparently decodes
-   * `Content-Encoding: gzip`, and `Content-Length` describes the COMPRESSED size — so a
-   * declared length far under the cap can decode to far over it. The declared-length gate is
-   * now an optimisation rather than the control, and the streaming gate catches this.
+   * `fetch` decodes gzip transparently and Content-Length is the compressed size, so the
+   * streaming cap, not the declared length, is the real control.
    */
-  it("QA-V2-03: a small declared Content-Length does not license an unbounded read", async () => {
+  it("a small declared Content-Length does not license an unbounded read", async () => {
     const CAP = 64 * 1024;
     const CHUNK = 8 * 1024;
     const OVERSIZE = CAP * 8;
@@ -231,10 +214,7 @@ describe("upstreamGet — the byte cap", () => {
     expect(bytesPulled).toBeLessThan(OVERSIZE);
   });
 
-  /**
-   * The Wayback capture fetch asks for the original bytes. QV-03: transfer compression buys
-   * us nothing on a path we then have to bound, and it makes any declared length meaningless.
-   */
+  /** Wayback captures request identity encoding, so declared lengths stay meaningful. */
   it("sends accept-encoding: identity when the caller asks for it", async () => {
     stub(() => body("PAGE"));
     await upstreamGet({

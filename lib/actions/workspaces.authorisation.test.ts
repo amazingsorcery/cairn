@@ -25,53 +25,25 @@ import {
 import { sessionStore } from "@/tests/db/session";
 
 /**
- * `lib/actions/workspaces.ts`, executed against a real PostgreSQL with a real session.
- * QA finding QV-16.
+ * `lib/actions/workspaces.ts` against a real PostgreSQL with a real session. Complements the
+ * source-shape checks in `lib/actions/authorisation.test.ts` by catching guards that exist
+ * but don't work.
  *
- * `lib/actions/authorisation.test.ts` is the source-shape half of this property set: it reads
- * the code and asserts that every action calls a `require*` guard, guards before it parses,
- * and never compares ownership in TypeScript. That test catches the regression that looks
- * like a missing line. This file catches the one that does not — a guard that is present and
- * ineffective, a predicate that binds the wrong id, a refusal that still wrote a row. The two
- * are deliberately kept as one property set expressed twice, and neither replaces the other.
+ * Each action is called:
+ * 1. signed out;
+ * 2. as a stranger using the owner's ids (must be `notFound`, never `forbidden`);
+ * 3. as the owner (so an action that refuses everyone doesn't pass).
  *
- * ## The three assertions every action gets, and why each is separate
- *
- * 1. **Signed out** — a Server Action is a public HTTP endpoint with a generated name. Its
- *    authorisation is not inherited from the page that rendered the form.
- * 2. **Signed in as a stranger, submitting the owner's ids** — the caller a session check
- *    cannot stop. The answer must be `notFound`, never `forbidden`: a 403 confirms the
- *    workspace exists, which for an audience whose cases are the sensitive thing is an
- *    enumeration oracle (HANDOFF §11 assertion 2).
- * 3. **The owner** — because an action that refused everybody would pass 1 and 2.
- *
- * Every refusal is checked against a **dump of both users' entire case files** taken before
- * the call. "Returned an error" is not the property; "changed nothing" is.
- *
- * ## Identity is never taken from the payload
- *
- * Every stranger payload below carries a forged `userId` naming the owner. Zod strips it, and
- * the assertion is that it changes nothing — so these tests also stand as the proof that
- * ownership is derived from the session and the database rather than from a form field.
- *
- * ## The table is derived from the module's exports
- *
- * `expect(Object.keys(CASES).sort()).toEqual(exportedActionNames)` fails the moment an
- * eleventh action is exported. Adding a row is then not something anyone has to remember.
+ * Refusals are checked against a dump of both users' data taken before the call. Stranger
+ * payloads carry a forged `userId`, which must change nothing. `CASES` must cover every
+ * exported action.
  */
 
 vi.mock("next-auth", async () => {
   const { sessionStore: store } = await import("@/tests/db/session");
   /*
-   * `lib/auth.ts` destructures `NextAuth(authConfig)` at module scope and imports nothing
-   * else from this package at run time (the other two imports are types, which are erased).
-   * Replacing the default export swaps the session store and leaves `currentUser`,
-   * `requireUser` and the error classes — the code actually under test — untouched.
-   *
-   * The factory does NOT call `importOriginal()`. next-auth's own `lib/env.js` imports
-   * `next/server` by a bare specifier that only Next's bundler resolves, so loading the real
-   * module under Vitest fails with ERR_MODULE_NOT_FOUND before any test runs. Nothing is
-   * lost: the surface `lib/auth.ts` uses is one function.
+   * Replaces only the session store; `requireUser` etc. stay real. No `importOriginal()`:
+   * next-auth imports `next/server` by a bare specifier that fails under Vitest.
    */
   return { default: () => store.authModule() };
 });
@@ -92,11 +64,8 @@ type World = {
 type Call = (world: World) => Promise<ActionResult<unknown>>;
 
 /**
- * One action's row.
- *
- * `asStranger` is absent only for `createWorkspace`, which references nothing of anybody
- * else's — its ownership property is that the row it writes belongs to the *session* user,
- * and it is asserted separately below rather than skipped.
+ * One action's row. `asStranger` is absent only for `createWorkspace`, which is tested
+ * separately below.
  */
 type ActionCase = {
   /** A call the owner is entitled to make, with a valid payload. */
@@ -312,12 +281,8 @@ describeWithDatabase("lib/actions/workspaces.ts — authorisation, against a rea
   });
 
   /**
-   * A fresh owner, a fresh stranger and two fresh case files per test.
-   *
-   * Fresh *users* rather than fresh workspaces, because the rate limiter is keyed on the
-   * user id: reusing one actor across thirty mutating tests would eventually have the
-   * limiter, not the authorisation check, produce the refusal — and a test that passes for
-   * the wrong reason is the failure mode this whole exercise exists to remove.
+   * Fresh users and case files per test. Fresh users because the rate limiter is keyed on
+   * user id and would otherwise cause refusals.
    */
   beforeEach(async () => {
     const owner = await createActor();
@@ -348,9 +313,7 @@ describeWithDatabase("lib/actions/workspaces.ts — authorisation, against a rea
   });
 
   it("has an ownership case for every action that names a record it did not create", () => {
-    // `createWorkspace` is the only action with nothing of anyone else's to name. Every other
-    // action takes an id from the request, and every one of those must be exercised as a
-    // stranger. Stated as an assertion so a new action cannot quietly omit `asStranger`.
+    // Only `createWorkspace` takes no record id, so only it may omit `asStranger`.
     const withoutStrangerCase = Object.entries(CASES)
       .filter(([, value]) => value.asStranger === undefined)
       .map(([name]) => name);
@@ -375,8 +338,7 @@ describeWithDatabase("lib/actions/workspaces.ts — authorisation, against a rea
     });
 
     it(`${name}() refuses a session that carries no user id`, async () => {
-      // A half-built session row must read as signed out rather than as a user whose id is
-      // `undefined` — which would reach SQL as a predicate matching nothing, or worse.
+      // Must read as signed out, not as a user with id `undefined`.
       const before = await dumpBoth();
       sessionStore.signedInWithoutUserId();
 
@@ -399,17 +361,14 @@ describeWithDatabase("lib/actions/workspaces.ts — authorisation, against a rea
 
         expect(result.ok).toBe(false);
         if (result.ok) return;
-        // The distinction IS the security property: `forbidden` confirms the record exists.
+        // `forbidden` would confirm the record exists.
         expect(result.code).not.toBe("forbidden");
         expect(result.code).toBe("notFound");
         expect(await dumpBoth()).toEqual(before);
       });
 
       it(`${name}() answers an admin who is not the owner with notFound too`, async () => {
-        // There is no staff override on a case file. `role` gates the editorial surface; it
-        // has never gated another person's notes, and an admin reading one would be the
-        // product holding investigation material it has no lawful basis for
-        // (product-brief §3.2 constraint 3).
+        // No staff override on case files; `role` only gates the editorial surface.
         const before = await dumpBoth();
         const admin = await createActor("admin");
         sessionStore.signedInAs(admin);
@@ -450,9 +409,7 @@ describeWithDatabase("lib/actions/workspaces.ts — authorisation, against a rea
     });
 
     expect(result.ok).toBe(true);
-    // Scoped to this test's own two actors. Matching on the title alone would also match
-    // rows left by previous runs — the harness deletes fixtures by age, not by truncation
-    // (tests/db/provision.ts), precisely so a concurrent run cannot be wiped.
+    // Scoped to this test's actors: fixtures from earlier runs may still exist.
     const rows = await db
       .select({ userId: workspaces.userId })
       .from(workspaces)
@@ -467,8 +424,7 @@ describeWithDatabase("lib/actions/workspaces.ts — authorisation, against a rea
   });
 
   it("createWorkspace stamps the session user on every derived checklist row", async () => {
-    // The checklist is written inside the same transaction. A row stamped with the wrong
-    // user id would be invisible to its own owner's reads and visible to somebody else's.
+    // A wrong user id here would hide rows from the owner and expose them to someone else.
     sessionStore.signedInAs(world.owner);
 
     const result = await workspaceActions.createWorkspace({
@@ -485,7 +441,7 @@ describeWithDatabase("lib/actions/workspaces.ts — authorisation, against a rea
       .where(eq(workspaceItems.workspaceId, created.id));
     expect(items).toHaveLength(world.catalogue.publishedStepIds.length);
     expect(new Set(items.map((item) => item.userId))).toEqual(new Set([world.owner.id]));
-    // Titles are snapshotted from `playbook_steps.title` in the same transaction (ADR 0008).
+    // Titles are snapshotted from `playbook_steps.title`.
     expect(items.map((item) => item.title).sort()).toEqual(
       [...world.catalogue.publishedStepTitles].sort(),
     );
@@ -622,8 +578,7 @@ describeWithDatabase("lib/actions/workspaces.ts — authorisation, against a rea
   });
 
   it("createNote refuses an anchor to another user's item", async () => {
-    // The workspace is the caller's; the anchor is not. Both are checked, in the same
-    // transaction, with the same predicate.
+    // The workspace is the caller's; the anchor item is not.
     sessionStore.signedInAs(world.owner);
 
     const result = await workspaceActions.createNote({
@@ -640,8 +595,7 @@ describeWithDatabase("lib/actions/workspaces.ts — authorisation, against a rea
   });
 
   it("reorderWorkspaceItems refuses a list that mixes in another user's item", async () => {
-    // The workspace is the caller's and one submitted id is not. Applying the reorder
-    // partially would leave the list half-rewritten, so the whole call is refused.
+    // One submitted id isn't the caller's, so the whole reorder is refused.
     sessionStore.signedInAs(world.owner);
     const before = await dumpBoth();
 
@@ -680,19 +634,9 @@ describeWithDatabase("lib/actions/workspaces.ts — authorisation, against a rea
 
   it("the reorder statement carries its own owner predicate, which no call can reach", () => {
     /*
-     * THE ONE ASSERTION IN THIS FILE THAT READS THE SOURCE, AND WHY.
-     *
-     * `reorderWorkspaceItems` refuses any list containing an id that is not the caller's
-     * before it reaches the `UPDATE … FROM unnest(...)`, so the `i.user_id = $n and
-     * i.workspace_id = $n` on that statement is unreachable defence in depth: deleting it
-     * changes no observable behaviour, and every behavioural test in this file still passes.
-     * That was confirmed by removing it and running the suite, not assumed.
-     *
-     * Unreachable is not unimportant. It is the predicate that keeps a bulk write scoped if
-     * the scan above it is ever loosened — a "reorder is idempotent, skip the check" refactor
-     * would otherwise convert an id list into an UPDATE across other people's rows. Since no
-     * call can exercise it, it is asserted structurally, which is honest about what is being
-     * checked rather than dressing a shape test up as a behavioural one.
+     * Source check: the ownership scan rejects foreign ids before the UPDATE runs, so the
+     * UPDATE's own `user_id` / `workspace_id` predicate can't be reached by a call. It's
+     * defence in depth, so assert it structurally.
      */
     const source = readFileSync(join(process.cwd(), "lib", "actions", "workspaces.ts"), "utf8");
     const statement = source.slice(source.indexOf("update ${workspaceItems} i"));
@@ -705,8 +649,7 @@ describeWithDatabase("lib/actions/workspaces.ts — authorisation, against a rea
    * ---------------------------------------------------------------- */
 
   const cacheOneFeature = (featureRef: string): void => {
-    // The same function `app/(public)/map/sources.ts` writes with after a governed poll.
-    // Nothing here reaches an upstream: `findCachedFeature` reads this process's memory.
+    // Same writer the map uses after a governed poll; no upstream is contacted.
     writePayload(`fixture-live:${featureRef}`, {
       sourceSlug: "fixture-live",
       sourceName: "Fixture live source",
@@ -737,9 +680,7 @@ describeWithDatabase("lib/actions/workspaces.ts — authorisation, against a rea
       workspaceId: world.ownersCase.workspaceId,
       kind: "mapFeature",
       feature: { sourceSlug: "fixture-live", featureRef },
-      // Everything a crafted request would try to assert about the observation. None of it
-      // has a field to land in: the payload schema accepts the reference and nothing else
-      // (ADR 0025, QA finding QV-14).
+      // Client-asserted fields; the schema strips them all.
       attribution: "Credit removed by the client",
       licence: "Public domain, allegedly",
       latitude: 0,
@@ -751,9 +692,7 @@ describeWithDatabase("lib/actions/workspaces.ts — authorisation, against a rea
     if (!result.ok) return;
     const saved = result.data as { id: string };
 
-    // The item's own title is the label the SERVER resolved, not the one the client sent.
-    // ADR 0008: the snapshot records what the user saw, and what the user saw is what we
-    // served them.
+    // The title is the label the server resolved, not the client's.
     const item = await db.query.workspaceItems.findFirst({
       where: eq(workspaceItems.id, saved.id),
     });
@@ -784,19 +723,13 @@ describeWithDatabase("lib/actions/workspaces.ts — authorisation, against a rea
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    // Reached the ownership check with a resolvable feature, and was still refused there —
-    // so the refusal is the ownership predicate, not the empty cache.
+    // The feature is cached, so this refusal comes from the ownership check.
     expect(result.code).toBe("notFound");
     expect(await dumpBoth()).toEqual(before);
   });
 
   it("addWorkspaceItem rolls the item back when the same feature is already saved", async () => {
-    /*
-     * The second save must leave NO orphan. The item row is inserted before the snapshot, so
-     * a naive implementation commits a `mapFeature` item with no coordinates, no source and
-     * no credit — an entry that renders as nothing. `FeatureAlreadySaved` unwinds the whole
-     * transaction instead, and the observable proof is the item count, not the error code.
-     */
+    // The second save must not leave an orphan item without a snapshot.
     const featureRef = "fixture-live-feature-3";
     cacheOneFeature(featureRef);
     sessionStore.signedInAs(world.owner);
@@ -824,7 +757,7 @@ describeWithDatabase("lib/actions/workspaces.ts — authorisation, against a rea
   });
 
   it("addWorkspaceItem refuses a feature the server never saw, rather than fetching it", async () => {
-    // ADR 0025: a save must originate no outbound request. An uncached reference fails.
+    // A save makes no outbound request, so an uncached reference fails.
     sessionStore.signedInAs(world.owner);
 
     const result = await workspaceActions.addWorkspaceItem({
@@ -843,8 +776,7 @@ describeWithDatabase("lib/actions/workspaces.ts — authorisation, against a rea
    * ---------------------------------------------------------------- */
 
   it("tells a signed-out caller nothing about whether their payload was well-formed", async () => {
-    // Both a valid and a garbage payload must produce the same refusal. A validation error
-    // that only a well-formed payload produces is an oracle for the id space.
+    // Valid and garbage payloads must get the same refusal.
     sessionStore.signedOut();
 
     const withValidPayload = await workspaceActions.updateWorkspace({
@@ -876,8 +808,7 @@ describeWithDatabase("lib/actions/workspaces.ts — authorisation, against a rea
   });
 
   it("rejects a malformed payload from a signed-in owner with a field error", async () => {
-    // The other side of the same coin: validation still happens, and still reports usefully,
-    // once the caller has been established.
+    // Once authenticated, validation errors are reported normally.
     sessionStore.signedInAs(world.owner);
 
     const result = await workspaceActions.updateWorkspace({

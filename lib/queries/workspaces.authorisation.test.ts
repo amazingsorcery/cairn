@@ -20,23 +20,12 @@ import {
 } from "@/tests/db/harness";
 
 /**
- * `lib/queries/workspaces.ts`, against a real PostgreSQL. QA finding QV-16.
+ * `lib/queries/workspaces.ts` against a real PostgreSQL. A read that takes a `userId` but
+ * doesn't filter on it is an IDOR, so each query is run as the owner and as a second real
+ * user with their own case file.
  *
- * WHAT THIS FILE IS FOR, stated plainly: **a read that takes a `userId` and does not filter
- * on it is an IDOR with a plausible signature.** It typechecks, it lints, it returns rows,
- * the page renders, and the only thing wrong with it is whose case file it returned. Nothing
- * above this layer would notice — the actions trust these functions, the pages trust the
- * actions, and the e2e suite only walks routes somebody thought to click.
- *
- * So every assertion here is made twice: once as the owner, and once as a *second real
- * signed-in user* who owns a case file of their own. A query that ignored its `userId`
- * would pass the first and fail the second. A stubbed database could not tell them apart at
- * all, which is why `tests/db/provision.ts` exists.
- *
- * THE TABLE IS DERIVED FROM THE MODULE'S EXPORTS, and separately from the source's parameter
- * lists. A new exported query is a test failure until somebody classifies it, and a new
- * query taking a `userId` is a test failure until it is proved to filter on it. Remembering
- * to add a row is not a control.
+ * The table is derived from the module's exports and parameter lists, so new queries must be
+ * classified, and any taking a `userId` must be proven to filter on it.
  */
 
 const SOURCE = readFileSync(join(process.cwd(), "lib", "queries", "workspaces.ts"), "utf8");
@@ -47,11 +36,7 @@ const exportedQueryNames = Object.entries(workspaceQueries)
   .map(([name]) => name)
   .sort();
 
-/**
- * Exported functions whose signature accepts a `userId`. Read from the source rather than
- * from the module, because a function's parameter names do not survive to run time in a form
- * that can be trusted after bundling.
- */
+/** Exported functions taking a `userId`, read from source (param names aren't reliable at runtime). */
 const userScopedInSource = [...SOURCE.matchAll(/export async function (\w+)\(([\s\S]*?)\):/g)]
   .filter(([, , params]) => /\buserId\s*:\s*string\b/.test(params ?? ""))
   .map(([, name]) => name as string)
@@ -66,16 +51,9 @@ type World = {
 };
 
 /**
- * One classified query, expressed as **what it discloses about the owner's case file**.
- *
- * Not "is the answer empty": a stranger has case files of their own, so `listWorkspaces`
- * answers them with rows, and an emptiness test would either be wrong or would have to be
- * weakened until it asserted nothing. The property is narrower and is the one that matters —
- * the ids the answer contains must never include `secret`, which is the owner's.
- *
- * There is deliberately no "throws" outcome: these functions return the empty answer so the
- * route above can render 404 rather than 403, because a 403 confirms the workspace exists
- * (HANDOFF §11 assertion 2).
+ * One classified query: the ids it discloses must never include the owner's `secret`.
+ * (Not an emptiness check, since strangers have their own rows.) No "throws" outcome: these
+ * return empty so routes can 404.
  */
 type UserScopedCase = {
   readonly scope: "user";
@@ -205,16 +183,12 @@ describeWithDatabase("lib/queries/workspaces.ts — every read is scoped to the 
   });
 
   it("finds the queries it is supposed to be checking", () => {
-    // A rename, a move, or an accidental `export {}` must fail loudly rather than silently
-    // checking nothing.
+    // Fail loudly rather than silently checking nothing.
     expect(exportedQueryNames.length).toBeGreaterThanOrEqual(8);
   });
 
   it("treats every query that accepts a userId as user-scoped", () => {
-    // The one mechanical link between "this function claims to be scoped to a user" and
-    // "this suite proves it filters on that user". A new query taking a `userId` fails here
-    // until it is classified, and it cannot be classified `unscoped` while its signature
-    // says otherwise.
+    // A query taking a `userId` can't be classified as unscoped.
     const classifiedAsUserScoped = Object.entries(CASES)
       .filter(([, value]) => value.scope === "user")
       .map(([name]) => name)
@@ -223,13 +197,7 @@ describeWithDatabase("lib/queries/workspaces.ts — every read is scoped to the 
   });
 
   it("wraps nothing in the shared cache", () => {
-    // caching.md §6: a query whose result depends on the session must never be cached. The
-    // absence of the import is the enforcement, so it is asserted rather than assumed.
-    //
-    // Asserted against the source with comments stripped: the file's own header explains the
-    // rule by naming `unstable_cache`, and a sentence saying why something is not done must
-    // not be able to fail the test proving it is not done. (The same trap `code()` in
-    // lib/actions/authorisation.test.ts exists for.)
+    // Session-dependent queries must never be cached. Checked with comments stripped.
     const code = SOURCE.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/.*/g, "$1 ");
     expect(code).not.toMatch(/from\s+["']\.\/cache["']/);
     expect(code).not.toMatch(/unstable_cache/);
@@ -249,14 +217,12 @@ describeWithDatabase("lib/queries/workspaces.ts — every read is scoped to the 
     }
 
     it(`${name}() discloses the case to its owner`, async () => {
-      // The positive half matters as much as the negative one: a query that returned nothing
-      // to everybody would pass every "must not leak" assertion in this file.
+      // Positive check: a query returning nothing would pass every leak assertion.
       expect(await testCase.disclose(world, world.owner.id)).toContain(testCase.secret(world));
     });
 
     it(`${name}() discloses nothing of it to a signed-in stranger`, async () => {
-      // The stranger is a real, signed-in user with a case file of their own — not an absent
-      // session. This is the caller a session check cannot stop and only a SQL predicate can.
+      // A real signed-in stranger; only the SQL predicate can stop this caller.
       expect(await testCase.disclose(world, world.stranger.id)).not.toContain(
         testCase.secret(world),
       );
@@ -288,8 +254,7 @@ describeWithDatabase("lib/queries/workspaces.ts — every read is scoped to the 
   });
 
   it("getWorkspace tells a stranger nothing about a case that exists", async () => {
-    // Same call, same real id, different session. `null` and "no such workspace" are the
-    // same value, which is what lets the route answer 404 for both.
+    // Not-yours and nonexistent both return null, so both 404.
     const forStranger = await workspaceQueries.getWorkspace(
       world.ownersCase.workspaceId,
       world.stranger.id,
@@ -321,8 +286,7 @@ describeWithDatabase("lib/queries/workspaces.ts — every read is scoped to the 
   });
 
   it("listWorkspacesForPlaybook does not surface a stranger's case started from the same playbook", async () => {
-    // Both users started a case from the same published playbook. The "resume" affordance
-    // must show each of them only their own.
+    // Both users started from the same playbook; each sees only their own.
     const forOwner = await workspaceQueries.listWorkspacesForPlaybook(
       world.catalogue.publishedPlaybookId,
       world.owner.id,
@@ -336,14 +300,9 @@ describeWithDatabase("lib/queries/workspaces.ts — every read is scoped to the 
 
   it("getWorkspace filters items and notes by user id as well as by workspace", async () => {
     /*
-     * `workspace_items.user_id` and `notes.user_id` are denormalised from the workspace
-     * (ADR 0008), and the file's own comment says queries 2 and 3 carry `user_id = $2`
-     * "even though the workspace has already been proven to belong to the caller ... so a
-     * future refactor that drops the first check cannot turn these into an information
-     * leak". That claim is only worth having if it is true, and the only way to see it is to
-     * create the state it defends against: rows inside the owner's workspace stamped with
-     * somebody else's user id. No action can produce this today; a bad migration or a
-     * transfer feature could.
+     * Items and notes queries also filter on the denormalised `user_id`. To prove it, create
+     * rows in the owner's workspace stamped with another user id (no action can do this, but
+     * a bad migration could).
      */
     const [plantedItem] = await db
       .insert(workspaceItems)
@@ -382,9 +341,7 @@ describeWithDatabase("lib/queries/workspaces.ts — every read is scoped to the 
   });
 
   it("assertOwnsItem resolves ownership from the item's own row, not from its workspace", async () => {
-    // The naive implementation reads the item, then reads its workspace, then compares
-    // owners in TypeScript. This one is a single predicate, and it must answer for an item
-    // id the caller resolved somewhere else — which is exactly how a caller arrives here.
+    // A single predicate, given an item id resolved elsewhere.
     const owned = await workspaceQueries.assertOwnsItem(
       world.ownersCase.checklistItemId,
       world.owner.id,
@@ -400,8 +357,7 @@ describeWithDatabase("lib/queries/workspaces.ts — every read is scoped to the 
   });
 
   it("the assertOwns* helpers apply the same predicate inside a transaction", async () => {
-    // The actions call these with the open transaction so the check and the write are one
-    // atomic unit. The predicate must not become optional in that overload.
+    // Actions pass a transaction; the predicate must still apply.
     await db.transaction(async (tx) => {
       expect(
         await workspaceQueries.assertOwnsWorkspace(
@@ -423,13 +379,11 @@ describeWithDatabase("lib/queries/workspaces.ts — every read is scoped to the 
   });
 
   /* ---------------------------------------------------------------- *
-   * The partial states ADR 0008 says are normal, not corruption
+   * Partial states that are normal, not corruption
    * ---------------------------------------------------------------- */
 
   it("keeps a saved tool in the case after an editor unpublishes it, without a link", async () => {
-    // ADR 0008: the user's case is theirs and must not change because our catalogue did. The
-    // snapshot title survives; the slug and the freshness chip go, because linking to a page
-    // that 404s or asserting a confidence we no longer publish would both be worse.
+    // The snapshot title survives; slug and freshness go once the tool is unpublished.
     await db
       .update(tools)
       .set({ status: "draft" })
@@ -456,8 +410,7 @@ describeWithDatabase("lib/queries/workspaces.ts — every read is scoped to the 
   });
 
   it("returns a case that was not started from a playbook, with no playbook attached", async () => {
-    // `workspaces.playbook_id` is nullable and `playbook` is `null` rather than absent. A
-    // case begun from scratch is an ordinary state, not a degraded one.
+    // A case begun from scratch has `playbook: null`.
     const [bare] = await db
       .insert(workspaces)
       .values({ userId: world.owner.id, title: "Started from scratch" })
@@ -477,14 +430,7 @@ describeWithDatabase("lib/queries/workspaces.ts — every read is scoped to the 
   });
 
   it("skips a mapFeature row that has no snapshot rather than rendering it half-built", async () => {
-    /*
-     * `addWorkspaceItem` writes the item and its snapshot in one transaction and rolls back
-     * if the second does not land, so this state should not exist. It is created directly
-     * here because "should not exist" is exactly the assumption a read must not depend on: a
-     * saved feature with no coordinates and no credit is not something this product may
-     * display, and the alternative to skipping it is an export that shows an observation with
-     * a blank licence line.
-     */
+    // Shouldn't happen via actions, but the read must skip a mapFeature with no snapshot.
     const [orphan] = await db
       .insert(workspaceItems)
       .values({
@@ -512,12 +458,11 @@ describeWithDatabase("lib/queries/workspaces.ts — every read is scoped to the 
   });
 
   /* ---------------------------------------------------------------- *
-   * N+1, measured rather than asserted in a comment
+   * Query counts
    * ---------------------------------------------------------------- */
 
   it("listWorkspaces is one round trip regardless of how many cases the user has", async () => {
-    // The counts are correlated subqueries precisely so this stays at one. A regression to
-    // three joins would still be one query; a regression to a count per row would not.
+    // Correlated subqueries keep this to one statement.
     const extra = await createCaseFile(world.owner.id, world.catalogue, "Extra case");
     expect(extra.workspaceId).toBeTruthy();
 
@@ -527,9 +472,7 @@ describeWithDatabase("lib/queries/workspaces.ts — every read is scoped to the 
   });
 
   it("getWorkspace is three round trips regardless of how many items the case holds", async () => {
-    // One for the workspace, one for the items (with the tool and step joins folded in), one
-    // for the notes. QA finding Q-15 was a per-tool read behind this page; the join that
-    // replaced it must not come back.
+    // Workspace, items (with joins), notes. No per-tool reads.
     const spy = vi.spyOn(pool, "query");
     const detail = await workspaceQueries.getWorkspace(
       world.ownersCase.workspaceId,
@@ -540,8 +483,7 @@ describeWithDatabase("lib/queries/workspaces.ts — every read is scoped to the 
   });
 
   it("getWorkspace stops after the ownership check for a stranger", async () => {
-    // One statement, then nothing. A non-owner must not cause the items and notes of a case
-    // to be read into this process at all.
+    // For a non-owner, items and notes are never read.
     const spy = vi.spyOn(pool, "query");
     await workspaceQueries.getWorkspace(world.ownersCase.workspaceId, world.stranger.id);
     expect(spy).toHaveBeenCalledTimes(1);
@@ -560,8 +502,7 @@ describeWithDatabase("lib/queries/workspaces.ts — every read is scoped to the 
   });
 
   it("getWorkspaceForExport re-checks ownership rather than trusting a resolved id", async () => {
-    // The caller has already resolved this id — it is in the URL of a page they were shown.
-    // A leaked export link is a leaked case file, so the predicate runs again on every call.
+    // Ownership is re-checked on every export call.
     expect(
       await workspaceQueries.getWorkspaceForExport(
         world.ownersCase.workspaceId,

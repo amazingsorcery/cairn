@@ -3,11 +3,8 @@ import { z } from "zod";
 import { markdownSchema, slugSchema, uuidSchema } from "./common";
 
 /**
- * Write-side validation for `categories` and `tags`.
- *
- * Both fan out into `search_keywords` on rename (HANDOFF §4): a renamed tag must be
- * recomputed onto every tool carrying it, in the same transaction, or the tool becomes
- * unfindable by its new tag name while still carrying the old one in its search vector.
+ * Write-side validation for `categories` and `tags`. A rename must recompute `search_keywords`
+ * on every tool carrying it, in the same transaction.
  */
 
 export const createCategorySchema = z.object({
@@ -22,10 +19,8 @@ export const updateCategorySchema = createCategorySchema.extend({ id: uuidSchema
 export type UpdateCategoryInput = z.infer<typeof updateCategorySchema>;
 
 /**
- * Categories are ordered by an explicit `sort_order`, so reordering sends the whole list.
- * `categories.id` is FK-referenced with `ON DELETE RESTRICT` from both `tools` and
- * `playbooks`: a category with content in it cannot be deleted, which is the correct
- * behaviour and produces a 23503 the action turns into a readable message.
+ * Reordering sends the whole list. Deleting a non-empty category fails with 23503
+ * (`ON DELETE RESTRICT`), which the action turns into a readable message.
  */
 export const reorderCategoriesSchema = z
   .object({ categoryIds: z.array(uuidSchema).min(1) })

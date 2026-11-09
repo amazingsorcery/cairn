@@ -2,7 +2,7 @@
   "provider": {
     "slug": "link-only-providers",
     "name": "Link-only camera providers",
-    "description": "Camera networks that are unambiguously and intentionally published by their operators, but where this build could not confirm a permission to embed, or could not confirm a specific stable feed URL, or both. Each entry links out to the operator's own page. Under ADR 0011 and ADR 0015 that is the safe default: the reader knowingly navigates to the operator, we make no outbound call, and we misrepresent nobody's licence. Each of these is a candidate for promotion to an embedding entry once a licence clause and a stable URL are confirmed.",
+    "description": "Camera networks that are unambiguously and intentionally published by their operators, but where this build could not confirm a permission to embed, or could not confirm a specific stable feed URL, or both. Each entry links out to the operator's own page. That is the safe default: the reader knowingly navigates to the operator, we make no outbound call, and we misrepresent nobody's licence. Each of these is a candidate for promotion to an embedding entry once a licence clause and a stable URL are confirmed.",
     "operator": "Various — see each entry",
     "jurisdiction": "Global",
     "connectorKind": null,

@@ -12,44 +12,15 @@ import { metadataUnlessPublicOnly, requireSignInEnabled } from "@/lib/session-su
 import { cn } from "@/lib/utils";
 
 /**
- * `/tools/[slug]/save` — pick a case to save this entry into.
+ * `/tools/[slug]/save`: pick a case to save this tool into.
  *
- * THIS IS THE JOIN IN THE VERTICAL SLICE. `product-brief.md` §2 names the path — discover in
- * the directory, open an entry, save it into a case — and until this route existed the path
- * stopped after "open an entry": `addWorkspaceItem` was authorised, rate-limited and tested,
- * and nothing called it, while `components/workspaces/saved-tools.tsx` told the reader to
- * "Save one from any directory entry".
+ * A separate dynamic route because listing the user's cases needs `auth()`, and reading the
+ * session on `/tools/[slug]` would make that page dynamic. The tool page links here with a
+ * plain GET form.
  *
- * WHY THIS IS ITS OWN ROUTE AND NOT A DIALOG ON `/tools/[slug]`.
- *
- * `/tools/[slug]` is **ISR:3600** and `sitemap.md` §10.1 is a route-level invariant: no public
- * route reads `cookies()`, `headers()` or `auth()`. A modal listing the reader's own cases
- * needs the session, and reading it on the tool page would silently opt the most-crawled route
- * in the product out of static generation — the exact trap architecture HANDOFF §8 names. The
- * alternative, fetching the list from the browser, would mean a new endpoint over a user's
- * private case titles for a control most readers never open.
- *
- * A child segment is `force-dynamic` on its own without touching its parent. The tool page
- * stays prerendered at 199 B and ships NO client JavaScript for this at all; the trigger there
- * is a plain GET form with a real submit button. `/playbooks/[slug]` already uses this shape
- * for "start a case from this playbook" — a control that renders for everyone, pointing at a
- * session-gated route — so this is that pattern, not a second one.
- *
- * THE PICKER IS NATIVE FORMS. Each case is a `<form method="post">` posting to
- * `save/submit/route.ts`, whose header records why two Server Action versions were replaced:
- * both could silently drop a save, one before hydration and one after. So this page ships no
- * client component either, and the whole surface works with JavaScript off.
- *
- * IT WRITES NO SQL AND INVENTS NO ACTION. `addWorkspaceItem` re-checks the session,
- * Zod-validates, re-checks ownership inside its transaction, and reads the snapshot title FROM
- * THE DATABASE rather than from the form (ADR 0008). The tool id is resolved by the handler
- * from the route's own slug and is never posted.
- *
- * THE STATES, all rendered rather than hidden:
- *   signed out          — say what a case is, offer sign-in, come back HERE afterwards
- *   signed in, no cases — offer to start one; a first-run reader must not hit a dead control
- *   signed in, cases    — one submit button per case
- *   saved / already / busy / gone / failed — reported above the list, which stays on screen
+ * Each case is a native POST form to `save/submit/route.ts` (see that file for why not a
+ * Server Action). `addWorkspaceItem` handles session, validation and ownership, and reads the
+ * snapshot title from the database. The tool id comes from the route slug, never the form.
  */
 
 export const dynamic = "force-dynamic";
@@ -84,18 +55,14 @@ export async function generateMetadata({ params }: SavePageProps) {
       title: tool ? `Save ${tool.name}` : "Save",
       description: "Save this catalogue entry into one of your cases.",
       path: `/tools/${slug}/save`,
-      // Session-dependent and private to one reader. Nothing here belongs in an index.
+      // Session-dependent and private.
       index: false,
     }),
   );
 }
 
 export default async function SaveToolPage({ params, searchParams }: SavePageProps) {
-  /*
-   * PUBLIC-ONLY MODE. With no sign-in method configured there are no cases to save into and
-   * no sign-in to offer, so this picker is not served — and neither is the control that
-   * leads here. ADR 0032, `lib/session-surface.ts`.
-   */
+  // Not served in public-only mode (no sign-in configured). See `lib/session-surface.ts`.
   requireSignInEnabled();
 
   const { slug } = await params;
@@ -146,12 +113,7 @@ export default async function SaveToolPage({ params, searchParams }: SavePagePro
   );
 }
 
-/**
- * `states.md` §6.10's register: say what to do, no apology, and never discard the reader's
- * intent. `callbackUrl` returns them to THIS page rather than the tool page — they came here
- * to save something, and landing them one click short of it answers a question they did not
- * ask.
- */
+/** `callbackUrl` returns the reader to this picker, not the tool page, after sign-in. */
 function SignedOut({ toolHref, slug }: { toolHref: string; slug: string }) {
   const callbackUrl = `/tools/${slug}/save`;
 
@@ -198,11 +160,7 @@ async function SignedIn({
   const workspaces = await listWorkspaces(userId);
 
   if (workspaces.length === 0) {
-    /**
-     * First run. `states.md` §0's rule for an empty state — name the next action, do not
-     * congratulate and do not scold. A dead control with no explanation is the commonest way
-     * this feature dies for the person meeting it for the first time.
-     */
+    /** No cases yet: offer to start one. */
     return (
       <>
         <p className="text-foreground-secondary mt-3 text-base leading-relaxed">
@@ -235,10 +193,7 @@ async function SignedIn({
         {workspaces.length === 1 ? "Save it into your case." : "Choose the case to save it into."}
       </p>
 
-      {/*
-        The outcome, above the list — and the list stays underneath it, so a retry is the same
-        button in the same place rather than a trip back through the tool page.
-      */}
+      {/* Outcome above the list; the list stays so retry is one click. */}
       {outcome ? (
         <div className="mt-6">
           <OutcomeMessage

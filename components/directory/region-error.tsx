@@ -8,18 +8,8 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 
 /**
- * A failed region inside a page that still works — `states.md` §0 and shell handoff §10.3:
- * "Partial is a first-class state: a region that failed renders its own error inside the page
- * while the rest stays usable — do not promote a failed region to a whole-page error."
- *
- * For the directory that means the filter bar stays interactive while the results region
- * alone reports the failure (`states.md` §2.4). Promoting it to `error.tsx` would throw away
- * the reader's filter set, which is the one thing they would want to keep.
- *
- * `retry` is `router.refresh()`, not a link to the current URL: a link to the address you are
- * already on is a no-op the reader reads as a broken button. `refresh()` re-runs the Server
- * Component with the same `searchParams` and no cached RSC payload, which is what "retry"
- * has to mean here.
+ * In-page error for one failed region, so the rest of the page (e.g. the filter bar) stays
+ * usable. Retry uses `router.refresh()`, since a link to the current URL would be a no-op.
  */
 export function RegionError({
   title,

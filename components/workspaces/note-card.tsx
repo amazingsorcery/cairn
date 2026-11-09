@@ -21,55 +21,25 @@ import { SaveIndicator, type SaveState } from "./save-indicator";
 import { useUnsavedGuard } from "./use-unsaved-guard";
 
 /**
- * One timestamped note, and the single most important behaviour in this half of the
- * product: THE TEXT IN THIS BOX MUST NOT BE LOSABLE.
+ * One timestamped note with inline editing.
  *
- * `docs/design/flows.md` W1 and M1/M2 are implemented here, in this order:
+ * - Autosaves 800 ms after typing stops, and on blur.
+ * - `beforeunload` guard while dirty; on failure the text stays and a retry is offered.
+ * - No `localStorage` backup (privacy on shared machines).
+ * - The editor isn't in a dialog, since Escape would close it. `updateNote` never changes
+ *   `created_at`.
  *
- *  1. AUTOSAVE ON PAUSE. An edit saves 800 ms after typing stops, and immediately on blur.
- *     The 800 ms is from M1 and is not a guess to be retuned casually: it is long enough
- *     that a normal typing rhythm does not fire it on every word, and short enough that
- *     nothing more than a sentence is ever at risk.
- *  2. `beforeunload` WHILE DIRTY. The browser's own dialog is the only thing that reliably
- *     survives a tab close, which is why it is used rather than a prettier one that does
- *     not fire. It is disarmed the moment a save lands, so it never cries wolf.
- *  3. ON FAILURE THE TEXT STAYS IN THE FIELD, the guard stays armed, and the retry is a
- *     real button. Nothing is silently discarded and nothing is silently retried forever.
- *  4. NOTHING IS WRITTEN TO `localStorage`. A case note in browser storage on a shared
- *     machine is a threat-model failure for this audience (`states.md` 7.4). The guard is
- *     the mitigation; local persistence is not on the table.
- *
- * THE EDITOR IS NEVER INSIDE A DIALOG. Escape closes a Radix dialog and Escape is a normal
- * key to press while typing (`states.md` 7.4). The delete confirmation is a dialog; the
- * composer and the editor are not.
- *
- * `created_at` is never rewritten by `updateNote` — it is the "timestamped" in "timestamped
- * notes", and an investigator's record of when they wrote something has to be stable.
- *
- * THE BODY IS RENDERED ON THE SERVER AND PASSED IN AS `renderedBody` (Q-12). This component
- * must be a client one — it holds the editor, the autosave timer and the unload guard — but
- * importing `components/content/markdown.tsx` from here dragged react-markdown, remark-gfm
- * and the whole micromark pipeline into the browser bundle. That was a 150 kB chunk on the
- * ONE route a researcher sits on for hours, and `/workspaces/[id]` was the only route in the
- * app shipping it: every other Markdown surface in the product already renders on the server.
- * The page renders each note body and hands the element down, so the parser stays server-side
- * and this file keeps its interactivity.
- *
- * While a local edit is ahead of the server (between the save landing and `router.refresh()`
- * returning), the raw text is shown instead — the user's own words, unstyled for a moment,
- * which is the honest thing to show and never a blank.
+ * `renderedBody` is Markdown rendered on the server, keeping react-markdown (~150 kB) out of
+ * the client bundle. Until `router.refresh()` returns after a save, the raw text is shown.
  */
 
 const AUTOSAVE_DELAY_MS = 800;
 
 export interface NoteCardProps {
   note: NoteView;
-  /** What this note is attached to, if anything, so a note is never orphaned in the UI. */
+  /** What this note is attached to, if anything. */
   anchorLabel?: string | undefined;
-  /**
-   * The note body, already rendered to Markdown on the server. See the note above: this is
-   * what keeps the Markdown parser out of the client bundle.
-   */
+  /** The note body, rendered from Markdown on the server. */
   renderedBody: React.ReactNode;
 }
 
@@ -118,8 +88,7 @@ export function NoteCard({ note, anchorLabel, renderedBody }: NoteCardProps) {
     [note.id, saved, router],
   );
 
-  // Autosave on pause. The timer is cleared on every keystroke so it fires once, when
-  // typing stops, rather than once per character.
+  // Debounced autosave.
   useEffect(() => {
     if (!editing || !dirty) return;
     setState((current) => (current.status === "failed" ? current : { status: "dirty" }));
@@ -173,7 +142,7 @@ export function NoteCard({ note, anchorLabel, renderedBody }: NoteCardProps) {
           {saved === note.body ? (
             renderedBody
           ) : (
-            // A local edit the server has not sent back yet. Their text, verbatim.
+            // Local edit not yet refreshed from the server.
             <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">{saved}</p>
           )}
         </div>
@@ -236,7 +205,7 @@ export function NoteCard({ note, anchorLabel, renderedBody }: NoteCardProps) {
             </p>
           ) : null}
           <DialogFooter>
-            {/* Cancel carries initial focus: the destructive control is never the default. */}
+            {/* Cancel gets initial focus, not the destructive action. */}
             <Button
               type="button"
               variant="outline"

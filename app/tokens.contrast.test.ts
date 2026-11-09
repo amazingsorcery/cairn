@@ -3,27 +3,9 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 /**
- * The contrast matrix in `app/tokens.css` §4 has to be true, not merely written down.
- *
- * WHY THIS EXISTS — audit finding QV-06. The token file carried a measured ratio beside
- * every pairing somebody had thought of, and nothing at all for the pairings they had not.
- * Light `--muted-foreground` was annotated *"5.11:1 on bg · 5.39:1 on card · 4.79:1 on
- * muted — AA"*, all three of which were true, and all three of which described a third of
- * the surfaces the product actually put it on. Three shipped pages independently reached a
- * fourth surface and rendered 4.45:1, and the only thing that noticed was a browser.
- *
- * So §4 was rewritten as a matrix of *permitted* pairs — and a matrix nobody executes is
- * one refactor away from being exactly the same defect with more words. This file parses
- * that comment block and recomputes every number in it from the token values in the same
- * file. Change a token without re-measuring and this goes red in milliseconds instead of
- * waiting for `tests/e2e/axe.spec.ts`, a browser, and a database.
- *
- * It deliberately duplicates nothing: the expected values live in `tokens.css`, the colours
- * live in `tokens.css`, and the test only checks that one implies the other. It cannot be
- * satisfied by editing this file, only by editing the palette or the matrix.
- *
- * The same argument as `lib/env-documented.test.ts`: a doc that drifts from the code is
- * worse than no doc, because people trust it.
+ * Parses the permitted-pairing matrix in `app/tokens.css` §4 and recomputes every ratio
+ * from the token values in the same file. Both the expected values and the colours live in
+ * `tokens.css`; this only checks they agree.
  */
 
 const source = readFileSync(join(process.cwd(), "app", "tokens.css"), "utf8");
@@ -177,12 +159,8 @@ function compositeRows(): CompositeRow[] {
 }
 
 /**
- * The one cell in §4.1 below 4.5:1, and it is below deliberately. `--muted-foreground` on
- * `--accent` is 4.02:1 in dark, which §4.4 lists as FORBIDDEN rather than hiding: `--accent`
- * cannot be darkened without vanishing against `--popover`, and the palette has no primitive
- * between `--slate-400` and `--slate-300`, so on that one surface the muted step does not
- * exist. Listing it in §4.1 with its real number is the point — the alternative is a blank
- * cell, which is what caused QV-06.
+ * The one §4.1 cell below 4.5:1: `--muted-foreground` on `--accent` in dark (4.02:1), listed
+ * as forbidden in §4.4. `--accent` can't be darkened without vanishing against `--popover`.
  */
 const DOCUMENTED_EXCEPTION = { surface: "--accent", ink: "--muted-foreground", theme: "dark" };
 
@@ -267,20 +245,16 @@ describe("app/tokens.css §4 — the permitted pairing matrix", () => {
 
 describe("§4.5 opacity is not a colour strategy", () => {
   /**
-   * The other half of QV-06. `opacity-40` on the disabled pagination chips rendered
-   * `--foreground` at 2.63:1 in light and 3.36:1 in dark, while every token involved
-   * measured over 16:1 — the composite is invisible to any check that reads tokens rather
-   * than pixels, including the matrix above. A `<span>` is not a user interface component
-   * and cannot be `disabled`, so WCAG 1.4.3's exemption for inactive components does not
-   * reach it and it owes the full 4.5:1.
+   * `opacity-40` on the pagination chips rendered ~2.6:1 (light) / ~3.4:1 (dark), invisible
+   * to token-level checks. A `<span>` can't be `disabled`, so WCAG 1.4.3's inactive-component
+   * exemption doesn't apply.
    */
   it("the pagination chips dim with a token, not with alpha", () => {
     const pagination = readFileSync(
       join(process.cwd(), "components", "directory", "pagination.tsx"),
       "utf8",
     );
-    // Strip block comments first: the file explains this rule at length, and the prose
-    // naming `opacity-40` must not be what fails the check.
+    // Strip block comments so prose mentioning `opacity-40` doesn't fail the check.
     const code = pagination.replace(/\/\*[\s\S]*?\*\//g, "");
     expect(code).not.toMatch(/\bopacity-\d/);
     expect(code).toContain("text-muted-foreground");
@@ -293,11 +267,8 @@ describe("§4.5 opacity is not a colour strategy", () => {
     expect(composite(token("dark", "--foreground"), token("dark", "--background"), 0.4)).toBe(
       "#62676E",
     );
-    // axe reported 2.63:1 and 3.36:1 against these same pixels; recomputing from the
-    // 8-bit-rounded composite gives 2.64:1 and 3.37:1. Both are 0.01 apart, consistently,
-    // because axe blends in full precision and the screen does not. That is a disagreement
-    // about the last digit, not about whether it failed, and pretending otherwise by
-    // asserting axe's number here would be the same sin this file exists to prevent.
+    // axe reports 2.63 and 3.36 because it blends at full precision; the 8-bit-rounded
+    // composite gives 2.64 and 3.37.
     expect(round2(contrast("#999B9F", token("light", "--background")))).toBe(2.64);
     expect(round2(contrast("#62676E", token("dark", "--background")))).toBe(3.37);
     expect(contrast("#999B9F", token("light", "--background"))).toBeLessThan(4.5);
@@ -306,20 +277,8 @@ describe("§4.5 opacity is not a colour strategy", () => {
 });
 
 /*
- * QV-26. The matrix was internally consistent and did not have to be COMPLETE.
- *
- * QA added `--qa-callout-surface: var(--slate-450)` to both theme blocks — a pairing at
- * 2.15:1 light and 1.19:1 dark, the worst in the palette — and all 229 assertions stayed
- * green. Every documented number was still true. Nothing checked that the matrix described
- * the palette it was written for.
- *
- * That is QV-06's own defect one level up, living inside the file written to prevent it: a
- * document is only a guard when it must grow as the thing it guards grows.
- *
- * So: every semantic token is either in the matrix, or explicitly classified below as
- * something text never sits on. A new token belongs to neither set until somebody decides,
- * and until then this fails. That is the point — the decision is cheap, and skipping it is
- * what produced both QV-06 and QV-26.
+ * Completeness: every semantic token must be either in the matrix or listed below as
+ * something text never sits on. A new token fails until it's classified.
  */
 const NOT_A_TEXT_SURFACE = new Set([
   // Inks. They sit ON surfaces; §4.1 measures them as foregrounds.
@@ -358,19 +317,9 @@ const NOT_A_TEXT_SURFACE = new Set([
   "--confidence-medium",
   "--confidence-review",
   /*
-   * A component fill, not a text-ramp surface, and this is the evidence rather than a
-   * convenience: `bg-secondary` has exactly six call sites — `badge.tsx`, `button.tsx`, and
-   * four `file:bg-secondary` upload buttons — and every one pairs it with
-   * `--secondary-foreground` or inherited `--foreground`. Both measure **6.53 dark / 15.23
-   * light**, comfortably AA.
-   *
-   * It is excluded because the muted ramp is never rendered on it, NOT because it would
-   * fail: `--foreground-secondary` gives 3.87 and `--muted-foreground` 2.56 in dark, both
-   * below AA. Those numbers are in §4.4 as forbidden pairs so the exclusion is a recorded
-   * decision rather than a silence. Put muted ink on this surface and §4.4 is the answer.
-   *
-   * Found by this file's own coverage test on its first run — the matrix had never described
-   * this surface at all.
+   * Component fill: every `bg-secondary` use pairs it with `--secondary-foreground` or
+   * `--foreground` (6.53 dark / 15.23 light). The muted ramp fails on it and is listed as
+   * forbidden in §4.4.
    */
   "--secondary",
   // Button-fill variants of --primary. Each carries --primary-foreground, never the ramp.
@@ -415,8 +364,7 @@ describe("§4 coverage — the matrix must describe the whole palette", () => {
   });
 
   it("does not classify a token that no longer exists", () => {
-    // The other direction: a stale entry in either list is a claim about a token that is gone,
-    // and a matrix describing a palette that has moved is how the original defect started.
+    // No stale entries for tokens that were removed.
     const live = new Set(semanticTokenNames());
     const stale = [...NOT_A_TEXT_SURFACE].filter((name) => !live.has(name));
     expect(stale, "NOT_A_TEXT_SURFACE names tokens that are no longer in tokens.css").toEqual([]);

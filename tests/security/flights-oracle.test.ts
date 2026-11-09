@@ -6,42 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Connector } from "@/db/schema";
 
 /**
- * QA finding QV-02, REOPENED for `/api/live/flights`.
+ * `/api/live/flights` must not let a reader learn another reader's viewport via the cache.
+ * On `/live/flights` the reader types the coordinates, so a cached cell (and its exact
+ * `fetchedAt`) would reveal what someone else looked at.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * WHAT QA MEASURED, AND WHY THE DRIVER'S REASONING WAS WRONG
- * ─────────────────────────────────────────────────────────────────────────────
- * Seven drivers were given `perActor: true` and became byte-identical for a cached term and
- * an unasked one. `flightsDriver` declared `perActor: false`, so on `/api/live/flights` the
- * cache was read before any quota. Measured live with `adsb-lol` enabled, two clients
- * separated only by `X-Forwarded-For`:
- *
- *   victim   198.51.100.7   GET ?lat=51.5&lon=-0.1&radius=50
- *       fetchedAt = 2026-09-01T07:40:36.489Z
- *   attacker 203.0.113.99   the same cell, four times
- *       fetchedAt = 2026-09-01T07:40:36.489Z  x4, zero audit rows, zero quota
- *
- * The victim's exact millisecond, four times, free and unlogged, from a GET whose parameters
- * are in the URL — so the probe is a script over an 11 km grid rather than a POST body.
- *
- * The comment defending `perActor: false` argued that "a viewport is a question about the
- * world rather than about the reader". That is true of `/map`. **`/map` does not use this
- * driver.** The map's aircraft layer is `lib/sources/adsb-lol.ts` polled through
- * `lib/sources/governed.ts` under the worker actor; `flightsDriver` serves exactly two
- * surfaces, `/live/flights` and its refresh route, and on both the reader types the
- * coordinates. The flag was a claim about every present and future call site of the driver,
- * made in the driver, where the call sites cannot be seen.
- *
- * ─────────────────────────────────────────────────────────────────────────────
- * WHY THE FLAG IS GONE RATHER THAN CORRECTED
- * ─────────────────────────────────────────────────────────────────────────────
- * Setting `perActor: true` on this one driver would fix the instance the finding enumerated
- * and leave the property — "a driver may declare that its readers' questions are not
- * private" — available to the next driver. Whether a cache key contains caller-supplied
- * input is a fact about the CALL SITE, not about the driver, and `runConnector` cannot see
- * the call site. So there is no longer anything to declare: every `runConnector` call charges
- * the caller before the cache is read and quantises the instant on the way out. The last test
- * in this file asserts that the choice cannot be reintroduced.
+ * There is no per-driver opt-out: whether a cache key holds caller input depends on the call
+ * site, which the driver can't see. `runConnector` charges every caller before reading the
+ * cache and quantises `fetchedAt`. The last describe block guards against reintroducing a
+ * per-driver flag.
  */
 
 const getConnectorBySlug = vi.fn<(slug: string) => Promise<Connector | null>>();
@@ -61,7 +33,7 @@ vi.mock("@/lib/connectors/audit", () => ({
   AUDIT_RETENTION_DAYS: 30,
 }));
 
-/** The `adsb-lol` row as seeded, but live — the state QA measured in. */
+/** The seeded `adsb-lol` row, but live. */
 function adsbRow(overrides: Partial<Connector> = {}): Connector {
   return {
     id: "00000000-0000-4000-8000-0000000000ad",
@@ -123,23 +95,8 @@ async function harness() {
 }
 
 /**
- * A fixed window boundary, NOT `new Date()`.
- *
- * This mock stands in for `lib/rate-limit.ts`, whose `resetAt` is the end of the actor's
- * current fixed window (ADR 0009) — the same instant for every call inside that window, and
- * derived from the *caller's* own key rather than from anything another reader did.
- *
- * It was `new Date()`, evaluated afresh on every call, which made this file fail roughly
- * three runs in eight: the byte-identity assertion below compares a probe against a control
- * made microseconds apart, and whenever the two straddled a millisecond tick the envelopes
- * differed by one digit of `quotaResetsAt`. The defect was in the harness, not in the
- * product — but a security test that fails a third of the time teaches people to re-run it
- * until it is green, which is how a real regression gets waved through.
- *
- * A constant is no weaker than a moving clock here: the mock's value never depended on any
- * per-subject state, so it could not have carried the leak this file is testing for. Making
- * it constant models the real limiter more faithfully and removes the only non-deterministic
- * field from the comparison. The assertions are untouched.
+ * A fixed window boundary rather than `new Date()`. The real limiter's `resetAt` is constant
+ * within a fixed window; a per-call `new Date()` made the byte-identity check flaky.
  */
 const WINDOW_RESET_AT = new Date("2026-09-01T00:01:00.000Z");
 
@@ -161,7 +118,7 @@ function budgetedConsume(limits: Readonly<Record<string, number>>): void {
   });
 }
 
-describe("QV-02 reopened: /api/live/flights is not a free oracle for another reader's viewport", () => {
+describe("/api/live/flights is not a free oracle for another reader's viewport", () => {
   it("a spent attacker cannot tell the victim's cell from a cell nobody has viewed", async () => {
     const { runConnector, flightsDriver } = await harness();
     getConnectorBySlug.mockResolvedValue(adsbRow({ perUserQuota: 2 }));
@@ -195,7 +152,7 @@ describe("QV-02 reopened: /api/live/flights is not a free oracle for another rea
     const hit = await runConnector(flightsDriver, VIEWPORT, { subject: "attacker" });
 
     expect(hit.state).toBe("fresh");
-    // ADR 0014 §4 still holds: the upstream saw ONE call for the two readers.
+    // One upstream call for both readers.
     expect(sockets.length).toBe(1);
     expect(consume.mock.calls.filter(([action]) => action === "connector-user").length).toBe(1);
   });
@@ -210,9 +167,7 @@ describe("QV-02 reopened: /api/live/flights is not a free oracle for another rea
 
     const at = attacker.fetchedAt;
     if (at === null) throw new Error("expected a timestamp");
-    // Quantised down to the connector's 60 s cache window, epoch-aligned. "Somebody here was
-    // watching aircraft within 11 km of this point at 07:40:36.489" is the sentence QV-02
-    // was filed for; a window start is not that sentence.
+    // Quantised to the 60 s cache window, so it can't reveal when someone else looked.
     expect(at.getTime() % (60 * 1000)).toBe(0);
     expect(victim.fetchedAt?.getTime()).toBe(at.getTime());
   });
@@ -228,7 +183,7 @@ describe("QV-02 reopened: /api/live/flights is not a free oracle for another rea
   });
 });
 
-describe("QV-02 reopened: the choice that produced it no longer exists", () => {
+describe("there is no per-driver cache privacy flag", () => {
   const connectorDir = join(process.cwd(), "lib", "connectors");
 
   it("`ConnectorDriver` has no per-driver privacy flag to declare wrongly", () => {
@@ -240,9 +195,7 @@ describe("QV-02 reopened: the choice that produced it no longer exists", () => {
     const offenders: string[] = [];
     for (const file of readdirSync(connectorDir)) {
       if (!file.endsWith(".ts") || file.endsWith(".test.ts")) continue;
-      // Comments stripped: `types.ts` explains at length why the flag is gone, and a test
-      // that cannot tell an explanation from a declaration teaches people to delete the
-      // explanation.
+      // Strip comments so explanations of the flag don't count.
       const code = readFileSync(join(connectorDir, file), "utf8")
         .replace(/\/\*[\s\S]*?\*\//g, "")
         .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
@@ -255,16 +208,14 @@ describe("QV-02 reopened: the choice that produced it no longer exists", () => {
     const runtime = readFileSync(join(connectorDir, "runtime.ts"), "utf8")
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
-    // The spend, not the type annotation on `spendQuota`'s own parameter: the call is the
-    // one written across two lines as `spendQuota(\n    "connector-user",`.
+    // Match the call (possibly split across lines), not the parameter type.
     const spends = [...runtime.matchAll(/spendQuota\(\s*"connector-user"/g)];
     const quotaAt = spends[0]?.index ?? -1;
     const cacheAt = runtime.indexOf("readCache(key)");
     expect(quotaAt).toBeGreaterThan(-1);
     expect(cacheAt).toBeGreaterThan(-1);
     expect(quotaAt, "the per-user quota must be spent above the cache read").toBeLessThan(cacheAt);
-    // And exactly once: the second, post-cache spend existed only for the shared path, and
-    // charging it twice would halve the number an operator configured.
+    // Exactly once; charging twice would halve the configured quota.
     expect(spends.length).toBe(1);
   });
 });

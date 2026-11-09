@@ -17,54 +17,18 @@ import type { ConnectorDriver } from "./types";
 /**
  * `/toolbench/dns-lookup` — A, AAAA, MX, NS, TXT and CAA over DNS-over-HTTPS.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * WHY DNS-OVER-HTTPS RATHER THAN A RESOLVER
- * ─────────────────────────────────────────────────────────────────────────────
- * A plain HTTPS GET returning JSON. No UDP socket, no DNS library parsing a binary message
- * from a stranger, no privileged port, and it works unchanged inside a container with no
- * outbound port 53. The attack surface of "parse a JSON object with four known fields" is
- * enormously smaller than that of a wire-format DNS parser.
+ * DoH (JSON over HTTPS) avoids a binary DNS parser and needs no outbound port 53.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * WHAT WAS CONFIRMED, AND HOW — 2026-09-01
- * ─────────────────────────────────────────────────────────────────────────────
- * 1. **Endpoint.** `https://cloudflare-dns.com/dns-query?name=<name>&type=<type>` with
- *    `Accept: application/dns-json`. Documented by Cloudflare at
- *    developers.cloudflare.com/1.1.1.1/encryption/dns-over-https/make-api-requests/dns-json/.
- *    **The Accept header is not optional**: with `application/json` the endpoint answered 400
- *    on every request during verification. Exercised live for A, AAAA, MX, NS, TXT and CAA,
- *    and for a name that does not exist.
+ * Notes (verified 2026-09-01):
+ * - `GET /dns-query?name=&type=` requires `Accept: application/dns-json`; `application/json`
+ *   returns 400.
+ * - No key and no published rate limit; our quota columns bound our own traffic.
+ * - Attribution is rendered next to results (terms only require it of ISPs, but it's free).
+ * - JSON DoH has no RFC, so responses are Zod-validated. Google Public DNS uses the same
+ *   schema; switching is a `base_url` change.
  *
- * 2. **No key, no registration, no published request limit.** 1.1.1.1 is a public resolver
- *    built for the whole internet's query volume; twelve back-to-back requests all returned
- *    200 in 17–195 ms. The connector's quota columns are ours, and they exist to bound *our*
- *    traffic rather than to approximate a limit they published.
- *
- * 3. **Terms.** Cloudflare's 1.1.1.1 terms-of-use page (last updated 2026-04-30) binds use of
- *    the resolver to the Cloudflare Website and Online Services Terms of Use, and asks ISPs
- *    and network-equipment providers that integrate 1.1.1.1 to attribute Cloudflare. We are
- *    neither, but attribution costs nothing and under-attributing does not, so it is rendered
- *    next to every result.
- *
- * 4. **robots.txt.** `https://cloudflare-dns.com/robots.txt` returns 200 with a file
- *    containing only comments and content-signal definitions — no `User-agent` and no
- *    `Disallow` lines at all. There is no crawl directive to respect or violate, and we are
- *    not crawling: we make one documented API request per record type.
- *
- * 5. **The JSON DoH format has no RFC**, which Cloudflare's own documentation states, and
- *    behaviour may differ between providers. `lib/toolbench/dns.ts` Zod-validates every
- *    response for that reason. Google Public DNS implements the same schema and is the
- *    documented fallback if this row is ever switched off; changing `base_url` on the
- *    registry row is enough, no deploy required.
- *
- * ─────────────────────────────────────────────────────────────────────────────
- * SIX REQUESTS, ONE LOOKUP
- * ─────────────────────────────────────────────────────────────────────────────
- * One lookup is six upstream requests, issued in parallel — one per record type. They are
- * accounted as **one** call against the quota because they are one user action, and the
- * legal basis says so explicitly rather than leaving an operator to discover it from the
- * traffic. A record type that fails degrades to an `unknown` row in the table; only a total
- * failure fails the lookup.
+ * One lookup = six parallel requests (one per type), counted as one quota call. A failed type
+ * shows as `unknown`; only a total failure fails the lookup.
  */
 
 export const DNS_CONNECTOR_SLUG = "cloudflare-doh";
@@ -87,7 +51,7 @@ export const dnsDriver: ConnectorDriver<DnsParams, DnsLookup> = {
     return { name: name.value };
   },
 
-  /** The cache key is the name the reader typed — a private query. See QV-02. */
+  /** The name the reader typed is a private query; quota is charged before cache reads. */
   cacheKey: (params) => params.name,
 
   async fetch(connector: Connector, params, signal) {
@@ -104,7 +68,7 @@ export const dnsDriver: ConnectorDriver<DnsParams, DnsLookup> = {
             signal,
             // Cloudflare answers 400 to anything else. Verified 2026-09-01.
             accept: "application/dns-json",
-            // A DoH answer is a few kilobytes. A megabyte would already be pathological.
+            // A DoH answer is a few KB.
             maxBytes: 1024 * 1024,
           });
           const parsed = dohResponseSchema.safeParse(decodeJson(response.text));
@@ -113,11 +77,8 @@ export const dnsDriver: ConnectorDriver<DnsParams, DnsLookup> = {
           }
           return { set: decodeRecordSet(type, parsed.data), status: response.status };
         } catch (error) {
-          /**
-           * A 429 must propagate: `runtime.ts` opens the per-connector cooldown on it, and
-           * swallowing it here would leave us calling a resolver that asked us to stop.
-           * Every other per-type failure degrades that one row.
-           */
+          // Rate limits must propagate so `runtime.ts` opens the cooldown; other failures
+          // degrade just this row.
           if (error instanceof UpstreamStatusError && (error.status === 429 || error.status === 420)) {
             throw error;
           }
@@ -130,8 +91,7 @@ export const dnsDriver: ConnectorDriver<DnsParams, DnsLookup> = {
       }),
     );
 
-    // Every single type failed: that is the resolver being unreachable, not the domain
-    // having no records, and the surface must say so.
+    // All types failed: the resolver is unreachable, not "no records".
     if (results.every((result) => result.set.rcodeStatus === UNKNOWN_STATUS)) {
       throw new UpstreamStatusError(results[0]?.status ?? 502);
     }
@@ -188,7 +148,7 @@ export const DNS_CONNECTOR_SEED = {
     "to 120 requests a minute. A 429 or 420 opens the per-connector cooldown and we stop. " +
     "PRIVACY: the resolver is queried from our server, never the reader's browser, so the " +
     "reader's IP never reaches Cloudflare - but the NAME they asked about does, and the tool " +
-    "page states that plainly. NOT A LEGAL OPINION - see docs/content/legal-review.md.",
+    "page states that plainly. NOT A LEGAL OPINION.",
   baseUrl: "https://cloudflare-dns.com",
   requiresApiKey: false,
   apiKeyEnvVar: null,
@@ -196,12 +156,7 @@ export const DNS_CONNECTOR_SEED = {
   globalCeiling: 20,
   windowSeconds: 60,
   timeoutMs: 8000,
-  /**
-   * 60s. Deliberately short: DNS is the one thing here that genuinely changes minute to
-   * minute, and a stale answer to "what does this resolve to now" is a wrong answer rather
-   * than an old one. The per-record TTL is displayed so a reader can see the resolver's own
-   * freshness alongside ours.
-   */
+  /** Short: a stale DNS answer is a wrong answer. Per-record TTLs are displayed too. */
   cacheTtlSeconds: 60,
   staleWhileRevalidateSeconds: 300,
   enabled: false,
@@ -210,5 +165,5 @@ export const DNS_CONNECTOR_SEED = {
     "Verified 2026-09-01 against live requests for all six record types plus an NXDOMAIN. " +
     "The Accept header must be application/dns-json; application/json returns 400. Google " +
     "Public DNS implements the same schema at https://dns.google and is the documented " +
-    "fallback - changing base_url is enough. See docs/sources/cloudflare-doh.md.",
+    "fallback - changing base_url is enough.",
 };

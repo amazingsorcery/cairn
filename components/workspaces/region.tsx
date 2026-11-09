@@ -6,21 +6,11 @@ import { ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
- * One of the three regions of a case: checklist, saved tools, notes.
+ * One region of a case (checklist, saved tools, notes). Collapsible on mobile, always open
+ * from `md` up.
  *
- * At 375px they stack in that order and each collapses with its count in the header, so the
- * whole case is reachable without scrolling past two full regions to find the third
- * (`docs/design/states.md` §7.2). From `md` up all three are open at once — the value of
- * this page is having the case in front of you.
- *
- * THE COLLAPSE IS CLASS-DRIVEN, NOT THE `hidden` ATTRIBUTE. `hidden` plus `md:block` looks
- * equivalent and is not: measured in the browser at 1280px, the attribute still won and the
- * region stayed `display: none` while its toggle was `md:hidden` — so a reader who collapsed
- * a region on a phone and then widened the window had an invisible region and no control to
- * bring it back. Two Tailwind utilities in the same layer have no such conflict: `md:block`
- * is emitted after `hidden`, so from `md` up the content is always shown regardless of the
- * collapsed state. `display: none` also removes the content from the accessibility tree, so
- * `aria-expanded` stays truthful without the attribute.
+ * Collapse uses the `hidden` class, not the attribute: the attribute beats `md:block`, which
+ * would leave a region invisible with no toggle after widening the window.
  */
 export function Region({
   title,

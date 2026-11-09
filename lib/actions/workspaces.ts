@@ -38,42 +38,14 @@ import {
 import { fail, fromZodError, guard, ok, type ActionResult } from "./result";
 
 /**
- * Workspace mutations — the signed-in write path.
+ * Workspace mutations. Every action: `requireUser`, Zod-validate, consume rate limit, check
+ * ownership in SQL, mutate. The limit is consumed after validation (spam doesn't burn a
+ * user's budget) and before ownership (no free id probing).
  *
- * EVERY ACTION FOLLOWS THE SAME FIVE STEPS, IN THIS ORDER:
+ * Ownership is a WHERE clause for single statements, or `assertOwns*` inside the transaction.
+ * Non-owners get `notFound`, never `forbidden`, so existence isn't revealed.
  *
- *   1. re-check the session (`requireUser`),
- *   2. Zod-validate the payload,
- *   3. consume a rate-limit budget,
- *   4. re-check ownership IN SQL against the session user id,
- *   5. mutate.
- *
- * Step 3 is not optional and there are no exemptions. Five of these actions used to skip it
- * — including both deletes and the reorder, which opens a transaction and rewrites a whole
- * list — and the omission read as an oversight rather than a decision, because nothing said
- * why a delete should be cheaper to allow than a toggle (QA finding Q-11). It is not.
- *
- * The limiter is consumed AFTER validation but BEFORE the ownership check, except where the
- * ownership check is the same statement as the mutation. Behind validation so malformed
- * spam does not consume a legitimate user's budget; before ownership so a caller cannot
- * probe ids for free.
- *
- * Ownership is a WHERE clause wherever the mutation is a single statement, and an explicit
- * `assertOwns*` inside the transaction wherever it is not. It is never a TypeScript
- * comparison after a fetch: that loads a stranger's row into this process before deciding it
- * should not have, and it is one early `return` away from not deciding at all.
- *
- * A non-owner gets `notFound`, never `forbidden`. A 403 confirms the workspace exists, which
- * for an audience whose cases are the sensitive thing is an enumeration oracle
- * (HANDOFF §11 assertion 2).
- *
- * NO REVALIDATION ANYWHERE IN THIS FILE. caching.md §5: "Any workspace or note mutation —
- * nothing." Nothing under `/workspaces` is cached at any layer, so there is no tag to purge,
- * and `revalidateTag('tools')` here would purge the public catalogue on every checkbox click.
- *
- * A Server Action is a public HTTP endpoint with a generated name. Its arguments are
- * attacker-controlled and its authorisation is NOT inherited from the page that rendered the
- * form. That is why every one of these re-checks rather than trusting its caller.
+ * No revalidation: nothing under `/workspaces` is cached.
  */
 
 const NOT_FOUND = "That case file does not exist.";
@@ -91,11 +63,7 @@ export async function createWorkspace(input: unknown): Promise<ActionResult<{ id
 
     const { title, playbookId } = parsed.data;
 
-    /**
-     * ONE transaction. The workspace and its derived checklist must appear together: a
-     * workspace created without its checklist looks like an empty case, and there is no
-     * second chance to derive it because "start from this playbook" happens once.
-     */
+    // Workspace and derived checklist are created together.
     const result = await db.transaction(async (tx) => {
       const [workspace] = await tx
         .insert(workspaces)
@@ -105,13 +73,7 @@ export async function createWorkspace(input: unknown): Promise<ActionResult<{ id
       if (!workspace) throw new Error("Insert returned no workspace");
 
       if (playbookId) {
-        /**
-         * PUBLISHED steps only, read inside the transaction. Starting a case from a draft
-         * playbook would expose unpublished editorial work through a side door.
-         *
-         * `title` is snapshotted from `playbook_steps.title` here and never refreshed
-         * (ADR 0008): it records what the user saw when they started the case.
-         */
+        // Published steps only. Titles are snapshotted and never refreshed.
         const steps = await tx
           .select({ id: playbookSteps.id, title: playbookSteps.title })
           .from(playbookSteps)
@@ -120,8 +82,6 @@ export async function createWorkspace(input: unknown): Promise<ActionResult<{ id
           .orderBy(asc(playbookSteps.orderIndex));
 
         if (steps.length > 0) {
-          // ONE multi-row insert, not a loop. A twelve-step playbook would otherwise be
-          // twelve round trips inside a transaction holding a row lock.
           await tx.insert(workspaceItems).values(
             steps.map((step, index) => ({
               workspaceId: workspace.id,
@@ -154,11 +114,7 @@ export async function updateWorkspace(input: unknown): Promise<ActionResult<{ id
 
     const { id, title, status } = parsed.data;
 
-    /**
-     * Ownership is the WHERE clause, not a prior read. No returned row means either the
-     * workspace does not exist or it is not the caller's, and those two answers are
-     * deliberately indistinguishable.
-     */
+    // Ownership in the WHERE clause; "missing" and "not yours" look the same.
     const updated = await db
       .update(workspaces)
       .set({ title, status })
@@ -178,13 +134,10 @@ export async function deleteWorkspace(input: unknown): Promise<ActionResult<{ id
     const parsed = workspaceIdSchema.safeParse(input);
     if (!parsed.success) return fromZodError(parsed.error);
 
-    // Rate limited like every other write. A delete cascades to every item and note in the
-    // case, so it is among the MORE expensive statements here, not a cheap one (Q-11).
     const limit = await consumeSafely("workspace-write", user.id);
     if (!limit.ok) return fail("conflict", TOO_FAST);
 
-    // Items and notes cascade. This is a real deletion of the user's own record and is
-    // correct: there is nothing of ours in their case file worth keeping (ADR 0008).
+    // Items and notes cascade.
     const deleted = await db
       .delete(workspaces)
       .where(and(eq(workspaces.id, parsed.data.id), eq(workspaces.userId, user.id)))
@@ -201,12 +154,8 @@ export async function deleteWorkspace(input: unknown): Promise<ActionResult<{ id
  * ------------------------------------------------------------------ */
 
 /**
- * Raised inside the transaction when the snapshot's unique index already holds this feature.
- *
- * It has to unwind rather than return, because by then the `workspace_items` row is already
- * inserted and committing would leave a `mapFeature` item with no snapshot — an item that
- * renders as nothing at all. Throwing rolls the whole thing back; the catch outside turns it
- * into the ordinary "already saved" answer rather than a failure.
+ * Thrown when the snapshot already exists, to roll back the just-inserted item (an item
+ * without a snapshot renders as nothing). Caught and reported as "already saved".
  */
 class FeatureAlreadySaved extends Error {
   constructor() {
@@ -228,22 +177,10 @@ export async function addWorkspaceItem(input: unknown): Promise<ActionResult<{ i
     const { workspaceId, kind, toolId, stepId, feature } = parsed.data;
 
     /**
-     * A LIVE FEATURE IS RESOLVED BEFORE THE TRANSACTION OPENS, AND FROM OUR OWN CACHE.
-     *
-     * ADR 0025 Consequences, and QA finding QV-14. The request names a source and a feature;
-     * everything that is written — the coordinates, the observation instant, the source name,
-     * the attribution, the licence, the title — comes from `lib/live/feature-cache.ts`, which
-     * holds what the last governed poll actually returned. This is the same rule the tool
-     * branch below follows by reading `tools.name` from the database, applied to a referent
-     * that has no row: a snapshot assembled from a request body is a record of what the
-     * client claimed, and this table exists to be citable evidence.
-     *
-     * It resolves OUTSIDE the transaction because it is an in-memory read that cannot fail
-     * partway, and holding a row lock across it would buy nothing.
-     *
-     * FAIL, DO NOT FETCH. If the cache no longer holds the feature the save is refused. ADR
-     * 0025 rejects re-fetching outright: adsb.lol keeps no history, so a re-fetch returns the
-     * aircraft's *current* position under the original timestamp — not old, but wrong.
+     * Live features are resolved from `lib/live/feature-cache.ts` (outside the transaction;
+     * it's an in-memory read). Everything written comes from the cache, not the request.
+     * If the feature is gone the save fails: re-fetching would pair a current position with
+     * the original timestamp.
      */
     let snapshot: ReturnType<typeof savedFeatureSchema.parse> | null = null;
     if (kind === "mapFeature" && feature) {
@@ -264,7 +201,7 @@ export async function addWorkspaceItem(input: unknown): Promise<ActionResult<{ i
         latitude: resolved.feature.latitude,
         longitude: resolved.feature.longitude,
         altitudeMetres: resolved.feature.altitude ?? null,
-        /* The UPSTREAM's instant. Our clock records only `created_at`. */
+        /* The upstream's instant; our clock is only `created_at`. */
         observedAt: resolved.observedAt,
         sourceUrl: resolved.feature.sourceUrl ?? null,
         attribution: resolved.attribution.text,
@@ -273,12 +210,7 @@ export async function addWorkspaceItem(input: unknown): Promise<ActionResult<{ i
         precision: resolved.feature.precision ?? null,
       });
 
-      /*
-       * A source whose adapter returns a blank credit fails the save rather than writing a
-       * row without one. ODbL, CC BY and the TfL terms make the credit a condition of use, so
-       * an uncreditable feature is one we may not put in an exportable case file — the same
-       * fail-closed posture as `connectors_attribution_check`.
-       */
+      // A blank credit fails the save; licences like ODbL / CC BY require it.
       if (!candidate.success) return fromZodError(candidate.error);
       snapshot = candidate.data;
     }
@@ -289,14 +221,8 @@ export async function addWorkspaceItem(input: unknown): Promise<ActionResult<{ i
           return fail("notFound", NOT_FOUND);
         }
 
-        /**
-         * The snapshot title is READ FROM THE DATABASE, never taken from the client
-         * (ADR 0008). It records what the entry said when the user saved it; a
-         * client-supplied title would record what the client claimed.
-         *
-         * A tool must be published to be saved — otherwise a guessed uuid would pull an
-         * unpublished draft's name into a user's case file.
-         */
+        // Title is read server-side, never from the client. Only published entries can be
+        // saved, so a guessed uuid can't leak a draft's name.
         let title: string | undefined;
         if (kind === "tool" && toolId) {
           const row = await tx
@@ -314,7 +240,7 @@ export async function addWorkspaceItem(input: unknown): Promise<ActionResult<{ i
             .limit(1);
           title = row[0]?.title;
         } else if (kind === "mapFeature" && snapshot) {
-          /* Same rule, different authority: the feature's own label as the server saw it. */
+          /* The feature's label as the server saw it. */
           title = snapshot.label;
         }
 
@@ -333,9 +259,7 @@ export async function addWorkspaceItem(input: unknown): Promise<ActionResult<{ i
             title,
             orderIndex,
           })
-          // A tool is saved into a workspace at most once
-          // (`workspace_items_tool_unique_idx`), and one checklist entry per step. A
-          // `mapFeature` item has no FK to be unique on; its uniqueness lives on the snapshot.
+          // One per tool / step per workspace; `mapFeature` uniqueness is on the snapshot.
           .onConflictDoNothing()
           .returning({ id: workspaceItems.id });
 
@@ -343,18 +267,8 @@ export async function addWorkspaceItem(input: unknown): Promise<ActionResult<{ i
         if (!row) return fail("conflict", "That is already saved in this case.");
 
         /**
-         * THE ITEM AND ITS SNAPSHOT ARE ONE WRITE.
-         *
-         * `workspace_feature_snapshots`' primary key IS its foreign key to the item
-         * (ADR 0025), so exactly one snapshot per item is structural. What is not structural
-         * is that the item never exists without one: a committed `mapFeature` item with no
-         * snapshot has no coordinates, no source and no credit, and renders as nothing. Both
-         * statements are in this transaction and `FeatureAlreadySaved` unwinds it.
-         *
-         * `onConflictDoNothing` covers `workspace_feature_snapshots_unique_idx` — one save
-         * per feature per workspace. Re-saving reports "already saved" and writes nothing;
-         * ADR 0025 rejects the alternative because a user accumulating positions for the same
-         * aircraft is a flight-track table assembled one click at a time.
+         * Item and snapshot are written together; `FeatureAlreadySaved` rolls back the item.
+         * One save per feature per workspace, so repeated saves can't build a flight track.
          */
         if (kind === "mapFeature" && snapshot) {
           const snapshotRow = await tx
@@ -407,8 +321,7 @@ export async function toggleWorkspaceItem(
 
     const { id, checked } = parsed.data;
 
-    // `workspace_items.user_id` is denormalised from the workspace precisely so this is one
-    // indexed predicate rather than a join the query author has to remember (ADR 0008).
+    // `user_id` is denormalised onto items so ownership is one predicate, no join.
     const updated = await db
       .update(workspaceItems)
       .set({ checked, checkedAt: checked ? new Date() : null })
@@ -442,12 +355,7 @@ export async function removeWorkspaceItem(input: unknown): Promise<ActionResult<
   });
 }
 
-/**
- * Drag-to-reorder within one kind.
- *
- * ONE transaction and ONE statement. The client sends ids; the indexes are derived here from
- * array position, so a client cannot invent a position or leave a gap.
- */
+/** Drag-to-reorder within one kind. Indexes come from array position. */
 export async function reorderWorkspaceItems(
   input: unknown,
 ): Promise<ActionResult<{ count: number }>> {
@@ -457,8 +365,6 @@ export async function reorderWorkspaceItems(
     const parsed = reorderWorkspaceItemsSchema.safeParse(input);
     if (!parsed.success) return fromZodError(parsed.error);
 
-    // The most expensive action in this file: a transaction, an ownership scan over the
-    // submitted ids, and an `UPDATE … FROM unnest(...)` across the whole list (Q-11).
     const limit = await consumeSafely("workspace-write", user.id);
     if (!limit.ok) return fail("conflict", TOO_FAST);
 
@@ -469,9 +375,7 @@ export async function reorderWorkspaceItems(
         return fail("notFound", NOT_FOUND);
       }
 
-      // Every id must be the caller's, in this workspace, of this kind. A mismatch means the
-      // submitted list does not describe this workspace, and applying it partially would
-      // leave the ordering half-rewritten.
+      // Every id must be the caller's, in this workspace, of this kind.
       const owned = await tx
         .select({ id: workspaceItems.id })
         .from(workspaceItems)
@@ -488,15 +392,7 @@ export async function reorderWorkspaceItems(
         return fail("notFound", "That list has changed. Reload and try again.");
       }
 
-      /**
-       * One statement for the whole reorder: `unnest(... ) WITH ORDINALITY` turns the id
-       * array into a two-column relation of (id, position) to join against. The loop version
-       * is one round trip per item inside an open transaction.
-       *
-       * `workspace_items` carries no uniqueness on `order_index`, so unlike playbook steps
-       * this needs no deferrable constraint — but it is still one statement, because a loop
-       * that fails half-way leaves a scrambled list.
-       */
+      // One statement via `unnest(...) WITH ORDINALITY`.
       await tx.execute(sql`
         update ${workspaceItems} i
         set order_index = v.pos - 1
@@ -531,8 +427,7 @@ export async function createNote(input: unknown): Promise<ActionResult<{ id: str
         return fail("notFound", NOT_FOUND);
       }
 
-      // An anchor to somebody else's item would attach the note to a row the user cannot
-      // see. Checked with the same ownership predicate, in the same transaction.
+      // The anchor item must also be the caller's.
       if (workspaceItemId && !(await assertOwnsItem(workspaceItemId, user.id, tx))) {
         return fail("notFound", "That entry does not exist.");
       }
@@ -549,11 +444,7 @@ export async function createNote(input: unknown): Promise<ActionResult<{ id: str
   });
 }
 
-/**
- * Edit a note's body. `created_at` is NOT touched: it is the "timestamped" in "timestamped
- * notes", and an investigator's record of when they wrote something has to be stable
- * (db/schema.ts, `notes.createdAt`). Drizzle's `$onUpdate` moves `updated_at`.
- */
+/** Edit a note's body. `created_at` is never touched; `$onUpdate` moves `updated_at`. */
 export async function updateNote(input: unknown): Promise<ActionResult<{ id: string }>> {
   return guard("note.update", async () => {
     const user = await requireUser();

@@ -11,18 +11,11 @@ import { pageMetadata } from "@/lib/metadata";
 import { staticParamsOrEmpty } from "@/lib/static-params";
 
 /**
- * `/directory/[category]` — one category, prerendered.
+ * `/directory/[category]`: one category, ISR (1h).
  *
- * **ISR:3600** (architecture HANDOFF §8). This route reads NO `searchParams`, calls no
- * `cookies()` and no `auth()`; if it ever did, `revalidate` below would silently stop meaning
- * anything (HANDOFF §8 "the trap", QA assertion 11). The refine control is a link into
- * `/directory`, which is the route that owns query state — that separation is what keeps this
- * page static and shareable.
- *
- * `generateStaticParams` covers **every** category slug, not only the non-empty ones:
- * `listCategorySlugs()` says so in its own comment, and `states.md` §2.2 makes an empty
- * category a legitimate rendered state rather than a 404. A category that exists and has
- * nothing in it is a true thing to say; a 404 would be a false one.
+ * Don't read `searchParams`, `cookies()` or `auth()` here or the route turns dynamic and
+ * `revalidate` stops applying. Filtering links to `/directory`, which owns query state.
+ * Static params cover every category, including empty ones (rendered, not 404).
  */
 
 export const revalidate = 3600;
@@ -32,7 +25,7 @@ interface CategoryPageProps {
 }
 
 export async function generateStaticParams() {
-  // Tolerates a build with no database — see ADR 0018.
+  // Tolerates a build with no database.
   return staticParamsOrEmpty("/directory/[category]", async () => {
     const slugs = await listCategorySlugs();
     return slugs.map((category) => ({ category }));

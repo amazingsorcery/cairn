@@ -17,16 +17,8 @@ import { directoryCacheKey } from "@/lib/validation/filters";
 import { TAG, TTL, cached, cachedByKey } from "./cache";
 
 /**
- * The directory read layer.
- *
- * TWO RULES apply to everything in this file:
- *
- *  1. **Public reads filter `status = 'published'`.** A draft 404s for anonymous visitors;
- *     the only preview path is `/admin/tools/[id]` (HANDOFF §7). Every exported function
- *     here is a public read and carries that predicate. The admin reads live in `admin.ts`.
- *  2. **No N+1.** A list view is one query. Tag names come back as an aggregated array in
- *     the same statement rather than a lookup per row — with ~40 rows a page, the loop would
- *     be 41 round trips.
+ * Directory reads. All public: they filter `status = 'published'` (admin reads are in
+ * `admin.ts`). List views are one query, with tags aggregated in the same statement.
  */
 
 export type ToolCard = {
@@ -100,30 +92,17 @@ function toCard(row: DirectoryRow): ToolCard {
 }
 
 /**
- * `/directory` — the filtered, paginated tool list. `search.md` §6.3.
+ * `/directory`: filtered, paginated tool list in one round trip.
+ *  - Tags come from a LATERAL aggregate (no row multiplication, no N+1).
+ *  - `count(*) OVER ()` gives the total without a second query.
+ *  - Filters are `$n IS NULL OR <predicate>`, so one statement shape serves every combination.
  *
- * ONE ROUND TRIP for the whole page, including the total. Three things make that true:
- *
- *  - Tag slugs and names arrive as arrays from a LATERAL subquery, not from a join. A join
- *    would multiply the tool rows by their tag count and force a GROUP BY over every
- *    selected column; a per-row lookup would be the N+1.
- *  - `count(*) OVER ()` returns the unfiltered-by-LIMIT total on every row, so pagination
- *    needs no second `SELECT count(*)` with the predicate duplicated (and the duplicate is
- *    where the two eventually disagree).
- *  - Each filter is `$n IS NULL OR <predicate>`, so one prepared statement shape serves
- *    every combination and Postgres still picks the GIN index when `q` is present
- *    (search.md §6.3 — "Do not hand-force a plan").
- *
- * Raw SQL through the `sql` tag, because Drizzle's query builder cannot express
- * `ts_rank_cd`, `websearch_to_tsquery`, `count(*) OVER ()` or the LATERAL aggregate. Every
- * value below is a bound parameter; nothing is string-concatenated.
+ * Raw SQL since the builder can't express these; all values are bound.
  */
 async function listToolsUncached(filters: DirectoryFilters): Promise<ToolListPage> {
   const offset = (filters.page - 1) * DIRECTORY_PAGE_SIZE;
 
-  // Empty arrays become NULL so the `$n IS NULL OR …` short-circuit fires. An empty
-  // `text[]` would make `@> '{}'` true for every row — correct, but it would also stop the
-  // planner from skipping the containment test entirely.
+  // Empty arrays become NULL so the `$n IS NULL OR ...` short-circuit fires.
   const q = filters.q || null;
   const category = filters.category ?? null;
   const tagList = filters.tags.length > 0 ? filters.tags : null;
@@ -173,9 +152,7 @@ async function listToolsUncached(filters: DirectoryFilters): Promise<ToolListPag
       and (${sql.param(outputList)}::text[] is null or t.output_types @> ${sql.param(outputList)}::text[])
       and (${sql.param(tagList)}::text[] is null or tg.tag_slugs @> ${sql.param(tagList)}::text[])
     order by
-      -- Relevance first when a query is present. ts_rank_cd(..., 32) is cover-density
-      -- ranking normalised to (0,1) - search.md 6.1. Every branch ends in name asc, so
-      -- ordering is total and a row cannot swap between pages under pagination.
+      -- Relevance first when there is a query. Ends in name asc so ordering is total.
       case when ${filters.sort}::text = 'relevance' and q.query is not null
            then ts_rank_cd(t.search_vector, q.query, 32) end desc nulls last,
       case when ${filters.sort}::text = 'recent' then t.published_at end desc nulls last,
@@ -197,12 +174,8 @@ async function listToolsUncached(filters: DirectoryFilters): Promise<ToolListPag
 }
 
 /**
- * Cached on the NORMALISED filter tuple (caching.md §6), never on the raw query string:
- * `?tag=b&tag=a` and `?tag=a&tag=b&junk=1` are one cache entry, and a crafted URL cannot
- * mint a new one.
- *
- * `directoryCacheKey` is passed as the cache argument rather than being interpolated into
- * `keyParts`, which stays constant.
+ * Cached on the normalised filter tuple, so equivalent URLs share an entry. The key is passed
+ * as an argument; `keyParts` stays constant.
  */
 export async function listTools(filters: DirectoryFilters): Promise<ToolListPage> {
   const key = directoryCacheKey(filters);
@@ -241,11 +214,7 @@ export type ToolDetail = {
   usedInPlaybooks: { slug: string; title: string; stepTitle: string; note: string | null }[];
 };
 
-/**
- * A playbook citation: "this method uses this tool, at this step".
- *
- * Split out of `ToolDetail` deliberately — see `getToolPlaybookCitations`.
- */
+/** A playbook step citing a tool. Loaded separately; see `getToolPlaybookCitations`. */
 export type PlaybookCitation = {
   slug: string;
   title: string;
@@ -256,13 +225,7 @@ export type PlaybookCitation = {
 /** The entry itself: everything on `/tools/[slug]` except the "used in" region. */
 export type ToolRecord = Omit<ToolDetail, "usedInPlaybooks">;
 
-/**
- * The tool, its category and its tags. ONE round trip — the relational API compiles the
- * nested `with` into a single statement.
- *
- * Returns null for a draft or a missing slug; the route turns that into `notFound()`
- * (HANDOFF §7, §11.3).
- */
+/** The tool with category and tags, in one query. Null for a draft or missing slug. */
 async function getToolRecordUncached(slug: string): Promise<ToolRecord | null> {
   const row = await db.query.tools.findFirst({
     where: and(eq(tools.slug, slug), eq(tools.status, "published")),
@@ -297,10 +260,7 @@ async function getToolRecordUncached(slug: string): Promise<ToolRecord | null> {
   };
 }
 
-/**
- * The entry itself, without its citations. `/tools/[slug]` §3.7 — if THIS fails the page
- * has nothing to render and must show the error state.
- */
+/** The entry without citations. If this fails, the page shows its error state. */
 export const getToolRecord = cachedByKey(
   getToolRecordUncached,
   ["tool-record-by-slug"],
@@ -309,22 +269,8 @@ export const getToolRecord = cachedByKey(
 );
 
 /**
- * The published playbooks citing this tool, and the step that cites each.
- *
- * SEPARATE FROM THE ENTRY ON PURPOSE. `docs/design/states.md` §3.6 specifies a *partial*
- * state — "the entry loaded, the 'used in' query failed" — which renders the tool and puts
- * "Couldn't load the playbooks that use this tool. Retry." in that region alone. That state
- * is unreachable if one function awaits both queries in sequence, because a rejection in
- * the second takes down the first with it.
- *
- * So the two halves are exported separately and a caller composes them with
- * `Promise.allSettled`. This is the same principle as `buildSafe` in `lib/static-params.ts`:
- * degrade where degradation is truthful, fail where it is not. A missing citation list is a
- * region that says so; a missing entry is a 404 or an error page.
- *
- * ONE round trip. Cached under the TOOL's tags rather than its own, because the citation
- * list changes when a playbook that cites it is published or deleted — `deleteTool` and the
- * playbook actions already purge `tools` and `playbook:<slug>` (caching.md §5).
+ * Published playbooks citing this tool. Separate from the entry so a page can use
+ * `Promise.allSettled` and still render the tool if this fails.
  */
 async function getToolPlaybookCitationsUncached(toolId: string): Promise<PlaybookCitation[]> {
   const rows = await db
@@ -353,14 +299,8 @@ export const getToolPlaybookCitations = cachedByKey(
 );
 
 /**
- * Both halves, for a caller that does not need the partial state.
- *
- * It COMPOSES the two split reads rather than duplicating their SQL, so there is exactly one
- * definition of each query. It is still two round trips, now issued concurrently instead of
- * in sequence — so this is also slightly faster than the version it replaces.
- *
- * A page that wants `states.md` §3.6 should call `getToolRecord` and
- * `getToolPlaybookCitations` itself with `Promise.allSettled`. This function fails whole.
+ * Entry plus citations; fails if either does. For partial rendering, call the two halves
+ * with `Promise.allSettled`.
  */
 export async function getToolBySlug(slug: string): Promise<ToolDetail | null> {
   const record = await getToolRecord(slug);
@@ -374,7 +314,7 @@ export async function getToolBySlug(slug: string): Promise<ToolDetail | null> {
  * Listings that are not the directory
  * ------------------------------------------------------------------ */
 
-/** Published tools carrying a tag, for `/tags/[slug]`. ONE round trip. */
+/** Published tools carrying a tag, for `/tags/[slug]`. */
 async function listToolsByTagUncached(tagSlug: string): Promise<ToolCard[]> {
   const page = await listToolsUncached({
     q: "",

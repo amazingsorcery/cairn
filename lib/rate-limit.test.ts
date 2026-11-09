@@ -12,12 +12,8 @@ import {
 } from "./rate-limit";
 
 /**
- * These tests cover everything about the limiter that does not need a database: the key
- * derivation (which is a privacy control, ADR 0009) and the window arithmetic (which is
- * where a fixed-window limiter is usually wrong).
- *
- * What is NOT covered here, and cannot be without Postgres: the upsert's behaviour under
- * concurrency. That is the primary key's job, and it needs a real database to assert.
+ * Key derivation (a privacy control) and window arithmetic. Upsert concurrency needs a real
+ * Postgres and isn't covered here.
  */
 
 const HEX_64 = /^[0-9a-f]{64}$/;
@@ -27,7 +23,7 @@ describe("hashSubject", () => {
     expect(hashSubject("reporter@example.test")).toMatch(HEX_64);
     expect(hashSubject("203.0.113.7")).toMatch(HEX_64);
     expect(hashSubject("2001:db8::1")).toMatch(HEX_64);
-    // The shape `connector_requests_actor_key_check` enforces (ADR 0013).
+    // The shape `connector_requests_actor_key_check` enforces.
     expect(hashSubject("0f8f7c2e-2f7a-4d1a-9c1e-6d1b0a0c2f3d")).toMatch(HEX_64);
   });
 
@@ -54,12 +50,7 @@ describe("deriveKey", () => {
     "0f8f7c2e-2f7a-4d1a-9c1e-6d1b0a0c2f3d",
   ];
 
-  /**
-   * docs/architecture/HANDOFF.md §11 assertion 12: `rate_limits.key` never contains an `@`
-   * or a dotted quad. This is the regression test for the single worst mistake this module
-   * could make — a rate-limit table keyed by plaintext identifier is an interest graph of
-   * this product's audience (product-brief §3.2 constraint 4).
-   */
+  /** `rate_limits.key` must never contain a plaintext email, IP or uuid. */
   it("never leaks an email address, an IP address or a uuid into the key", () => {
     for (const action of RATE_LIMIT_ACTIONS) {
       for (const subject of subjects) {
@@ -121,8 +112,7 @@ describe("windowStart", () => {
   });
 
   it("works before the epoch rather than rounding towards zero", () => {
-    // Math.trunc would give 1969-12-31T23:59:00Z here, i.e. a bucket in the future
-    // relative to the instant it contains. Math.floor is the correct operation.
+    // Needs Math.floor, not Math.trunc.
     const at = new Date("1969-12-31T23:59:30.000Z");
     expect(windowStart(at, 60).toISOString()).toBe("1969-12-31T23:59:00.000Z");
     expect(windowStart(at, 60).getTime()).toBeLessThanOrEqual(at.getTime());
@@ -158,25 +148,17 @@ describe("RATE_LIMIT_POLICIES", () => {
     }
   });
 
-  /**
-   * QA finding QV-05. `/map` and `/map/data/<layer>` were unauthenticated and unlimited, and
-   * `middleware.ts` matches only `/workspaces/*` and `/admin/*` — so the surface that writes
-   * an audit row per layer per request had nothing counting it.
-   */
+  /** `/map/data/<layer>` is unauthenticated and writes an audit row per request. */
   it("covers the map with a ceiling that fits a real reader and not a loop", () => {
     const policy = RATE_LIMIT_POLICIES["map-layer"];
-    // Six layers on a five-second tick is 72 requests a minute from one reader with the page
-    // open. The ceiling has to clear that comfortably, because an office range or a shared
-    // NAT is one client to us.
+    // Six layers on a 5 s tick is 72/min per reader; leave headroom for shared NATs.
     expect(policy.windowSeconds).toBe(60);
     expect(policy.limit).toBeGreaterThanOrEqual(72 * 3);
-    // And it has to be a ceiling rather than a formality.
     expect(policy.limit).toBeLessThan(1000);
   });
 
   it("keeps the global connector ceiling above the per-user quota", () => {
-    // Otherwise a single user could exhaust the ceiling that exists to protect the
-    // upstream's fair use from all of our users combined (ADR 0011 rule 3).
+    // Otherwise one user could exhaust the shared upstream ceiling.
     expect(RATE_LIMIT_POLICIES["connector-global"].limit).toBeGreaterThan(
       RATE_LIMIT_POLICIES["connector-user"].limit,
     );
@@ -184,11 +166,7 @@ describe("RATE_LIMIT_POLICIES", () => {
 });
 
 describe("clientSubjectFromHeaders", () => {
-  /**
-   * The Server Component half of `clientSubject`. Same rule, same first-entry-only reading of
-   * a header a client can otherwise pad; the value is HMACed by `consume` before it reaches
-   * the database and never leaves this module in the raw (ADR 0009).
-   */
+  /** Server Component variant of `clientSubject`: first XFF entry only; HMACed before storage. */
   it("takes the first entry and ignores a spoofed prefix", () => {
     const headers = new Headers({ "x-forwarded-for": "198.51.100.7, 203.0.113.99" });
     expect(clientSubjectFromHeaders(headers)).toBe("198.51.100.7");
@@ -201,8 +179,7 @@ describe("clientSubjectFromHeaders", () => {
   });
 
   it("falls back to one shared counter rather than to no counter", () => {
-    // Fail closed: every unattributable caller shares a bucket, which cannot be used to
-    // bypass a limit, only to reach one sooner.
+    // Fail closed: unattributable callers share one bucket.
     expect(clientSubjectFromHeaders(new Headers())).toBe("unknown-client");
   });
 });

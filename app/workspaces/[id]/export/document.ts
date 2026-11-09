@@ -6,36 +6,16 @@ import { asDate, isoDate, isoTimestamp } from "@/components/workspaces/dates";
 import { slugify } from "@/lib/utils";
 
 /**
- * The case file as an evidence artefact.
+ * Case export model shared by the Markdown and PDF renderers, so they can't drift.
  *
- * ONE MODEL, TWO RENDERERS. Markdown and PDF are built from the same `CaseDocument` so they
- * cannot drift: an export that says different things in two formats is worse than having
- * only one format, because somebody will quote whichever one they opened.
- *
- * RULES THAT COME FROM THE ARCHITECTURE, NOT FROM TASTE:
- *
- *  - ISO 8601 THROUGHOUT (ADR 0016 6). The rendered UI uses "14 Aug 2026" because it is
- *    unambiguous across reading orders; an export is quoted, sorted and diffed, so it gets
- *    the machine form. Timestamps carry the `Z`; dates are the calendar date.
- *  - EVERY SAVED TOOL CARRIES ITS `confidence` AND `lastVerifiedAt` (architecture HANDOFF
- *    9.1, `flows.md` 4). An export that drops them lets the product's central caveat fall
- *    out of the artefact the user actually keeps — which is the one copy that outlives the
- *    website.
- *  - THE EXPORT IS STAMPED with the moment it was made, and says it is a snapshot. A file
- *    with no export date is undatable evidence.
- *  - SNAPSHOT TITLES ARE WHAT IS PRINTED (ADR 0008), so an exported case is stable and
- *    reproducible regardless of what the catalogue does afterwards. An entry that has left
- *    the catalogue is recorded as such rather than dropped.
- *  - EVERY SAVED MAP FEATURE CARRIES ITS ATTRIBUTION AND LICENCE, next to the feature and
- *    not in a footer (ADR 0025, ADR 0011 rule 2). ODbL, CC BY and the TfL terms make the
- *    credit a condition of use, and an exported case file rendering a saved feature IS a
- *    display. It also carries `precision` where the coordinate is an approximation: the map
- *    renders that caveat from the live feature and an export never calls the map's renderer,
- *    so if it is not on the snapshot it is gone.
- *  - `observedAt` AND `savedAt` ARE TWO FACTS AND BOTH ARE PRINTED. When the upstream saw the
- *    thing, and when the reader kept it. Collapsing them would be a claim about a moment
- *    taken from the wrong clock.
- *  - NO BRAND STRING IS TYPED. It comes from `config/brand.ts` (product-brief 7).
+ *  - ISO 8601 dates and timestamps (`Z`) throughout.
+ *  - Each saved tool includes `confidence` and `lastVerifiedAt`.
+ *  - Stamped with the export time.
+ *  - Titles are the saved snapshots; entries removed from the catalogue are marked, not dropped.
+ *  - Each map feature carries its attribution, licence and precision note inline (ODbL,
+ *    CC BY, TfL terms require the credit).
+ *  - `observedAt` (upstream) and `savedAt` (user) are both kept.
+ *  - Brand name comes from `config/brand.ts`.
  */
 
 export interface CaseDocumentStep {
@@ -51,24 +31,21 @@ export interface CaseDocumentStep {
 export interface CaseDocumentTool {
   title: string;
   savedAt: string;
-  /** Null once the entry has left the catalogue (ADR 0008). */
+  /** Null once the entry has left the catalogue. */
   path: string | null;
   confidence: string | null;
   lastVerifiedAt: string | null;
 }
 
 /**
- * One live feature, as it was when the reader saved it.
- *
- * There is no live half to this — no `path`, no confidence, no re-check — because the
- * referent is one observation an upstream published once and has since forgotten (ADR 0025).
- * Everything on here was copied at the click.
+ * A live feature as it was when saved. A pure snapshot: the upstream keeps no history, so
+ * there's nothing to re-check.
  */
 export interface CaseDocumentFeature {
   title: string;
-  /** When the UPSTREAM observed it. */
+  /** When the upstream observed it. */
   observedAt: string;
-  /** When the READER saved it. A different fact; both are printed. */
+  /** When the user saved it. */
   savedAt: string;
   sourceName: string;
   sourceSlug: string;
@@ -79,17 +56,12 @@ export interface CaseDocumentFeature {
   coordinates: string;
   altitudeMetres: number | null;
   sourceUrl: string | null;
-  /** A licence condition, not a courtesy. Never empty: the write path refuses a blank one. */
+  /** Required by the licence; never empty (the write path refuses blanks). */
   attribution: string;
   licence: string;
   /** The full sentence saying what the coordinate is an approximation OF, or null. */
   precisionNote: string | null;
-  /**
-   * The adapter's own detail, with the UPSTREAM'S OWN FIELD NAMES kept verbatim.
-   *
-   * Not prettified. A reader quoting this months later needs to be able to match a value back
-   * to the field the source published, and "depth km" is a guess at what `depthKm` meant.
-   */
+  /** Adapter details with the upstream's field names kept verbatim, so values can be cited. */
   properties: { key: string; value: string }[];
 }
 
@@ -207,10 +179,7 @@ export function exportBasename(document: CaseDocument): string {
   return `case-${stem}-${document.exportedAt.slice(0, 10)}`;
 }
 
-/**
- * The line that keeps the artefact honest once it has left the site: what the confidence
- * values mean, and that they were true at export time rather than for ever.
- */
+/** Footer explaining what the confidence values mean and that they reflect export time. */
 export function provenanceNote(document: CaseDocument): string[] {
   return [
     `Exported from ${document.producedBy} at ${document.exportedAt}.`,

@@ -3,12 +3,8 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 
 /**
- * The case does not exist, OR it is not this user's.
- *
- * THOSE TWO ARE DELIBERATELY THE SAME PAGE. A 403 would confirm that the workspace exists,
- * which for an audience whose case files are the sensitive thing is an enumeration oracle
- * (`docs/design/states.md` 7.8, architecture HANDOFF 11 assertion 2). The copy therefore
- * says nothing about ownership — it cannot, without leaking the fact it is refusing to leak.
+ * Shown when the case doesn't exist or isn't this user's. Same page for both: a 403 would
+ * confirm the workspace exists, so the copy says nothing about ownership.
  */
 export default function WorkspaceNotFound() {
   return (

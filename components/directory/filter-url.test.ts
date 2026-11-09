@@ -16,14 +16,8 @@ import {
 } from "./filter-url";
 
 /**
- * The round-trip contract.
- *
- * `/directory` keeps ALL of its state in the URL so a filtered view is citable and the
- * browser's back button restores the previous set exactly (`wireframes/02-directory.txt`).
- * That only holds if the serialiser in `filter-url.ts` and the parser in
- * `lib/validation/filters.ts` agree. When they do not, the visible symptom is a "clear all"
- * that does not clear or a chip that refuses to be removed, and nothing in the type system
- * catches it — hence these tests.
+ * `/directory` keeps its state in the URL, so the serialiser in `filter-url.ts` and the
+ * parser in `lib/validation/filters.ts` must agree. The type system can't check that.
  */
 
 /** Feed a serialised query string back through the real parser, as Next.js would. */
@@ -133,8 +127,7 @@ describe("removing one filter", () => {
   });
 
   it("degrades relevance sort to name when the query goes", () => {
-    // `relevance` is meaningless with no query and `parseDirectoryFilters` would drop it, so
-    // the serialised URL and the parsed tuple must agree before the link is even rendered.
+    // The parser drops `relevance` without a query, so the serialiser must too.
     const next = withoutQuery(busy);
     expect(next.q).toBe("");
     expect(next.sort).toBe("name");
@@ -218,23 +211,9 @@ describe("hiddenPairs", () => {
 });
 
 /**
- * THE CAMELCASE VOCABULARY CONTRACT.
- *
- * `COST_MODELS` and `CONFIDENCE_LEVELS` are camelCase in `db/schema.ts` (ADR 0004:
- * CHECK-constrained vocabularies that code branches on are camelCase). A `searchParams`
- * normaliser that lowercases values before validating them destroys `needsReview` and
- * `freeWithRegistration` — and destroys them SILENTLY, because `sitemap.md` §1 requires a bad
- * filter to be dropped rather than rejected. The chip reads as selected in the URL and filters
- * nothing.
- *
- * That is not a cosmetic loss. `needsReview` is the one confidence level a reader most needs
- * to isolate, and `freeWithRegistration` is a threat-model tier: it means the operator learns
- * who you are before you get a result.
- *
- * This was a live bug, found by the round-trip tests above and fixed in
- * `lib/validation/filters.ts` by folding case only for the COMPARISON and returning the
- * vocabulary's own spelling. These assert the OUTCOME the directory depends on rather than the
- * shape of the fix, so they keep guarding it. See `docs/frontend/HANDOFF-directory.md`.
+ * `COST_MODELS` and `CONFIDENCE_LEVELS` include camelCase values (`needsReview`,
+ * `freeWithRegistration`). Lowercasing before validation would silently drop them, since
+ * invalid filters are ignored rather than rejected.
  */
 describe("every closed-vocabulary value survives a round trip through the URL", () => {
   it("keeps every confidence level, camelCase included", () => {

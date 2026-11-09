@@ -10,38 +10,14 @@ import { featurePrecision } from "./registry";
 import { ARIA_SORT, nextSort, sortFeatures } from "./sort";
 
 /**
- * THE TABLE IS A REQUIRED EQUIVALENT, NOT A FALLBACK. product-brief §2a, ADR 0019.
+ * Accessible table equivalent of a map layer, not a fallback.
  *
- * A blind investigator has to be able to do the work here, and "the work" is not "know that
- * a map exists". It is: read every feature, sort them, compare them, open one, and follow it
- * back to its origin. All five are in this table.
+ * - No deck.gl/MapLibre imports, so it works without WebGL.
+ * - Server-rendered: every row is in the initial HTML; JS adds sorting and the detail panel.
+ * - Real `<table>` with caption, `scope` headers, sort buttons in `<th>` with `aria-sort`.
  *
- * ## What that costs, and why it is paid here rather than promised
- *
- * 1. **It renders with no WebGL, ever.** This component imports nothing from deck.gl or
- *    MapLibre — not even a type that would drag a runtime import in. It reads the registry,
- *    which is deliberately free of both (`registry/types.ts`). A reader who never loads the
- *    map, or whose browser refuses WebGL, loses nothing but the picture.
- * 2. **It is in the server-rendered HTML.** The route fetches the layers and passes them in,
- *    so the table is complete before any JavaScript runs. What JavaScript adds is sorting and
- *    the detail panel; what it never adds is a row.
- * 3. **It is a real `<table>`.** A `<caption>`, `scope="col"` on every column header, and
- *    `scope="row"` on one cell per row so a screen reader can name the row it is inside.
- *    Sorting is a `<button>` inside the `<th>`, so it is reachable and operable from the
- *    keyboard, and the `<th>` carries `aria-sort` so the current order is reported rather
- *    than inferred from an icon.
- *
- * ## Why it is generic over the registry
- *
- * Columns, formatting, the row header and the default order are all fields on the layer
- * record. This file knows about no layer in particular, so adding a source adds a registry
- * entry and gains a full accessible table for free. A table hand-written per source is a
- * table that gets written for the first source and skipped for the ninth.
- *
- * Sort changes are announced through the ROUTE's single polite live region, which
- * `map-surface.tsx` owns — never from here. More than one live region per route and a screen
- * reader queues announcements from regions the reader is not looking at
- * (`docs/frontend/HANDOFF-shell.md` §10.1).
+ * Columns and formatting come from the layer registry. Sort changes are announced by
+ * `map-surface.tsx`'s live region, not from here.
  */
 
 export interface FeatureTableProps<F extends SourceFeature = SourceFeature> {
@@ -66,11 +42,7 @@ export function FeatureTable<F extends SourceFeature>({
 }: FeatureTableProps<F>) {
   const sorted = React.useMemo(() => sortFeatures(features, layer, sort), [features, layer, sort]);
 
-  /*
-   * Exactly one column is the row header. The registry declares it; this falls back to the
-   * first column rather than rendering a table whose rows have no header cell, because a row
-   * with no `<th scope="row">` is a row a screen reader cannot name.
-   */
+  /* One row-header column, falling back to the first so every row has a `<th scope="row">`. */
   const rowHeaderColumn = layer.columns.find((c) => c.rowHeader) ?? layer.columns[0];
   if (!rowHeaderColumn) return null;
   const dataColumns = layer.columns.filter((c) => c.key !== rowHeaderColumn.key);
@@ -101,22 +73,9 @@ export function FeatureTable<F extends SourceFeature>({
           {sorted.map((feature, index) => (
             <tr
               /*
-               * THE INDEX IS IN THE KEY BECAUSE AN UPSTREAM BROKE THE ID PROMISE.
-               *
-               * `SourceFeature.id` is contracted to be stable and unique within a source, and
-               * the NWS alerts feed emits the same id for several features (one alert appears
-               * once per zone it covers, keeping the alert's own identifier). React then
-               * collides on the key and its own warning says the behaviour is "duplicated
-               * and/or omitted" — which on this surface means a table that silently loses
-               * rows it has already counted.
-               *
-               * Deduplicating here would be worse: it would drop real alerts and make the
-               * count a lie. Appending the sorted index makes the key unique without touching
-               * the data, and it is stable because the sort is stable (`sort.ts` tiebreaks on
-               * the id and `Array.prototype.sort` preserves input order for equal elements).
-               *
-               * The real fix belongs in the adapter. Reported in
-               * `docs/frontend/HANDOFF-map.md` §10.
+               * Index in the key because NWS alerts reuse one id across every zone an alert
+               * covers, and duplicate keys make React drop rows. Stable since the sort is
+               * stable. The proper fix belongs in the adapter.
                */
               key={`${feature.id}::${index}`}
               className={cn(
@@ -125,11 +84,7 @@ export function FeatureTable<F extends SourceFeature>({
               )}
             >
               <th scope="row" className="p-0 text-left font-normal">
-                {/*
-                  The row header is also the control that opens the feature. One target, not
-                  two: a separate "details" button in every row would double the tab stops a
-                  keyboard reader crosses to get through the table.
-                */}
+                {/* The row header doubles as the open control, to avoid an extra tab stop per row. */}
                 <button
                   type="button"
                   onClick={() => onSelect(feature.id)}
@@ -156,13 +111,7 @@ export function FeatureTable<F extends SourceFeature>({
               ))}
               <td className="px-3 py-2 text-right font-mono tabular">
                 {feature.latitude.toFixed(4)}, {feature.longitude.toFixed(4)}
-                {/*
-                  THE PRECISION CAVEAT TRAVELS WITH THE NUMBER IT QUALIFIES. A note that a
-                  coordinate is an administrative centroid rather than the thing's position
-                  belongs in the cell holding that coordinate — not in a page-level footnote,
-                  which a reader scanning a table will never read twice. `layer.precision` is
-                  a registry field, so this cell knows nothing about which layer it is in.
-                */}
+                {/* Precision caveat sits in the same cell as the coordinate. */}
                 <Precision layer={layer} feature={feature} />
               </td>
             </tr>
@@ -216,12 +165,8 @@ function SortableHeader<F extends SourceFeature>({
 }
 
 /**
- * "approx · zone centre" beside a coordinate that is not the thing's own position.
- *
- * The word "approx" as well as the label, because the label alone ("zone centre") reads as a
- * description of the place rather than a warning about the number. Colour is not carrying any
- * of it: this is a `<small>` with words in it, legible to a screen reader reading the cell and
- * to anyone who cannot distinguish the muted foreground from the normal one.
+ * "approx · zone centre" beside an approximate coordinate. "approx" is included because the
+ * label alone reads like a place description.
  */
 function Precision<F extends SourceFeature>({
   layer,
@@ -239,14 +184,7 @@ function Precision<F extends SourceFeature>({
   );
 }
 
-/**
- * A cell's contents.
- *
- * AN ABSENT VALUE IS AN EM DASH WITH A SCREEN-READER WORD, NEVER A BLANK CELL. A blank cell
- * is indistinguishable from a rendering failure, and on a live surface the difference between
- * "the source did not report this" and "we lost it" is exactly the difference a reader needs.
- * Carried over from `components/live/flights-table.tsx`.
- */
+/** A cell's contents. Missing values render as an em dash with screen-reader text, not blank. */
 function Cell<F extends SourceFeature>({
   column,
   feature,

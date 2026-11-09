@@ -27,36 +27,14 @@ import { cn, displayHost } from "@/lib/utils";
 import { staticParamsOrEmpty } from "@/lib/static-params";
 
 /**
- * `/tools/[slug]` — the detail page. This is the page the whole product exists to serve.
+ * `/tools/[slug]`: tool detail page. ISR (1h); don't read `searchParams`, `cookies()` or
+ * `auth()`. Static params cover published slugs only, and drafts 404.
  *
- * **ISR:3600** (architecture HANDOFF §8). No `searchParams`, no `cookies()`, no `auth()`.
- * `generateStaticParams` covers **published** slugs only: prerendering a draft slug would
- * publicly confirm that an unpublished entry exists, and `getToolBySlug` filters on
- * `status = 'published'` anyway, so a draft 404s (HANDOFF §7, QA assertion 3).
+ * Name, URL, summary, confidence chip and last-verified line stay above the fold. Legal and
+ * reliability notes render before the description. Confidence, staleness and insecure
+ * transport are separate signals and shown separately.
  *
- * WHAT MUST BE ABOVE THE FOLD, and is — `docs/brand/HANDOFF.md` §7.3 and `states.md` §3.1:
- * the name, the URL in mono, the summary, the confidence chip and the last-verified line. Not
- * behind a tooltip, not in a details panel. They are the product.
- *
- * WHAT MUST NOT BE BURIED: `legalNotes` and `reliabilityNotes`. For several entries — PimEyes
- * above all — the legal notice is the most important content on the page, and it renders
- * immediately after the header, before the description, on a `--warning-surface` tint that
- * appears **only** when the notes are non-empty (`wireframes/03-tool-detail.txt`). It is
- * written as an instrument-naming statement, never as permission and never as advice
- * (`voice.md` rule 3): cataloguing is not endorsing, and a directory that hides the risk is
- * worse than one that omits the entry.
- *
- * THE THREE ORTHOGONAL SIGNALS, which must never be collapsed into one (`states.md` §3.4):
- *   - the confidence chip says how sure we are of what we found;
- *   - the last-verified line says when we last looked;
- *   - the transport badge says the link is plaintext.
- * All three can be true of one entry, in three different colours, icons and page regions.
- *
- * LAYOUT. One DOM order, two shapes. Below `xl:` the sections stack in exactly the 375px
- * wireframe's order — actions, at a glance, reliability notes, legal notes, description, used
- * in, tags. At `xl:` the grid places the main column first and floats the rail to the right,
- * which is the wireframe's desktop shape. `docs/design/wireframes/00-conventions.txt`: the
- * desktop version is the one that gained space, never the one that gained features.
+ * One DOM order: stacked below `xl:`, with the rail moved right at `xl:` via `order`.
  */
 
 export const revalidate = 3600;
@@ -66,7 +44,7 @@ interface ToolPageProps {
 }
 
 export async function generateStaticParams() {
-  // Tolerates a build with no database — see ADR 0018.
+  // Tolerates a build with no database.
   return staticParamsOrEmpty("/tools/[slug]", async () => {
     const rows = await listPublishedToolSlugs();
     return rows.map(({ slug }) => ({ slug }));
@@ -116,13 +94,7 @@ function Section({
   );
 }
 
-/**
- * One "at a glance" row.
- *
- * Two columns everywhere except inside the `xl:` rail, which is 20rem wide: a 7rem term
- * column there leaves ~11rem for the value, and `costNotes` is frequently a full sentence.
- * Stacking in the rail keeps the measure readable rather than reflowing prose into a gutter.
- */
+/** One "at a glance" row. Stacks inside the narrow `xl:` rail so long values stay readable. */
 function Row({ term, children }: { term: string; children: React.ReactNode }) {
   return (
     <div className="grid grid-cols-[7rem_minmax(0,1fr)] gap-x-3 gap-y-1 py-2 xl:grid-cols-1">
@@ -132,7 +104,7 @@ function Row({ term, children }: { term: string; children: React.ReactNode }) {
   );
 }
 
-/** `url · domain · text`, in mono, because these are identifiers and not prose. */
+/** `url · domain · text`, in mono. */
 function TypeList({ values }: { values: readonly string[] }) {
   if (values.length === 0) return <span className="text-muted-foreground">not recorded</span>;
   return (
@@ -151,11 +123,7 @@ function TypeList({ values }: { values: readonly string[] }) {
   );
 }
 
-/**
- * `states.md` §3.1: rendered exactly as `reliability n/5`, labelled **editorial rating**, and
- * never as a user rating. There is no aggregate and no `reviews` surface (ADR 0010,
- * architecture HANDOFF §9.2).
- */
+/** `n/5`, labelled as an editorial rating (there are no user ratings). */
 function Reliability({ value }: { value: number | null }) {
   if (value === null) return <span className="text-muted-foreground">not rated</span>;
   return (
@@ -219,11 +187,7 @@ export default async function ToolPage({ params }: ToolPageProps) {
           {tool.summary}
         </p>
 
-        {/*
-          Chip and date sit together, always. `wireframes/00-conventions.txt`: the chip "is
-          never the only thing in a row that carries the entry's uncertainty: the last-verified
-          line always sits with it." The date links to what the date promises and does not.
-        */}
+        {/* Chip and last-verified date always sit together. */}
         <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2">
           <ConfidenceChipLink level={tool.confidence} />
           <Link
@@ -237,11 +201,7 @@ export default async function ToolPage({ params }: ToolPageProps) {
           </Link>
         </div>
 
-        {/*
-          Two notices, deliberately separate regions with separate colours and icons. A
-          `verified` entry can be stale and a `needsReview` entry can have been checked
-          yesterday; both can appear here at once and must still read as two claims.
-        */}
+        {/* Stale and needs-review are independent, so they're separate notices. */}
         {stale || tool.confidence === "needsReview" ? (
           <div className="mt-5 space-y-4">
             <StaleRecordNotice lastVerifiedAt={tool.lastVerifiedAt} />
@@ -253,34 +213,14 @@ export default async function ToolPage({ params }: ToolPageProps) {
       </header>
 
       <div className="mt-8 flex flex-col gap-8 xl:grid xl:grid-cols-[minmax(0,1fr)_20rem] xl:items-start xl:gap-10">
-        {/*
-          The rail. `xl:order-2` puts it on the right at 1280px; with no `order` below `xl:`
-          it keeps its DOM position, which is the 375px wireframe's order: the outbound link
-          and "at a glance" come straight after the header.
-        */}
+        {/* Rail: right column at `xl:`, directly after the header on mobile. */}
         <aside className="space-y-8 xl:sticky xl:top-20 xl:order-2">
           <div className="space-y-3">
             {/*
-              SAVE TO A CASE — the join in the vertical slice (`product-brief.md` §2).
-
-              It renders for EVERYONE, signed in or out. Hiding it from a signed-out reader
-              would hide the product's third pillar from exactly the people most likely to want
-              it, which is the same reasoning `sitemap.md` §2 gives for the equivalent control
-              on `/playbooks/[slug]`.
-
-              THE ONE EXCEPTION IS PUBLIC-ONLY MODE, where no sign-in method is configured, so
-              there are no cases to save into and `/tools/[slug]/save` answers 404 (ADR 0032).
-              That is not the "signed out" state — signing in is not an option in this
-              deployment — and a control whose destination does not exist is the dead link the
-              brief forbids. `isSignInEnabled()` reads a constant derived at boot, so this stays
-              an ISR page: it reads no cookie, no header and no session.
-
-              A plain GET form, not a client dialog, and that is deliberate: this route is
-              ISR:3600 and `sitemap.md` §10.1 forbids a public route reading the session. The
-              picker lives at `/tools/[slug]/save`, a `force-dynamic` child segment that can
-              read `auth()` without dragging its parent out of static generation. The button
-              therefore costs this page no JavaScript at all and still works with the bundle
-              removed.
+              Save to a case: shown signed in or out, hidden in public-only mode (where
+              `/tools/[slug]/save` 404s). `isSignInEnabled()` is a boot-time constant, so the
+              page stays static. A GET form to the dynamic `/save` child, so this page never
+              reads the session and needs no JS.
             */}
             {isSignInEnabled() ? (
               <form method="get" action={`${toolHref}/save`}>
@@ -297,7 +237,7 @@ export default async function ToolPage({ params }: ToolPageProps) {
                 <span className="sr-only"> (opens in a new tab)</span>
               </a>
             </Button>
-            {/* Architecture HANDOFF §9.7 — the transport is stated next to the link. */}
+            {/* Insecure transport is flagged next to the link. */}
             <InsecureTransportNotice url={tool.url} />
           </div>
 
@@ -345,15 +285,8 @@ export default async function ToolPage({ params }: ToolPageProps) {
           ) : null}
 
           {/*
-            LEGAL NOTES. The `--warning-surface` tint renders only when the notes are
-            non-empty (`wireframes/03-tool-detail.txt`), so the colour means something rather
-            than decorating every page. This is a plain landmark section, not the `Alert`
-            primitive: `Alert` carries `role="alert"`, and a page's most substantial body copy
-            is not an alert.
-
-            The heading says "legal notes", not "warning". The notes name the instrument that
-            is engaged and say a qualified person must answer it; they never grant or withhold
-            permission (`voice.md` rule 3, ADR 0002).
+            Legal notes, tinted only when present. A plain section rather than `Alert`, which
+            would add `role="alert"` to body copy.
           */}
           {tool.legalNotes ? (
             <section
@@ -387,7 +320,7 @@ export default async function ToolPage({ params }: ToolPageProps) {
 
           <Section id="playbooks" title="used in these playbooks">
             {playbooks.length === 0 ? (
-              // `states.md` §3.5 — one sentence, no control. Not a failure, not an invitation.
+              // Not an error; no control needed.
               <p className="text-foreground-secondary text-sm">
                 No playbook in the catalogue uses this tool yet.
               </p>

@@ -23,51 +23,22 @@ import type { SourceFailure } from "@/lib/sources/types";
 import type { LayerPayloadDto } from "./registry";
 
 /**
- * One layer's source, age and state. ADR 0014, applied per layer instead of per page.
+ * One layer's source, age and state: the per-layer version of `FreshnessBar`.
  *
- * ## What is carried over from `components/live/freshness-bar.tsx`
+ * Reuses `useLiveAge` and the formatters from `components/live/` so ages match across
+ * pages, but keeps its own vocabulary (`SourceFailure`, not `DegradedReason`); the two only
+ * overlap on two kinds.
  *
- * The rules, and the two pieces of machinery that implement them. `useLiveAge` and
- * `formatAge`/`formatClockUtc` are IMPORTED from `components/live/`, not copied: the age on
- * this map and the age on `/live/flights` must be the same number computed the same way, and
- * two copies of a clock is how they stop being.
- *
- * What is not shared is the vocabulary. `FreshnessBar` speaks `ConnectorState` and
- * `DegradedReason` from `lib/connectors/types.ts`; a map layer speaks `SourceFailure` from
- * `lib/sources/types.ts`, which has eight kinds and only two of them in common. Mapping one
- * onto the other would have required inventing a `LiveReason` for `schemaChanged` and
- * `notConfigured`, which is how a UI ends up rendering "upstream is down" for a bug in our
- * own parser. Two vocabularies, one set of rules, no translation layer.
- *
- * ## The rules, restated because they are easy to undo
- *
- * 1. **Never a spinner** (ADR 0011 rule 5, ADR 0014 §8). "refreshing" is a word, shown only
- *    while a revalidation is genuinely in flight. A spinner keeps asserting that fresh data
- *    is arriving after the request has already failed.
- * 2. **The age is computed from the observation instant on every tick**, never from a timer
- *    started at mount. The second number is the age of the page, which is a different thing.
- * 3. **Different failures get different sentences.** "It broke" is not a state. Each of the
- *    eight says what is wrong, and five of them say plainly that there is nothing to retry.
- * 4. **A dead source degrades ITS OWN LAYER.** This component renders inside one layer's
- *    row; nothing about it can affect another layer or the map.
+ * No spinner; age is computed from `observedAt` each tick; each failure kind gets its own
+ * sentence; a failure only affects its own layer.
  */
 
-/**
- * Every failure kind, exhaustively. `Record<SourceFailure["kind"], …>` is doing real work:
- * a ninth kind added to `lib/sources/types.ts` is a compile error here, which is exactly
- * where a missing icon and a missing sentence should surface — rather than in production as
- * a blank row. `components/live/live-format.ts` learned this the hard way (QA finding Q-02).
- *
- * The compiler forces a MAP ENTRY; it cannot force a TEST. Two kinds sat here correctly typed
- * and rendered by no test for two fix rounds, which is QV-30 — so `layer-status.test.tsx`
- * derives its cases from the union rather than listing them.
- */
+/** `Record` over every failure kind, so a new kind is a compile error here. */
 const FAILURE_ICON: Record<SourceFailure["kind"], LucideIcon> = {
   upstreamError: CloudOff,
   rateLimited: Info,
   quotaExhausted: Info,
-  // They moved. `FileWarning` would read as our parser's problem and `CloudOff` as an
-  // outage; this is neither — it is a source that now points somewhere we will not follow.
+  // Neither a parser problem nor an outage.
   redirected: Shuffle,
   schemaChanged: FileWarning,
   timeout: TimerOff,
@@ -76,27 +47,14 @@ const FAILURE_ICON: Record<SourceFailure["kind"], LucideIcon> = {
 };
 
 /**
- * Tone per kind.
- *
- * `rateLimited`, `notConfigured` and `disabled` are `info`, not `warning`: nothing is broken.
- * A source asking us to slow down, a key we have not set, and a switch we flipped are all
- * decisions being respected, and colouring them as faults blames a third party for our own
- * choices.
- *
- * `schemaChanged` is `warning` rather than `destructive` because it is usually OUR bug, not
- * theirs — the upstream changed something it is entitled to change and our parser has not
- * caught up. The copy says so.
+ * Tone per kind. `info` where nothing is broken (rate limit, our quota, not configured,
+ * disabled). `warning` for `schemaChanged` and `redirected`: usually ours to fix, not an
+ * upstream outage.
  */
 const FAILURE_TONE: Record<SourceFailure["kind"], "destructive" | "warning" | "info"> = {
   upstreamError: "destructive",
   rateLimited: "info",
-  // Our own ceiling, deliberately set. Nothing is broken and nobody misbehaved.
   quotaExhausted: "info",
-  /*
-   * `warning`, like `schemaChanged` and for the same reason: the upstream did something it
-   * is entitled to do and our recorded URL has not caught up. It is not their outage and it
-   * is not a fault of the reader's, but somebody does have to go and look.
-   */
   redirected: "warning",
   schemaChanged: "warning",
   timeout: "destructive",
@@ -105,26 +63,15 @@ const FAILURE_TONE: Record<SourceFailure["kind"], "destructive" | "warning" | "i
 };
 
 /**
- * Whether a retry control is offered.
- *
- * `rateLimited` is false and it is not about honesty but about conduct: a retry control is
- * an invitation to keep calling a service that has just asked us to stop, which is the
- * behaviour product-brief §3.2 constraint 5 forbids. `disabled` and `notConfigured` are
- * false because retrying cannot help and offering it would be a lie about the reader's
- * options. `schemaChanged` is false because a deploy fixes it and a reader cannot deploy.
+ * Whether a retry control is offered. Not for `rateLimited` (the source asked us to stop),
+ * `quotaExhausted`/`disabled`/`notConfigured` (retry can't help) or `schemaChanged` (needs a
+ * deploy).
  */
 const FAILURE_RETRYABLE: Record<SourceFailure["kind"], boolean> = {
   upstreamError: true,
   rateLimited: false,
-  // Retrying spends a budget that is already spent. Offering it would be a lie about the
-  // reader's options — and unlike rateLimited, the fix here is ours to make, not theirs.
   quotaExhausted: false,
-  /*
-   * True. A redirect can be a maintenance window as easily as a permanent move, and the
-   * retry costs one request, paced at the source's own TTL like every other retryable
-   * failure. If it is permanent the layer keeps saying so until somebody updates the URL —
-   * which is the honest outcome, because nothing else in this product will notice.
-   */
+  // May be temporary (maintenance); a retry is one request paced at the source TTL.
   redirected: true,
   schemaChanged: false,
   timeout: true,
@@ -139,17 +86,13 @@ const TONE_CLASS = {
   info: "border-info/40 bg-info/10 [&_svg]:text-info",
 } as const;
 
-/**
- * The sentence for each failure. Two clauses: what happened, then what to do — and where
- * there is nothing to do, why. No apology and no "something went wrong"
- * (`docs/design/states.md` §0).
- */
 /** Ends a clause with a full stop, without doubling one that is already there. */
 function endSentence(clause: string): string {
   const trimmed = clause.trim();
   return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 }
 
+/** The sentence for each failure: what happened, then what to do (or why there's nothing). */
 export function failureSentence(failure: SourceFailure, sourceName: string): string {
   switch (failure.kind) {
     case "upstreamError":
@@ -161,17 +104,13 @@ export function failureSentence(failure: SourceFailure, sourceName: string): str
         ? `${sourceName} asked us to slow down and to wait ${failure.retryAfterSeconds} seconds, so we stopped. Their limit is theirs to set. Nothing is broken at either end and this layer will not keep asking in the meantime.`
         : `${sourceName} asked us to slow down, so we stopped. Their limit is theirs to set. Nothing is broken at either end and this layer will not keep asking in the meantime.`;
     case "quotaExhausted":
-      // Says plainly that this is OUR limit, not theirs. A reader who cannot tell the two
-      // apart will conclude the source is unreliable when we are the ones who stopped.
+      // Make clear the limit is ours, not the source's.
       return failure.resetsAt !== undefined
         ? `We reached the polling budget we set ourselves for ${sourceName}, so this layer paused until ${formatTimestamp(failure.resetsAt)}. The source is fine; the limit is ours.`
         : `We reached the polling budget we set ourselves for ${sourceName}, so this layer paused. The source is fine; the limit is ours.`;
     case "redirected":
-      /*
-       * Says what happened and what it means, and does NOT name the destination: the host
-       * comes from a `Location` header we did not choose, and this string is rendered. An
-       * operator gets the host from the structured log instead.
-       */
+      // Don't render the destination host: it's from an upstream `Location` header. It's in
+      // the structured log.
       return `${sourceName} answered by redirecting us to another host, which we do not follow — an open redirect is how a trusted source becomes a request somewhere else. Nothing was fetched. This is ours to check: either they have moved, or something is answering for them.`;
     case "schemaChanged":
       return `${sourceName} sent a response in a shape we do not recognise, so we stopped reading it rather than guess at it. This is our parser to fix, not their outage, and the fix needs a deploy.`;
@@ -181,44 +120,18 @@ export function failureSentence(failure: SourceFailure, sourceName: string): str
       return `This layer needs ${failure.missingEnvVar}, which this deployment does not set. It is switched off rather than broken, and no request was made.`;
     case "disabled":
       /*
-       * `reason` comes from `disabledReason` in `lib/sources/governed.ts` and is a clause, not
-       * a sentence — "an operator switched this source off", with no full stop. Concatenating
-       * it produced "…switched this source off It stays off…", a run-on that undermines the
-       * one thing this component is for: a distinct, readable sentence per failure. Whoever
-       * writes the reason should not have to know how we punctuate it.
-       *
-       * The possessive is gone too. "it is not a fault at USGS earthquakes's end" is what a
-       * template gets when a source name is a plural noun phrase rather than a company.
-       *
-       * AND THE OPENING CLAUSE IS NEUTRAL ON PURPOSE. `disabledReason` covers four different
-       * conditions — an operator flipped the switch, the row is not published, the row has no
-       * recorded terms, or there is no row at all — and the first draft opened every one of
-       * them with "We have switched this layer off", which is simply false for three of the
-       * four. Nobody switched off a source that was never registered. `SourceFailure` carries
-       * only a string here, so the honest move is a frame that is true of all four: it is off,
-       * the decision is ours, and the source is not at fault.
+       * `reason` (from `disabledReason` in `lib/sources/governed.ts`) is a clause without a
+       * full stop, hence `endSentence`. The opening is neutral because `disabledReason` covers
+       * four cases (switched off, unpublished, no recorded terms, no row), not just a switch.
+       * No possessive on the source name ("USGS earthquakes's").
        */
       return `This layer is off, and that is a decision on our side rather than a fault at the source's end: ${endSentence(failure.reason)} It stays off until we change it.`;
   }
 }
 
 /**
- * `31 August 2026` — a **date**, in UTC, for a source that is checked rather than polled.
- *
- * ## The one false word this closes
- *
- * The camera layer's status row read `Live · as of 00:00:00 UTC · 26 hours ago`. Both numbers
- * were honest: `observedAt` for `content/cameras/*.json` is deliberately the day a human last
- * verified the entries, because reporting "just now" for a fact checked in August is the
- * freshness lie ADR 0014 exists to prevent. The word on the front was not honest, and neither
- * was rendering a verification date as an age — 26 hours of nothing happening reads as decay
- * on a surface where every other number means decay.
- *
- * A clock time is wrong here too: `00:00:00 UTC` is an artefact of a date with no time in it,
- * and it looks like a stopped clock. So a registry states the day.
- *
- * Exported because `map-surface.tsx` needs the same words in the table caption and in the live
- * region. One formatter, one vocabulary — two would drift.
+ * `31 August 2026` (UTC) for a hand-checked registry, whose `observedAt` is a verification
+ * date. A date rather than a clock time or age. Also used by `map-surface.tsx`.
  */
 export function formatCheckedDate(value: string): string {
   const date = new Date(value);
@@ -235,17 +148,11 @@ export interface LayerStatusProps {
   label: string;
   unavailableTitle: string;
   payload: LayerPayloadDto;
-  /**
-   * Whether this layer's source is a feed or a hand-checked registry. From
-   * `MapLayerDefinition.cadence`, so this component still names no layer in particular.
-   */
+  /** Feed or hand-checked registry, from `MapLayerDefinition.cadence`. */
   cadence: "live" | "registry";
-  /** True only while a revalidation for THIS layer is genuinely in flight. */
+  /** True only while a revalidation for this layer is in flight. */
   refreshing: boolean;
-  /**
-   * Age in whole seconds at server render time, so the first client render matches the
-   * server HTML exactly and the age is present in the no-JavaScript rendering too.
-   */
+  /** Age in whole seconds at server render time, to match the server HTML on hydration. */
   initialAgeSeconds: number | null;
   onRetry: () => void;
   className?: string;
@@ -290,7 +197,7 @@ export function LayerStatus({
         ) : null}
         {FAILURE_RETRYABLE[payload.failure.kind] ? (
           <Button variant="secondary" className="mt-3 h-11" onClick={onRetry}>
-            {/* A word, never a spinner. ADR 0014 §8. */}
+            {/* A word, not a spinner. */}
             {refreshing ? "checking…" : `retry ${label.toLowerCase()}`}
           </Button>
         ) : null}
@@ -298,14 +205,7 @@ export function LayerStatus({
     );
   }
 
-  /*
-   * A REGISTRY IS NOT A FEED, AND MUST NOT SAY IT IS.
-   *
-   * `cadence` comes off the layer record, so this component still knows the name of no layer.
-   * A registry states the day it was last checked and shows no age: its `observedAt` is a
-   * verification date, and ticking seconds against it would render "somebody checked this in
-   * August" as decay. A feed is unchanged — for those the age is the number that matters most.
-   */
+  /* A registry shows the date it was checked and no age; a feed shows "Live" and its age. */
   const isRegistry = cadence === "registry";
   const Icon = payload.stale ? Clock : isRegistry ? ClipboardCheck : Radio;
 
@@ -326,8 +226,7 @@ export function LayerStatus({
             {payload.stale ? (
               <>
                 <span aria-hidden="true">·</span>
-                {/* Not "stale": a checked list does not rot. We could not re-read it, which is
-                    a different fact and the one an operator needs. */}
+                {/* Not "stale": the list doesn't age, we just couldn't re-read it. */}
                 <span className="font-normal">we could not re-read it</span>
               </>
             ) : null}
@@ -360,13 +259,8 @@ export function LayerStatus({
 }
 
 /**
- * Where the data came from and the credit its licence requires, rendered at the point of
- * display rather than in a page footer.
- *
- * The text comes from `SourceAdapter.attribution` and is never typed into a component. That
- * is what makes it impossible for the UI to forget: a layer cannot render its status without
- * having been handed the credit, and several of these licences make attribution a condition
- * of use — so a missing line is a licence breach, not a polish defect.
+ * Source link plus the attribution its licence requires, shown next to the data. Text comes
+ * from `SourceAdapter.attribution`.
  */
 export function SourceLine({
   source,

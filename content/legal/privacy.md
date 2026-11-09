@@ -18,7 +18,7 @@ The controller is {{BRAND_LEGAL_ENTITY}}. Contact {{BRAND_CONTACT_PRIVACY}} for 
 notice.
 
 **A qualified lawyer has not yet reviewed this document, and the controller's jurisdiction of
-establishment is not yet settled. See `docs/content/legal-review.md`.**
+establishment is not yet settled.**
 
 ## 1. Our position in one paragraph
 

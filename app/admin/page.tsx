@@ -4,13 +4,7 @@ import { adminMetadata, requireEditorPage } from "@/components/admin/guard";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getVerificationQueue } from "@/lib/queries/admin";
 
-/**
- * `/admin` — the editorial overview. sitemap.md §8.
- *
- * It exists to answer one question on arrival: what needs a human today. The number it leads
- * with is the staleness count, because that is the only figure in this product that gets
- * worse while nobody does anything.
- */
+/** `/admin` overview: leads with the count of entries that need re-verification. */
 
 export const dynamic = "force-dynamic";
 
@@ -123,8 +117,7 @@ function StatCard({
     </Card>
   );
 
-  // A link an editor cannot follow is not rendered as a link. `/admin/connectors` 404s for a
-  // non-admin, and offering the route would be a dead end dressed as a control.
+  // Not a link when disabled: `/admin/connectors` 404s for non-admins.
   if (disabled) return body;
 
   return (

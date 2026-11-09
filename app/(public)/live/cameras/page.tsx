@@ -13,19 +13,11 @@ import { parseCameraFilters } from "@/lib/validation/filters";
 import { cn } from "@/lib/utils";
 
 /**
- * `/live/cameras` — the registry. sitemap.md §3, ADR 0015, `wireframes/09-live-cameras.txt`.
+ * `/live/cameras`: the camera registry.
  *
- * ZERO OUTBOUND REQUESTS ON PAGE LOAD. Every tile is our own registry row: name, operator,
- * location label, view kind, jurisdiction, confidence, last verified. No image, no thumbnail,
- * no `preconnect`, no prefetch. This is the assertion QA should hold this route to, and it is
- * one careless optimisation away from being false.
- *
- * Dynamic because it reads `searchParams` (`q`, `jurisdiction`, `view`); the registry query
- * underneath is cached and tagged like any other content read.
- *
- * The filter bar is a plain `<form method="get">` with native controls, so it works with no
- * JavaScript. On a page whose entire premise is that nothing happens without a deliberate
- * action, a filter that silently requires a client bundle would be the wrong default.
+ * No outbound requests on page load: tiles are our own registry rows, with no thumbnails,
+ * `preconnect` or prefetch. Dynamic because it reads `searchParams`; the query is cached.
+ * The filter bar is a plain GET form so it works without JavaScript.
  */
 
 export const dynamic = "force-dynamic";
@@ -44,10 +36,7 @@ export default async function LiveCamerasPage({
 }) {
   const filters = parseCameraFilters(await searchParams);
 
-  /*
-   * Two cached reads: the filtered list, and the whole published set for the facet values and
-   * the honest "of n" count. Both hit the same `cameras` tag, so a publish purges both.
-   */
+  // Filtered list, plus the full set for facet values and the "of n" count. Same cache tag.
   const [cameras, all] = await Promise.all([
     listCameras(filters),
     listCameras({ q: "", jurisdiction: undefined, view: undefined }),
@@ -64,11 +53,7 @@ export default async function LiveCamerasPage({
 
       <h1 className="mt-4 text-2xl font-semibold tracking-tight md:text-3xl">Cameras</h1>
 
-      {/*
-        Once, prominently, above the list — not in a privacy policy nobody opens, and not
-        dismissible (ADR 0015 §2). By the time anyone could read a policy, the connection would
-        already have happened.
-      */}
+      {/* Not dismissible: the disclosure has to be seen before any connection is made. */}
       <Alert variant="info" className="mt-4 max-w-[80ch]">
         <Info aria-hidden="true" />
         <AlertTitle>Nothing loads until you choose it</AlertTitle>
@@ -141,11 +126,7 @@ export default async function LiveCamerasPage({
         ) : null}
       </form>
 
-      {/*
-        The route's ONE polite live region. It is in the DOM before the results and carries
-        the count, so a filter change is announced without moving the reader's focus out of
-        the filter bar (HANDOFF-shell.md §10.1).
-      */}
+      {/* Announces the count on filter change without moving focus. */}
       <p aria-live="polite" className="sr-only">
         {`${cameras.length} of ${all.length} cameras match these filters`}
       </p>
@@ -190,11 +171,7 @@ export default async function LiveCamerasPage({
   );
 }
 
-/**
- * A native `<select>`, not the Radix primitive. The filter bar has to work without
- * JavaScript, and a native control submits with the form; `components/ui/select.tsx` is a
- * client component that does not.
- */
+/** Native `<select>` styling; the Radix select doesn't submit with a no-JS form. */
 const SELECT_CLASS = cn(
   "flex h-10 w-full min-w-32 rounded-md border border-input bg-background px-3 py-2 text-sm",
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",

@@ -4,13 +4,8 @@ import type { Connector } from "@/db/schema";
 import { flightParamsSchema, flightsDriver, FLIGHTS_CONNECTOR_SEED } from "./flights";
 
 /**
- * The connector seam, tested without a database and without the network.
- *
- * The runtime's degraded-state machine (`runtime.ts`) reads the registry and writes the
- * audit log, both of which need Postgres — those paths are covered by
- * `scripts/verify-backend.ts` and by CI. What is covered HERE is everything that is pure:
- * parameter quantisation (which is the cache key, and therefore a privacy control), response
- * parsing and trimming, and the shape of the registry row the seed writes.
+ * Pure parts of the connector seam: param quantisation (the cache key), response parsing, and
+ * the seeded registry row. DB-backed runtime paths are covered by `scripts/verify-backend.ts`.
  */
 
 /** A registry row shaped like the seeded flights connector, for the driver tests. */
@@ -34,7 +29,7 @@ const connector: Connector = {
   timeoutMs: 5000,
   cacheTtlSeconds: 15,
   staleWhileRevalidateSeconds: 60,
-  /* Migration 0006 / ADR 0021: the flights connector is still fetched in the request path. */
+  /* Flights is still fetched in the request path. */
   pollMode: "onDemand",
   enabled: true,
   status: "published",
@@ -47,10 +42,8 @@ const connector: Connector = {
 
 describe("flight parameter quantisation", () => {
   it("rounds coordinates to one decimal place", () => {
-    // ADR 0014 §4: one shared cache entry per connector plus normalised params, never per
-    // user. Full precision would give every viewer their own entry, multiply upstream calls
-    // by the viewer count, and recreate a per-user record of which patch of the world each
-    // person was watching.
+    // Cache entries are shared, not per user. Full precision would give each viewer their own
+    // entry (and a record of where they were looking).
     const p = flightsDriver.normalise({ lat: 51.50735, lon: -0.12776, radius: 30 });
     expect(p.lat).toBe(51.5);
     expect(p.lon).toBe(-0.1);
@@ -83,7 +76,7 @@ describe("flight parameter quantisation", () => {
   });
 
   it("produces the same cache key for two nearby viewports", () => {
-    // The point of the quantisation: two readers looking at London share one upstream call.
+    // Two readers looking at London share one upstream call.
     const a = flightsDriver.cacheKey(flightsDriver.normalise({ lat: 51.5073, lon: -0.1277 }));
     const b = flightsDriver.cacheKey(flightsDriver.normalise({ lat: 51.5119, lon: -0.1201 }));
     expect(a).toBe(b);
@@ -126,7 +119,7 @@ describe("flights driver fetch", () => {
     expect(call?.[0]).toBe("https://api.adsb.lol/v2/lat/51.5/lon/-0.1/dist/50");
   });
 
-  it("trims the payload to the fields the surface renders (ADR 0014 §7)", async () => {
+  it("trims the payload to the fields the surface renders", async () => {
     respond({
       ac: [
         {
@@ -237,9 +230,8 @@ describe("flights driver fetch", () => {
   });
 
   it("treats a changed response shape as an upstream fault, not a crash", async () => {
-    // A free community service can change shape without notice. The surface must degrade,
-    // not render half a map — and the parse error must not be surfaced, since it would
-    // contain the upstream body.
+    // Degrade rather than render a partial map; don't surface the parse error (it would
+    // contain the upstream body).
     respond({ aircraft: "not what we expect" });
     await expect(flightsDriver.fetch(connector, params, signal)).rejects.toMatchObject({
       name: "UpstreamStatusError",
@@ -268,14 +260,13 @@ describe("flights driver fetch", () => {
 describe("the seeded flights registry row", () => {
   const seed = FLIGHTS_CONNECTOR_SEED;
 
-  it("is inert until an operator turns it on (ADR 0012 §1, fail closed)", () => {
+  it("is inert until an operator turns it on (fail closed)", () => {
     expect(seed.enabled).toBe(false);
     expect(seed.status).toBe("draft");
   });
 
   it("records a legal basis, a terms URL and an attribution string", () => {
-    // ADR 0011 rule 1: a connector with no recorded basis does not ship. The database
-    // enforces it; this asserts the seed does not try to ship one.
+    // A connector without a recorded basis can't be published (DB-enforced).
     expect(seed.termsUrl).toBeTruthy();
     expect(seed.legalBasis.length).toBeGreaterThan(200);
     expect(seed.attributionRequired).toBe(true);
@@ -289,8 +280,7 @@ describe("the seeded flights registry row", () => {
   });
 
   it("stores no credential and needs none today", () => {
-    // ADR 0012 §3: the registry stores the NAME of an env var, never the credential. The
-    // CHECK constraint enforces the pattern; this asserts the seed does not smuggle one in.
+    // The registry stores an env var name, never the credential.
     expect(seed.requiresApiKey).toBe(false);
     expect(seed.apiKeyEnvVar).toBeNull();
   });
@@ -299,42 +289,29 @@ describe("the seeded flights registry row", () => {
     expect(seed.globalCeiling).toBeGreaterThanOrEqual(seed.perUserQuota);
   });
 
-  /**
-   * These pin the OUTCOME of QA finding Q-02, not ADR 0014's original starting values. ADR
-   * 0014 §2 called those "starting values, to be tuned against real upstream behaviour rather
-   * than guessed at twice"; the audit log — 57 HTTP 429s, 29% of all calls refused — was the
-   * measurement, and these are the tuning.
-   */
+  /** Values tuned after adsb.lol refused ~29% of calls with 429s. */
   it("caches long enough that one viewport cannot exceed one call per minute", () => {
-    // The single biggest reduction in upstream load available: at a 15s TTL one viewport cost
-    // 4 calls/minute, which is most of the old ceiling on its own.
+    // At a 15s TTL one viewport cost 4 calls/minute.
     expect(seed.cacheTtlSeconds).toBeGreaterThanOrEqual(60);
     expect(seed.timeoutMs).toBe(5000);
   });
 
   it("keeps a stale payload well past the TTL so a backoff does not blank the surface", () => {
-    // While we are backed off we would rather show old positions clearly labelled with their
-    // age than an empty page (ADR 0014 §3 still bounds it at ttl + swr).
+    // While backed off, show aged positions rather than nothing (bounded by ttl + swr).
     expect(seed.staleWhileRevalidateSeconds).toBeGreaterThanOrEqual(
       seed.cacheTtlSeconds * 5,
     );
   });
 
   it("sets a ceiling below the rate at which the upstream was observed to refuse us", () => {
-    // Measured 2026-08-31: a 25-request burst was refused from the 3rd request, and a smooth
-    // 10 requests/minute still drew 2 refusals in 8. Anything at or above 10/min is known to
-    // be refused, so the ceiling must sit under it — with room, because the bucket's state
-    // depends on load we cannot see.
+    // Measured 2026-08-31: 10 req/min still drew refusals, so stay well under it.
     expect(seed.globalCeiling).toBeLessThanOrEqual(6);
     expect(seed.perUserQuota).toBeLessThanOrEqual(seed.globalCeiling);
     expect(seed.windowSeconds).toBe(60);
   });
 
   it("records that the upstream's limiter is the authority, not our columns", () => {
-    // The defect Q-02 actually named: the previous legal_basis claimed we called "at a rate
-    // bounded by the columns on this row", and the audit log proved that false. A false
-    // statement in the connector registry is worse than the rate-limiting itself, for a
-    // product whose whole thesis is that its records are accurate.
+    // legal_basis must not claim our columns bound the rate; the upstream limiter does.
     expect(seed.legalBasis).toMatch(/THEIR LIMITER IS THE AUTHORITY AND NOT THESE COLUMNS/);
     expect(seed.legalBasis).toContain("429");
     expect(seed.legalBasis).toContain("cooldown");

@@ -21,15 +21,12 @@ const UUID_B = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
 
 describe("vocabulary alignment", () => {
   it("keeps COST_MODELS and the content cost models identical", () => {
-    // product-brief §6.2: one spelling, no translation layer. This is the regression test
-    // for the drift that would otherwise surface as a tools_cost_model_check violation
-    // half-way through a seed run.
+    // One spelling, no translation layer.
     expect(() => assertCostModelsAligned()).not.toThrow();
     expect([...contentCostModels].sort()).toEqual([...COST_MODELS].sort());
   });
 
   it("stores confidence in camelCase, never hyphenated", () => {
-    // HANDOFF §11 assertion 10.
     expect(CONFIDENCE_LEVELS).toContain("needsReview");
     expect(CONFIDENCE_LEVELS as readonly string[]).not.toContain("needs-review");
   });
@@ -41,8 +38,7 @@ describe("facet vocabularies", () => {
   });
 
   it("rejects a value outside the vocabulary", () => {
-    // An unrecognised facet is stored happily by Postgres (text[] has no constraint) and is
-    // then invisible to every /directory filter — the quietest possible content bug.
+    // Postgres wouldn't reject it (text[]), but filters could never reach it.
     expect(inputTypesSchema.safeParse(["domain", "smoke-signal"]).success).toBe(false);
   });
 
@@ -70,8 +66,7 @@ describe("summary length", () => {
 
 describe("uuid", () => {
   it("rejects a non-uuid route param rather than letting it reach the driver", () => {
-    // An invalid uuid in a WHERE clause is a Postgres 22P02, i.e. a 500 where the correct
-    // answer is a 404.
+    // Otherwise Postgres raises 22P02 (a 500 instead of a 404).
     expect(uuidSchema.safeParse("not-a-uuid").success).toBe(false);
     expect(uuidSchema.safeParse("'; drop table tools; --").success).toBe(false);
     expect(uuidSchema.safeParse(UUID).success).toBe(true);
@@ -79,17 +74,13 @@ describe("uuid", () => {
 });
 
 describe("workspace item kind/reference pairing", () => {
-  // HANDOFF §3: no CHECK constraint exists for this, and adding one would break ADR 0008's
-  // ON DELETE SET NULL. Zod is the only enforcement, so it is tested exhaustively.
+  // No CHECK constraint (it would conflict with ON DELETE SET NULL), so Zod is the only enforcement.
   it("covers every kind in the vocabulary", () => {
     expect([...WORKSPACE_ITEM_KINDS]).toEqual(["tool", "checklistStep", "mapFeature"]);
   });
 
   it("requires a feature reference for kind 'mapFeature', and neither FK", () => {
-    // mapFeature is the kind with nothing to point at: its referent is a position an
-    // upstream published for a moment. By the time the user reopens the case, that aircraft
-    // has moved and that wildfire may be out. A dangling reference to something ephemeral
-    // is worse than a snapshot — it silently becomes wrong rather than visibly becoming old.
+    // Live features are ephemeral, so they're snapshotted rather than referenced by FK.
     const feature = { sourceSlug: "usgs-earthquakes", featureRef: "us7000abcd" };
 
     expect(
@@ -100,12 +91,11 @@ describe("workspace item kind/reference pairing", () => {
       }).success,
     ).toBe(true);
 
-    // Without the reference there is nothing to resolve, and no way to recover it.
     expect(
       addWorkspaceItemSchema.safeParse({ workspaceId: UUID, kind: "mapFeature" }).success,
     ).toBe(false);
 
-    // Neither FK may be set: nothing in our database owns a live feature.
+    // Neither FK may be set.
     expect(
       addWorkspaceItemSchema.safeParse({
         workspaceId: UUID,
@@ -116,10 +106,9 @@ describe("workspace item kind/reference pairing", () => {
     ).toBe(false);
   });
 
-  it("gives a crafted request no field in which to send an attribution — QV-14", () => {
-    // ADR 0025 Consequences: the SERVER is the authority on attribution, licence, source
-    // name and title. The wire format carries the reference and nothing else, so there is
-    // nothing to blank rather than a blank that is later overwritten.
+  it("gives a crafted request no field in which to send an attribution", () => {
+    // The server supplies attribution, licence, source name and title; only the reference
+    // survives parsing.
     const parsed = addWorkspaceItemSchema.parse({
       workspaceId: UUID,
       kind: "mapFeature",
@@ -141,10 +130,8 @@ describe("workspace item kind/reference pairing", () => {
     });
   });
 
-  it("refuses a whitespace attribution or licence on the way to the database — QV-14", () => {
-    // `.min(1)` accepted a single space and rendered as an empty credit line in the Markdown
-    // and PDF exports. ODbL, CC BY and the TfL terms make the credit a condition of use, so
-    // a blank one is a licence breach, not a cosmetic gap. `.trim()` runs first in Zod.
+  it("refuses a whitespace attribution or licence on the way to the database", () => {
+    // Licences like ODbL and CC BY require the credit, so whitespace-only must fail.
     const snapshot = {
       sourceSlug: "usgs-earthquakes",
       sourceName: "USGS Earthquake Hazards Program",
@@ -166,9 +153,7 @@ describe("workspace item kind/reference pairing", () => {
   });
 
   it("carries the precision caveat through the properties column and back", () => {
-    // `workspace_feature_snapshots` has no `precision` column. Without this round trip an
-    // NWS alert exports a precise-looking coordinate months later with nothing left to say
-    // it is an administrative centroid tens of kilometres from the weather.
+    // No `precision` column, so the caveat rides in `properties`.
     const packed = packSnapshotProperties(
       { event: "Flood Warning", severity: "Severe" },
       {
@@ -178,7 +163,7 @@ describe("workspace item kind/reference pairing", () => {
       },
     );
 
-    // Every adapter property stays exactly where db/schema.ts says it is: top level.
+    // Adapter properties stay at the top level.
     expect(packed.event).toBe("Flood Warning");
 
     const unpacked = unpackSnapshotProperties(packed);
@@ -186,9 +171,9 @@ describe("workspace item kind/reference pairing", () => {
     expect(unpacked.precision?.approximateRadiusMetres).toBe(30000);
     expect(unpacked.precision?.label).toBe("approx - zone centre");
 
-    // No caveat means no caveat, not an empty one. Caveating everything is caveating nothing.
+    // No caveat means null, not an empty one.
     expect(unpackSnapshotProperties(packSnapshotProperties({ a: 1 }, null)).precision).toBeNull();
-    // A row written by an older build is an unvalidated boundary like any other.
+    // Old or malformed rows.
     expect(unpackSnapshotProperties(null)).toEqual({ properties: {}, precision: null });
     expect(unpackSnapshotProperties({ $precision: "nonsense" }).precision).toBeNull();
   });
@@ -224,8 +209,7 @@ describe("workspace item kind/reference pairing", () => {
   });
 
   it("never accepts a client-supplied title", () => {
-    // ADR 0008: the snapshot records what the user saw, so it is read server-side from
-    // tools.name / playbook_steps.title. A client-supplied title records what the client said.
+    // Titles are read server-side from tools.name / playbook_steps.title.
     const parsed = addWorkspaceItemSchema.parse({
       workspaceId: UUID,
       kind: "tool",
@@ -244,8 +228,7 @@ describe("playbook step ordering", () => {
   });
 
   it("rejects 1-based order", () => {
-    // The seed script's translation target. content playbooks number steps from 1;
-    // playbook_steps.order_index is 0-based.
+    // Content numbers steps from 1; order_index is 0-based.
     expect(checkContiguousOrder([1, 2, 3])).toHaveLength(1);
   });
 
@@ -254,8 +237,7 @@ describe("playbook step ordering", () => {
   });
 
   it("rejects a duplicate", () => {
-    // The DEFERRABLE unique constraint catches this at commit; catching it here names the
-    // field instead of quoting playbook_steps_playbook_order_uniq.
+    // The DB catches this at commit too; this gives a field-level error.
     expect(checkContiguousOrder([0, 1, 1])).toHaveLength(1);
   });
 
@@ -304,7 +286,7 @@ describe("notes", () => {
 
 describe("filter normalisation", () => {
   it("drops unknown values instead of erroring", () => {
-    // sitemap.md §1: a bad filter yields the unfiltered list, never a 500.
+    // A bad filter yields the unfiltered list, never a 500.
     const filters = parseDirectoryFilters({
       cost: ["free", "unicorn"],
       input: ["domain", "smoke-signal"],
@@ -317,8 +299,7 @@ describe("filter normalisation", () => {
   });
 
   it("produces the same cache key regardless of parameter order or duplication", () => {
-    // caching.md §6: without this, a crafted URL mints a new Data Cache entry per
-    // permutation and the hit rate collapses.
+    // Otherwise each permutation would mint a new cache entry.
     const a = directoryCacheKey(parseDirectoryFilters({ tag: ["b", "a"], cost: ["free"] }));
     const b = directoryCacheKey(
       parseDirectoryFilters({ tag: ["a", "b", "a"], cost: ["FREE"], junk: "1" }),
@@ -341,17 +322,7 @@ describe("filter normalisation", () => {
     );
   });
 
-  /**
-   * REGRESSION. An earlier version lowercased every incoming value before validating it,
-   * which silently destroyed the two camelCase members of the closed vocabularies:
-   * `needsReview` became `needsreview`, failed `z.enum`, and was dropped. Because
-   * sitemap.md §1 requires a bad filter to be DROPPED rather than rejected, there was no
-   * error anywhere — the chip appeared selected in the URL and filtered nothing.
-   *
-   * Found by `components/directory/filter-url.test.ts`, which round-trips the serialiser
-   * against this parser. Fixed by folding case only for the comparison and returning the
-   * vocabulary's own spelling.
-   */
+  /** Case is folded only for comparison; camelCase values like `needsReview` must survive. */
   it("keeps every closed-vocabulary value, camelCase included", () => {
     for (const level of CONFIDENCE_LEVELS) {
       expect(parseDirectoryFilters({ confidence: level }).confidence).toEqual([level]);
@@ -362,8 +333,7 @@ describe("filter normalisation", () => {
   });
 
   it("matches a vocabulary value case-insensitively and returns the canonical spelling", () => {
-    // `?confidence=NEEDSREVIEW` and `?confidence=needsreview` must both canonicalise to the
-    // value the database stores, so they are one filter and one cache key.
+    // Both spellings canonicalise to the stored value and one cache key.
     expect(parseDirectoryFilters({ confidence: "NEEDSREVIEW" }).confidence).toEqual([
       "needsReview",
     ]);

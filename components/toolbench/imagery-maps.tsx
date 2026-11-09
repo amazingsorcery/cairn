@@ -14,27 +14,15 @@ import {
 } from "@/lib/toolbench/imagery";
 
 /**
- * Two synchronised satellite views of the same place on two dates.
+ * Two synchronised satellite views of one place on two dates.
  *
- * ── WHY THIS IS ONLY EVER REACHED AFTER A CLICK ────────────────────────────
- * Every tile is fetched by the reader's browser, directly from
- * `gibs.earthdata.nasa.gov` — which is what product-brief §2b requires for imagery, and
- * which means NASA sees the reader's address and the exact patch of ground they are
- * examining. On a comparator that patch IS the investigation. The gate in `imagery-tool.tsx`
- * states that in words before the first tile is requested, and this module is only imported
- * on the click.
+ * Only imported after a click: tiles come straight from `gibs.earthdata.nasa.gov`, which
+ * sees the reader's IP and the area being examined. `imagery-tool.tsx` discloses this first.
  *
- * ── WHY LEAFLET ────────────────────────────────────────────────────────────
- * GIBS serves raster tiles, which Leaflet loads as `<img>` elements. The deployed CSP
- * (`infra/csp.caddy`) governs those through `img-src`, so this needs ONE new origin there
- * and nothing else. MapLibre would fetch the same tiles over XHR and need `connect-src`
- * widened as well, for no benefit on a raster-only surface.
+ * Leaflet because GIBS tiles load as `<img>` (CSP `img-src` only); MapLibre would also need
+ * `connect-src`.
  *
- * ── WHY THE TWO MAPS ARE ALWAYS BOTH BUILT ─────────────────────────────────
- * Side-by-side and swipe are the same two maps in a different box: swipe stacks them and
- * clips the upper one. Building one map for one mode and two for the other would mean two
- * code paths for the view synchronisation, and a desynchronised comparator is a tool that
- * shows two different places and calls them the same place.
+ * Both maps are always built; swipe mode just stacks and clips them, so there's one sync path.
  */
 
 export type ImageryMode = "sideBySide" | "swipe";
@@ -63,12 +51,8 @@ export interface ImageryMapsProps {
 }
 
 /**
- * A transparent 1×1 PNG, used for tiles GIBS answers with 404.
- *
- * It answers 404 rather than sending a blank tile wherever a satellite pass had no data —
- * between orbital swaths, and over the winter pole. Without this Leaflet leaves the browser's
- * broken-image glyph in the grid, which reads as "the tool is broken" rather than "the
- * satellite did not see this here on this day". `data:` is already permitted by `img-src`.
+ * Transparent 1×1 PNG for tiles GIBS 404s (no data between swaths or over the winter pole),
+ * instead of broken-image glyphs. `data:` is allowed by `img-src`.
  */
 const BLANK_TILE =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
@@ -89,7 +73,7 @@ function buildPane(
         maxNativeZoom: layer.maxNativeZoom,
         maxZoom: MAX_MAP_ZOOM,
         errorTileUrl: BLANK_TILE,
-        // The acknowledgement GIBS asks for, on the map itself rather than in a footer.
+        // GIBS's requested acknowledgement, on the map.
         attribution: GIBS_ACKNOWLEDGEMENT,
         crossOrigin: false,
       }).addTo(map),
@@ -148,7 +132,7 @@ export default function ImageryMaps({
       attributionControl: true,
       zoomAnimation: !reducedMotion,
       fadeAnimation: !reducedMotion,
-      // Arrow keys pan and +/- zoom, which is the whole keyboard story for a map.
+      // Arrow keys pan, +/- zoom.
       keyboard: true,
       worldCopyJump: true,
     };
@@ -179,8 +163,7 @@ export default function ImageryMaps({
       mapsRef.current = null;
       layersRef.current = { left: [], right: [] };
     };
-    // Seeded once. The reader owns the viewport afterwards and re-centring under them
-    // would fight their panning; `view` changes are pushed by the effect below instead.
+    // Seeded once; later `view` changes are applied by the effect below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -199,12 +182,8 @@ export default function ImageryMaps({
   }, [left, right, references]);
 
   /**
-   * Push a viewport set from OUTSIDE the map — a typed coordinate, or the zoom field.
-   *
-   * Guarded against the map's own reports: `onViewChange` fires on every pan, the parent
-   * stores it, and the stored value comes straight back here as a prop. Without the
-   * comparison below that round trip would call `setView` in the middle of a drag and
-   * snap the map out from under the reader's cursor.
+   * Apply a viewport set from outside the map (typed coordinate, zoom field). Skips values
+   * that echo the map's own position, which would otherwise `setView` mid-drag.
    */
   React.useEffect(() => {
     const maps = mapsRef.current;

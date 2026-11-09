@@ -7,20 +7,10 @@ import type { PlaybookCard as PlaybookCardData } from "@/lib/queries/playbooks";
 import { PlaybookMeta } from "./playbook-meta";
 
 /**
- * One playbook on `/playbooks`.
+ * One playbook on `/playbooks`. Usable from server or client components (the index renders
+ * it inside a client filter).
  *
- * No `"use client"` and no server-only import, so it is usable from both sides of the
- * boundary: the index renders it inside a client filter leaf, and nothing here needs a
- * session, a database or `lib/env`.
- *
- * Confidence and last-verified are not optional (`docs/design/states.md` §0, architecture
- * HANDOFF §9.1): there is no view of an entry in this product that omits them.
- *
- * The heading level is a prop, defaulting to `h2`, because the caller owns the document
- * outline — the same rule `CardTitle` follows. It was hardcoded to `h3` and the index renders
- * these directly under the page `h1`, so a populated list jumped h1 to h3 and skipped a
- * level. Lighthouse caught it as `heading-order`; a screen-reader user navigating by heading
- * would have experienced it as a missing section.
+ * The heading level is a prop because the caller owns the document outline.
  */
 export function PlaybookCardItem({
   playbook,

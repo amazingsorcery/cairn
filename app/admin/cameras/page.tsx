@@ -11,15 +11,9 @@ import { listCamerasForAdmin } from "@/lib/queries/admin";
 import { formatDate } from "@/lib/utils";
 
 /**
- * `/admin/cameras` — editor level. A camera is content, held to the same editorial standard
- * as a tool (sitemap.md §8).
- *
- * THE `embeds` COLUMN IS THE ONE TO READ. `cameras_embed_requires_connector_check` and
- * `cameras_embed_url_check` mean a published entry that embeds must have both a connector
- * carrying a recorded legal basis and an embed URL — because rendering a third party's feed
- * inside our page relies on a permission, and a recorded permission lives on a connector
- * (ADR 0012 §4). Publishing an entry that fails either is refused by the database and the
- * refusal is shown next to the button.
+ * `/admin/cameras`, editor level. A published camera that embeds must have a connector with
+ * a recorded legal basis and an embed URL (`cameras_embed_*_check` constraints); the DB
+ * refuses otherwise and the error shows next to the button.
  */
 
 export const dynamic = "force-dynamic";

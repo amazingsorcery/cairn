@@ -5,16 +5,9 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 
 /**
- * The route-level boundary for `/map`.
- *
- * It should almost never render. Every source failure is already caught per layer and
- * degraded in place — one dead upstream disables its own layer and nothing else
- * (product-brief §2b) — so this covers only what is left: a throw during render.
- *
- * Copy follows `docs/design/states.md` §1.3: two sentences, what happened then what to do, no
- * apology and a real control. NOTHING from `error` is rendered. A server error message can
- * carry an upstream URL, a query fragment or a file path, and Next has already logged the real
- * error with its digest server-side, which is where an operator looks.
+ * Route error boundary for `/map`. Source failures degrade per layer, so this only catches
+ * render throws. `error` isn't rendered: messages can contain upstream URLs or paths, and
+ * Next already logs it server-side.
  */
 export default function MapError({ reset }: { error: Error; reset: () => void }) {
   return (

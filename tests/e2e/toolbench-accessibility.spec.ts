@@ -2,15 +2,13 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 
 /**
- * QA v2 accessibility sweep over the surfaces that did not exist at the v1 audit: `/map` and
- * the fifteen Toolbench tools.
+ * Accessibility sweep over `/map` and the Toolbench tools.
  *
- * Owned by qa-adversary. Run against a PRODUCTION build, never `next dev` — a duplicate `<h1>`
- * under `next dev` is React's Suspense staging container and not a defect, which the v1 audit
- * established (`docs/qa/audit.md` §3, "The duplicate `<h1>` — settled").
+ * Run against a production build: under `next dev` React's Suspense staging container can
+ * produce a duplicate `<h1>`.
  *
  *   E2E_BASE_URL=http://127.0.0.1:3300 pnpm exec playwright test --project=chromium \
- *     tests/e2e/qa-v2-accessibility.spec.ts
+ *     tests/e2e/toolbench-accessibility.spec.ts
  */
 
 const TOOLBENCH = [
@@ -48,13 +46,7 @@ async function headingOutline(page: Page): Promise<string[]> {
 test.describe("headings, one h1, no level skip", () => {
   for (const path of ["/map", ...TOOLBENCH]) {
     test(`${path}`, async ({ page }) => {
-      /*
-       * `networkidle`, and an explicit wait for the h1, because `/map` is `force-dynamic` and
-       * streams: under parallel workers on a loaded machine the `load` event can fire while
-       * `loading.tsx` is still the whole document, and a non-retrying assertion then reads an
-       * empty outline. Measured: `/map` answers in 14 ms serially and 70 ms under six
-       * concurrent curls, so this is the harness racing the stream, not a slow route.
-       */
+      // `/map` streams; under load `load` can fire while only `loading.tsx` has arrived.
       await page.goto(path, { waitUntil: "networkidle" });
       await page.locator("h1").first().waitFor({ state: "attached", timeout: 15_000 });
       const outline = await headingOutline(page);
@@ -107,12 +99,10 @@ test("map: reachable by keyboard from the top of the page to the first table row
     (sel) => [...document.querySelectorAll(sel)].filter((e) => (e as HTMLElement).offsetParent !== null).length,
     FOCUSABLE,
   );
-  // Recorded, not asserted against a threshold: this is the number the report quotes.
+  // Recorded, not asserted.
   test.info().annotations.push({ type: "focusable-count", description: String(total) });
 
-  // Every layer control must be reachable, and the last one must arrive well inside a
-  // reasonable traversal. The v1 audit's Q-21 was 365 presses to the catalogue; the map's
-  // own budget is far smaller because the layer panel is six rows.
+  // The last layer toggle must be reachable within a short traversal.
   let steps = 0;
   let landed = "";
   for (; steps < 60; steps += 1) {
@@ -134,13 +124,8 @@ test("map: focus is visible at every stop for the first 40 tab stops", async ({ 
   const missing: string[] = [];
   for (let i = 0; i < 40; i += 1) {
     await page.keyboard.press("Tab");
-    /*
-     * The indicator is not always ON the focused element. Two patterns in this codebase put
-     * it elsewhere and both are legitimate: `focus-visible:ring-*` paints a box-shadow ring,
-     * and the map's layer rows use `has-[:focus-visible]:ring-2` on the wrapping <label> with
-     * `focus-visible:outline-none` on the input. So walk up three ancestors before concluding
-     * that nothing is drawn. An all-transparent box-shadow does not count as an indicator.
-     */
+    // The ring may be on an ancestor (e.g. `has-[:focus-visible]:ring-2` on the layer row
+    // label), so check up to three ancestors. Transparent shadows don't count.
     const info = await page.evaluate(() => {
       const el = document.activeElement as HTMLElement | null;
       if (!el || el === document.body) return null;
@@ -198,7 +183,7 @@ test("map: the opt-in is operable by keyboard and starts WebGL only then", async
   await expect(optIn).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(page.locator("canvas").first()).toBeVisible({ timeout: 25_000 });
-  // The layer panel and the caveats survive the map opening; the map is additive, not a mode.
+  // The layer panel and caveats stay after the map opens.
   await expect(page.locator("#map-layer-earthquakes")).toBeVisible();
   await expect(page.getByRole("heading", { name: /how to read this map/i })).toBeVisible();
 });
@@ -208,12 +193,8 @@ test("toolbench: every tool page states where the work happens", async ({ page }
   for (const path of TOOLBENCH.filter((p) => p !== "/toolbench")) {
     await page.goto(path);
     const text = (await page.locator("main").innerText()).toLowerCase();
-    /*
-     * product-brief §2a.B: "a user's files never reach our server ... must be *stated on each
-     * tool page*, not merely true". Two honest shapes exist in this build: a client-side tool
-     * says it runs in your browser, and a tool that reaches a third party says which one and
-     * that we do not relay it. Either satisfies the rule; silence does not.
-     */
+    // Each tool page must state where the work happens: in the browser, or which third
+    // party is contacted and that we don't relay it.
     const states =
       text.includes("runs in your browser") ||
       text.includes("happens on your own machine") ||
@@ -226,7 +207,7 @@ test("toolbench: every tool page states where the work happens", async ({ page }
       text.includes("this site's server");
     if (!states) missing.push(path);
   }
-  expect(missing, "product-brief §2a.B: each tool page must state the privacy posture").toEqual([]);
+  expect(missing, "each tool page must state the privacy posture").toEqual([]);
 });
 
 test("toolbench: prefers-reduced-motion is honoured on the map route", async ({ browser }) => {

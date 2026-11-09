@@ -15,52 +15,26 @@ import type {
 /**
  * Radio Browser — a community catalogue of internet radio stations, with coordinates.
  *
- * ─────────────────────────────────────────────────────────────────────────────
- * TERMS CHECK — 2026-08-31. Full record in `docs/sources/radio-browser.md`.
- * ─────────────────────────────────────────────────────────────────────────────
- * Licence      Public domain dedication by the project maintainer. The project's own info
- *              page states: "Data license: public domain, software license: GPL" and "I give
- *              all the rights I have at the accumulated data to the public domain."
- *              (github.com/segler-alex/radiobrowser, partials/info.html, read 2026-08-31.)
- *              NOTE THE PRECISION: the maintainer dedicates the rights *they have*. Station
- *              names, homepages and stream URLs are facts about third parties; the dedication
- *              covers the catalogue, and it does not and cannot license the audio.
+ * Terms (checked 2026-08-31):
+ * Licence      Catalogue is public domain ("Data license: public domain, software license:
+ *              GPL"). That covers the catalogue, not the stations' audio.
  * Key          None.
- * User-Agent   Asked for explicitly: "Send a speaking http agent string (e.g. mycoolapp/1.4)".
- * Rate limit   Not published. Mirrors are volunteer-run, so the TTL is one hour — station
- *              metadata changes on the order of days, and product-brief §2b puts webcam-style
- *              metadata at ~1h.
- * Access ctrl  None circumvented. Documented public endpoints, no auth.
- * ─────────────────────────────────────────────────────────────────────────────
+ * User-Agent   Asked for: a descriptive agent string.
+ * Rate limit   Unpublished; volunteer-run mirrors, so TTL is one hour.
  *
- * TWO THINGS WE DELIBERATELY DO NOT DO, both of which are the point of this adapter:
- *
- * 1. **We never touch the audio.** `streamUrl` is handed to the client, which connects to
- *    the station directly. Product-brief §2b: relaying audio through one VPS exhausts its
- *    bandwidth in hours and converts a linking site into a rebroadcasting one — a different
- *    legal posture entirely, and one the public-domain catalogue licence says nothing about,
- *    because the catalogue's licence is not the audio's licence.
- *
- * 2. **We never send the click-tracking request.** The API asks callers to "send /json/url
- *    requests for every click the user makes, this helps to mark stations as popular". For a
- *    normal media player that is a fair trade. Here it would tell a third party which station
- *    each of our readers opened — precisely the interest-graph leak product-brief §3.2
- *    constraint 4 forbids, for an audience that will not use a tool that leaks it. We take
- *    the data and decline the telemetry, and this comment exists so the omission reads as a
- *    decision rather than an oversight.
+ * - We never fetch or relay audio; the client connects to the station directly.
+ * - We never send the `/json/url` click-tracking request, which would tell a third party
+ *   which station each reader opened.
  */
 
 /**
- * Documented server discovery: "Do a DNS-lookup of 'all.api.radio-browser.info'... Available
- * server names may change." We use the HTTP form of the same discovery rather than raw DNS —
- * it returns the same list, it works identically in a container with no DNS tooling, and it
- * respects the instruction not to hardcode one mirror. The example server the docs name is
- * the fallback for when discovery itself is down.
+ * Server discovery via the HTTP form of the documented lookup (mirrors may change). Falls back
+ * to the documented example server if discovery fails.
  */
 const DISCOVERY_URL = "https://all.api.radio-browser.info/json/servers";
 const FALLBACK_HOST = "de1.api.radio-browser.info";
 
-/** Mirrors change rarely; re-discovering more often than hourly would be the rude thing. */
+/** Mirrors change rarely. */
 const DISCOVERY_TTL_SECONDS = 60 * 60;
 
 /** Only stations with coordinates can appear on a map at all. */
@@ -71,12 +45,8 @@ export const RADIO_BROWSER_SLUG = "radio-browser";
 const serverSchema = z.array(z.object({ name: z.string() }).passthrough());
 
 /**
- * Hostnames from discovery are validated before they can reach a URL.
- *
- * This one matters more than most: the host comes from a remote response, and putting a
- * remote-controlled string into a server-side fetch is textbook SSRF — the risk ADR 0019
- * names as v2's top one. The pattern pins it to the project's own domain, so a compromised or
- * spoofed discovery response cannot redirect our worker anywhere else.
+ * Discovered hostnames come from a remote response, so they're pinned to the project's
+ * domain before use in a server-side fetch (SSRF).
  */
 const HOST_PATTERN = /^[a-z0-9-]+\.api\.radio-browser\.info$/;
 
@@ -87,8 +57,7 @@ export function pickServer(raw: unknown): string {
     HOST_PATTERN.test(name),
   );
   if (hosts.length === 0) return FALLBACK_HOST;
-  // Spread load across mirrors rather than always hitting the first one. They are volunteer
-  // machines; a client that always picks `de1` is why `de1` falls over.
+  // Spread load across mirrors.
   return hosts[Math.floor(Math.random() * hosts.length)] ?? FALLBACK_HOST;
 }
 
@@ -96,12 +65,7 @@ export function pickServer(raw: unknown): string {
  * Upstream schema
  * ------------------------------------------------------------------ */
 
-/**
- * The endpoint returns a bare ARRAY, not an envelope — so there is no upstream timestamp to
- * read and `observedAt` is our receive time. That is stated here because it is the one place
- * in this directory where `observedAt` is genuinely ours, and a reader of the freshness
- * display deserves to know the difference.
- */
+/** The endpoint returns a bare array with no timestamp, so `observedAt` is our receive time. */
 const stationSchema = z
   .object({
     stationuuid: z.string(),
@@ -137,26 +101,13 @@ export interface RadioStationFeature extends SourceFeature {
   readonly kind: "radio";
   readonly properties: {
     readonly stationUuid: string;
-    /**
-     * The stream the CLIENT connects to directly. Never fetched by our server — see the
-     * note at the top of this file. `url_resolved` is preferred because it has already
-     * followed playlist redirects, which saves the browser a hop.
-     */
+    /** Stream the client connects to directly (never fetched by us). Prefers `url_resolved`. */
     readonly streamUrl: string;
     /** Whether the stream is HLS, so the client can choose a player. 0/1 upstream. */
     readonly isHls: boolean;
     /**
-     * True when the stream URL is plain `http:`.
-     *
-     * MEASURED 2026-08-31: **20% of working geolocated stations (2,473 of 12,413) publish an
-     * `http:` stream URL.** A browser on our HTTPS page blocks those as mixed content no
-     * matter what our CSP says, so a play button on one fails silently — the worst failure
-     * shape there is, because nothing errors and the reader concludes the tool is broken.
-     *
-     * Surfaced as data rather than filtered out, deliberately. Dropping a fifth of the
-     * catalogue without saying so is the silent-incompleteness failure this codebase has
-     * been bitten by twice (NWS geometry, adsb.lol corners). The UI decides: label it,
-     * de-emphasise it, or offer it as a link out. It must not offer it as a play button.
+     * Plain `http:` stream (~20% of stations). Browsers block these as mixed content, so the
+     * UI must not offer a play button; show it as a link out instead.
      */
     readonly isInsecureStream: boolean;
     readonly codec: string | null;
@@ -168,10 +119,7 @@ export interface RadioStationFeature extends SourceFeature {
     readonly language: string | null;
     /** Comma-separated upstream tag string, passed through as given. */
     readonly tags: string | null;
-    /**
-     * Whether the project's own checker last found the stream playable, and when. This is
-     * the honest freshness signal for a link we are about to hand a reader.
-     */
+    /** Whether the project's checker last found the stream playable, and when. */
     readonly lastCheckOk: boolean;
     readonly lastCheckedAt: string | null;
     readonly clickCount: number | null;
@@ -202,13 +150,10 @@ function mapRadioBrowser(data: RadioPayload, query: SourceQuery): readonly Radio
     const position = coordinatePair(station.geo_long, station.geo_lat);
     if (!position) continue;
 
-    // 0,0 is the Gulf of Guinea and is what a station gets when someone leaves the geo
-    // fields at their default. A cluster of "radio stations" in the open ocean is the
-    // signature of exactly that, so they are dropped.
+    // 0,0 means the geo fields were left at default.
     if (position.longitude === 0 && position.latitude === 0) continue;
 
     const streamUrl = safeStreamUrl(station.url_resolved, station.url);
-    // A station we cannot hand the reader a playable link for is not worth a pin.
     if (!streamUrl) continue;
 
     const feature: RadioStationFeature = {
@@ -255,14 +200,7 @@ export const normaliseRadioBrowser = normaliseVia(radioBrowserResponseSchema, ma
 const MIRROR_CACHE_KEY = cacheKey(RADIO_BROWSER_SLUG, "mirror");
 const mirrorSchema = z.string().regex(HOST_PATTERN);
 
-/**
- * Discover a mirror, remembering the choice in `SourceContext.cache`.
- *
- * Cached rather than re-discovered every poll, because the docs ask callers not to hammer the
- * discovery endpoint either — and because a worker restart should not cost an extra round trip
- * to a volunteer's machine. Falls back to the documented example server whenever anything at
- * all goes wrong; there is no failure mode here worth degrading the layer for.
- */
+/** Discover a mirror, cached in `SourceContext.cache`. Falls back on any failure. */
 async function currentHost(ctx: SourceContext): Promise<string> {
   const cached = await getJson(ctx.cache, MIRROR_CACHE_KEY, mirrorSchema);
   if (cached) return cached;
@@ -292,20 +230,14 @@ export const radioBrowser: SourceAdapter<RadioStationFeature> = {
   kind: "radio",
   homepage: "https://www.radio-browser.info/",
   attribution: {
-    /**
-     * A public-domain dedication requires no credit. We render one anyway: a reader looking
-     * at a pin needs to know which catalogue asserted that a station is there, and the
-     * project is volunteer-run and deserves the traffic.
-     */
+    // Not required by the licence, but readers should know where the data comes from.
     text: "Station data from the Radio Browser community catalogue",
     href: "https://www.radio-browser.info/",
     licence: "public domain dedication (project maintainer)",
   },
-  /** Station metadata changes over days. Mirrors are volunteer-run; poll like a guest. */
+  /** Station metadata changes over days. */
   ttlSeconds: 3600,
-  /**
-   * A day. A station list changes slowly and a slightly old one is entirely usable.
-   */
+  /** A day; a slightly old station list is fine. */
   staleWhileRevalidateSeconds: 86400,
   responseSchema: radioBrowserResponseSchema,
   normalise: normaliseRadioBrowser,
@@ -313,11 +245,7 @@ export const radioBrowser: SourceAdapter<RadioStationFeature> = {
   async fetch(query: SourceQuery, ctx: SourceContext): Promise<SourceResult<RadioStationFeature>> {
     const host = await currentHost(ctx);
 
-    /**
-     * `limit` is passed upstream where the caller supplied one — filtering after the fact
-     * still pays for the bytes, and this endpoint does support a cap. The bbox has no
-     * upstream equivalent, so it is applied in the mapper.
-     */
+    // `limit` goes upstream; bbox has no upstream equivalent and is applied in the mapper.
     const limit = Math.min(query.limit ?? STATION_LIMIT, STATION_LIMIT);
     const url =
       `https://${host}/json/stations/search` +
@@ -332,12 +260,7 @@ export const radioBrowser: SourceAdapter<RadioStationFeature> = {
       maxBytes: 4 * 1024 * 1024,
       map: (data, receivedAt) => ({
         features: mapRadioBrowser(data, query),
-        /**
-         * The endpoint returns a bare ARRAY, not an envelope, so there is no upstream
-         * timestamp to read and `observedAt` is our receive time. This is the one source in
-         * the registry where that is true, and a reader of the freshness display deserves to
-         * know the difference.
-         */
+        // No upstream timestamp; see `stationSchema`.
         observedAt: receivedAt,
       }),
     });

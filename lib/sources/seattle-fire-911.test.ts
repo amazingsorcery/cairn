@@ -7,11 +7,7 @@ import {
   seattleFire911ResponseSchema,
 } from "./seattle-fire-911";
 
-/**
- * The fixture is a REAL payload from data.seattle.gov (kzjm-xkqj), captured 2026-09-01 and
- * committed unedited. A captured payload is the only thing that catches the failure these
- * tests exist for — the upstream quietly changing shape (product-brief §5).
- */
+/** Real payload from data.seattle.gov (kzjm-xkqj), captured 2026-09-01, unedited. */
 import fixture from "./__fixtures__/seattle-fire-911.json";
 import { jsonResponse, testContext } from "./__fixtures__/context";
 
@@ -32,8 +28,7 @@ describe("seattle-fire-911 normalise", () => {
       expect(feature.latitude).toBeGreaterThanOrEqual(-90);
       expect(feature.latitude).toBeLessThanOrEqual(90);
       expect(feature.properties.agency).toBe("Seattle Fire Department");
-      // isMedical is true exactly when the category is medical — the invariant the default-off
-      // toggle depends on.
+      // isMedical iff category is medical.
       expect(feature.properties.isMedical).toBe(feature.properties.category === "medical");
     }
   });
@@ -41,8 +36,7 @@ describe("seattle-fire-911 normalise", () => {
   it("classifies and marks Seattle's medical calls, which dominate this feed", () => {
     const features = normaliseSeattleFire911(fixture, {});
     const medical = features.filter((f) => f.properties.isMedical);
-    // Aid Response and Medic Response are the two largest call types; a real capture always
-    // contains them. If this is ever zero, the classifier or the feed has changed.
+    // Aid/Medic Response are the largest call types; zero means the classifier or feed changed.
     expect(medical.length).toBeGreaterThan(0);
     expect(medical.some((f) => /aid|medic/i.test(f.properties.incidentType))).toBe(true);
   });
@@ -50,7 +44,7 @@ describe("seattle-fire-911 normalise", () => {
   it("carries the dispatch-location precision caveat into every feature", () => {
     const [feature] = normaliseSeattleFire911(fixture, {});
     expect(feature?.precision?.label).toContain("approx");
-    // The caveat travels with the feature so it survives into a workspace export.
+    // Travels with the feature into workspace exports.
     expect(feature?.precision?.note).toContain("block or intersection");
   });
 
@@ -77,7 +71,7 @@ describe("seattle-fire-911 schema", () => {
 
   it("rejects an unrelated document, so a shape change cannot read as zero dispatches", () => {
     expect(seattleFire911ResponseSchema.safeParse({ error: "unavailable" }).success).toBe(false);
-    // A row missing the required `type` fails: the decision is made by the SCHEMA in fetch.
+    // A row missing the required `type` fails the schema.
     expect(
       seattleFire911ResponseSchema.safeParse([{ latitude: "47.6", longitude: "-122.3" }]).success,
     ).toBe(false);

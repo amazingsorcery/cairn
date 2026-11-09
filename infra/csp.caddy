@@ -1,6 +1,6 @@
 # GENERATED FILE — DO NOT EDIT BY HAND.
 # Produced by `pnpm csp:generate` from content/cameras/*.json and config/live.ts.
-# Rationale: docs/decisions/0017-csp-allowlist-generated-from-content.md
+# Also reads lib/sources/cameras/ and components/map/basemap.ts.
 #
 # The `?` prefix means set-if-absent: if the application later ships nonce-based CSP
 # middleware, its stricter header wins automatically with no change to this file.

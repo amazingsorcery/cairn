@@ -11,20 +11,10 @@ import { fetchUpstream } from "@/lib/sources/http";
 import type { SourceFailure } from "@/lib/sources/types";
 
 /**
- * QA v4, written from the finding text rather than from any fix.
- *
- * Two questions the v3 round left unanswered:
- *
- *  1. `SourceFailure` gained `quotaExhausted` (QV-05) and `redirected` (QV-18). The maps in
- *     `layer-status.tsx` are `Record<SourceFailure["kind"], …>` and are therefore exhaustive
- *     by the compiler — but `components/map/layer-status.test.tsx` drives a HAND-WRITTEN
- *     array of six, and its own docstring calls that "the six failure kinds SourceAdapter
- *     actually has". The union has eight. A hand-written list that the type does not force is
- *     QV-26's defect, and this is the second file it appears in.
- *
- *  2. A refused off-host redirect must not put the destination host in front of a reader.
- *     Asserted end to end here — through `fetchUpstream`, through the DTO schema the client
- *     parses, and into the rendered DOM — rather than by reading the failure object.
+ * 1. Every `SourceFailure` kind is covered by `components/map/layer-status.test.tsx` and
+ *    renders a distinct state.
+ * 2. A refused off-host redirect never shows the destination host, checked end to end
+ *    through `fetchUpstream`, the client DTO schema and the DOM.
  */
 
 const ALL_KINDS = ["upstreamError", "rateLimited", "quotaExhausted", "redirected", "schemaChanged", "timeout", "notConfigured", "disabled"] as const;
@@ -52,17 +42,9 @@ const SOURCE = {
   ttlSeconds: 60,
 };
 
-describe("QA-V4: every SourceFailure kind reaches a reader", () => {
-  /*
-   * FIXED (QA-V4-02, QV-30), inverted in the fix commit — the only edit made to this file.
-   *
-   * `components/map/layer-status.test.tsx` no longer has a hand-written array to fall behind:
-   * its cases are a `Record<SourceFailure["kind"], …>`, which is a compile error when the
-   * contract grows a kind, and they are cross-checked at runtime against the kinds read off
-   * the `z.discriminatedUnion` in `components/map/payload.ts`. This assertion is kept as it
-   * was written, because it measures the outcome from outside and does not care how.
-   */
-  it("the engineer-owned FAILURES array covers the union, or names what it is missing", () => {
+describe("every SourceFailure kind reaches a reader", () => {
+  // Checks the source text of layer-status.test.tsx from outside.
+  it("the layer-status test cases cover the union, or name what is missing", () => {
     const source = readFileSync(
       join(process.cwd(), "components/map/layer-status.test.tsx"),
       "utf8",
@@ -76,7 +58,7 @@ describe("QA-V4: every SourceFailure kind reaches a reader", () => {
     ).toEqual([]);
   });
 
-  it("gives every kind its own distinct sentence, including the two added by the fix round", () => {
+  it("gives every kind its own distinct sentence", () => {
     const sentences = ALL_KINDS.map((kind) => failureSentence(EVERY_FAILURE[kind], "USGS"));
     expect(new Set(sentences).size).toBe(ALL_KINDS.length);
     for (const sentence of sentences) expect(sentence.length).toBeGreaterThan(20);
@@ -101,7 +83,7 @@ describe("QA-V4: every SourceFailure kind reaches a reader", () => {
   });
 });
 
-describe("QA-V4: a refused off-host redirect never names the destination", () => {
+describe("a refused off-host redirect never names the destination", () => {
   it("keeps the attacker-chosen host out of the failure, the DTO and the DOM", async () => {
     const EVIL = "credential-harvest.attacker.example";
     const realFetch = globalThis.fetch;

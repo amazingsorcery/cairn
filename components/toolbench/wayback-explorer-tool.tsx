@@ -22,15 +22,10 @@ import { EmptyResult, LookupForm, LookupStatus, Provenance } from "./network-too
 import { FieldError, ToolPanel } from "./output-row";
 
 /**
- * The Wayback capture explorer.
+ * Wayback capture explorer. First the CDX index (content digests show when the page changed
+ * without downloading captures), then optionally a text diff of two captures.
  *
- * Two operations, and the order between them is the technique. First the CDX index, which
- * lists every capture with a content digest — so the dates the page *changed* are readable
- * without downloading anything. Then, optionally, two captures fetched and compared as text.
- *
- * The diff renders into React text nodes. Nothing archived is ever inserted as HTML;
- * `dangerouslySetInnerHTML` is lint-banned in this repository and would be the wrong
- * instrument here regardless, since the input is an arbitrary page from an arbitrary site.
+ * The diff renders as text nodes; archived content is never inserted as HTML.
  */
 
 export type TimelineLookup = (input: { url: string }) => Promise<LookupOutcome<Timeline>>;
@@ -235,13 +230,7 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-/**
- * Captures per year, as bars — with a table underneath carrying the same numbers.
- *
- * Not a fallback: `docs/product-brief.md` §2a requires a table equivalent for anything
- * graphical, and a bar whose height is its only encoding is unreadable to a screen reader and
- * to anyone who cannot compare lengths.
- */
+/** Captures per year as bars, with an equivalent table (the bars are `aria-hidden`). */
 function YearChart({ years }: { years: Timeline["years"] }) {
   if (years.length === 0) return null;
   const peak = Math.max(...years.map((bucket) => bucket.captures), 1);
@@ -327,10 +316,8 @@ function ChangePointList({ timeline }: { timeline: Timeline }) {
     >
       <ul className="divide-y divide-border">
         {shown.map((point, index) => (
-          // The timestamp alone is NOT unique: the archive genuinely returns two rows with the
-          // same 14-digit second and different digests (verified against ripe.net, where
-          // 19970508135147 appears twice). Keying on it produced a duplicate-key warning for
-          // every such pair, and React may then drop or duplicate rows on re-render.
+          // Timestamps aren't unique: the archive can return two rows for the same second
+          // with different digests (e.g. ripe.net 19970508135147).
           <li
             key={`${point.snapshot.timestamp}-${point.snapshot.digest ?? index}`}
             className="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-2.5"
@@ -488,9 +475,7 @@ function CaptureSelect({
   onChange: (next: string) => void;
   options: readonly Snapshot[];
 }) {
-  // De-duplicate by timestamp before rendering: the option VALUE is the timestamp, and the
-  // archive returns two rows with the same second often enough that leaving them both in
-  // produced duplicate React keys and two indistinguishable options selecting the same capture.
+  // De-duplicate by timestamp, since it's the option value and can repeat.
   const unique = React.useMemo(() => {
     const seen = new Set<string>();
     return options.filter((snapshot) => {
